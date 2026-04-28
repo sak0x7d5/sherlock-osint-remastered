@@ -25,9 +25,14 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from json import loads as json_loads
 from time import monotonic
 from typing import Optional
+import asyncio
 
 import requests
 from requests_futures.sessions import FuturesSession
+from playwright.async_api import Page, Browser, BrowserContext, async_playwright
+from playwright.async_api import Response, APIRequest, APIResponse, APIRequestContext
+from playwright_stealth.stealth import Stealth
+
 
 from sherlock_project.__init__ import (
     __longname__,
