@@ -172,7 +172,7 @@ def multiple_usernames(username):
     return allUsernames
 
 
-def sherlock(
+async def sherlock(
     username: str,
     site_data: dict[str, dict[str, str]],
     query_notify: QueryNotify,
@@ -540,7 +540,7 @@ def handler(signal_received, frame):
     sys.exit(0)
 
 
-def main():
+async def main():
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
@@ -816,7 +816,7 @@ def main():
         else:
             all_usernames.append(username)
     for username in all_usernames:
-        results = sherlock(
+        results = await sherlock(
             username,
             site_data,
             query_notify,
@@ -934,4 +934,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
