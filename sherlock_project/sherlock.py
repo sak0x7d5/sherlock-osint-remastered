@@ -272,13 +272,13 @@ async def sherlock(
 
             if request_method is not None:
                 if request_method == "GET":
-                    request = session.get
+                    request = context.request.get
                 elif request_method == "HEAD":
-                    request = session.head
+                    request = context.request.head
                 elif request_method == "POST":
-                    request = session.post
+                    request = context.request.post
                 elif request_method == "PUT":
-                    request = session.put
+                    request = context.request.put
                 else:
                     raise RuntimeError(f"Unsupported request_method for {url}")
 
@@ -298,12 +298,13 @@ async def sherlock(
                     # In most cases when we are detecting by status code,
                     # it is not necessary to get the entire body:  we can
                     # detect fine with just the HEAD response.
-                    request = session.head
+                    request = context.request.head
                 else:
                     # Either this detect method needs the content associated
                     # with the GET response, or this specific website will
                     # not respond properly unless we request the whole page.
-                    request = session.get
+                    page: Page = await context.new_page()
+                    request = page.goto
 
             if net_info["errorType"] == "response_url":
                 # Site forwards request to a different URL if username not
