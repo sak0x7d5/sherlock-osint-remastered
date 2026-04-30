@@ -179,6 +179,7 @@ async def sherlock(
     dump_response: bool = False,
     proxy: Optional[str] = None,
     timeout: int = 60,
+    context: BrowserContext
 ) -> dict[str, dict[str, str | QueryResult]]:
     """Run Sherlock Analysis.
 
@@ -815,15 +816,23 @@ async def main():
                 all_usernames.append(name)
         else:
             all_usernames.append(username)
-    for username in all_usernames:
-        results = await sherlock(
-            username,
-            site_data,
-            query_notify,
-            dump_response=args.dump_response,
-            proxy=args.proxy,
-            timeout=args.timeout,
-        )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        stealth = Stealth()
+
+        for username in all_usernames:
+            context = await browser.new_context(ignore_https_errors=True)
+            await stealth.apply_stealth_async(context)
+            results = await sherlock(
+                username,
+                site_data,
+                query_notify,
+                dump_response=args.dump_response,
+                proxy=args.proxy,
+                timeout=args.timeout,
+                context=context
+            )
 
         if args.output:
             result_file = args.output
