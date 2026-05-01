@@ -299,12 +299,7 @@ async def sherlock(
                     # it is not necessary to get the entire body:  we can
                     # detect fine with just the HEAD response.
                     request = context.request.head
-                else:
-                    # Either this detect method needs the content associated
-                    # with the GET response, or this specific website will
-                    # not respond properly unless we request the whole page.
-                    page: Page = await context.new_page()
-                    request = page.goto
+
 
             if net_info["errorType"] == "response_url":
                 # Site forwards request to a different URL if username not
