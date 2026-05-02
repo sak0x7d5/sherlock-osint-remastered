@@ -271,16 +271,7 @@ async def sherlock(
             request = None
 
             if request_method is not None:
-                if request_method == "GET":
-                    request = context.request.get
-                elif request_method == "HEAD":
-                    request = context.request.head
-                elif request_method == "POST":
-                    request = context.request.post
-                elif request_method == "PUT":
-                    request = context.request.put
-                else:
-                    raise RuntimeError(f"Unsupported request_method for {url}")
+                request = engine.get_request_fn(request_method)
 
             if request_payload is not None:
                 request_payload = interpolate_string(request_payload, username)
@@ -298,7 +289,7 @@ async def sherlock(
                     # In most cases when we are detecting by status code,
                     # it is not necessary to get the entire body:  we can
                     # detect fine with just the HEAD response.
-                    request = context.request.head
+                    request = engine.get_request_fn('HEAD')
 
 
             if net_info["errorType"] == "response_url":
