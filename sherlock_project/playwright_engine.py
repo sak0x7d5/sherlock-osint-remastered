@@ -54,7 +54,6 @@ class PlaywrightEngine:
             # request_function = None -> use page.goto
             if not request_fn:
                 page: Page = await self.context.new_page()
-                resp = None
                 try:
                     resp = await page.goto(url, wait_until='networkidle', timeout=timeout,**kwargs)
                 except Exception as e:
