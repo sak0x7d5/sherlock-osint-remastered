@@ -19,9 +19,15 @@ class PlaywrightEngine:
         self.playwright: Playwright = await async_playwright().start()
         self.browser: Browser = await self.playwright.chromium.launch(headless=self.headless)
         self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True)
-
-        
         print("Playwright Started!")
+
+        # intialize mappings when context is not None
+        self._fn_mapping = {
+        'GET': self.context.request.get,
+        'HEAD': self.context.request.head,
+        'POST': self.context.request.post,
+        'PUT': self.context.request.put,
+        }
         
         # Apply stealth
         if self.stealth:
@@ -36,6 +42,11 @@ class PlaywrightEngine:
         await self.playwright.stop()
 
         print("Playwright Stopped!")
+
+    async def get_request_fn(self, method: str):
+        if method not in self._fn_mapping:
+            raise RuntimeError(f"Unsupported request_method: {method}")
+        return self._fn_mapping[method]
 
     async def fetch_site(self, url: str, request_fn: None | RequestMethod = None, timeout: float = 60000,**kwargs: Any):
         async with self.sem:
