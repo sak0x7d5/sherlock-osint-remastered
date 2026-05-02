@@ -32,7 +32,7 @@ from requests_futures.sessions import FuturesSession
 from playwright.async_api import Page, Browser, BrowserContext, async_playwright
 from playwright.async_api import Response, APIRequest, APIResponse, APIRequestContext
 from playwright_stealth.stealth import Stealth
-
+from sherlock_project.playwright_engine import PlaywrightEngine
 
 from sherlock_project.__init__ import (
     __longname__,
