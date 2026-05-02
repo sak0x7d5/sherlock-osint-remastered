@@ -1,7 +1,6 @@
 from playwright.async_api import Playwright, Page, Browser, BrowserContext, async_playwright
-from playwright.async_api import APIRequest, APIRequestContext
+from typing import Any, Protocol
 from playwright_stealth.stealth import Stealth
-from typing import Callable, Literal, Any, Awaitable, Protocol
 import asyncio
 
 class RequestMethod(Protocol):
