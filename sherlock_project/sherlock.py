@@ -28,10 +28,7 @@ from typing import Optional
 import asyncio
 
 import requests
-from requests_futures.sessions import FuturesSession
-from playwright.async_api import Page, Browser, BrowserContext, async_playwright
-from playwright.async_api import Response, APIRequest, APIResponse, APIRequestContext
-from playwright_stealth.stealth import Stealth
+from playwright.async_api import APIResponse, Response, Error, TimeoutError
 from sherlock_project.playwright_engine import PlaywrightEngine
 
 from sherlock_project.__init__ import (
@@ -50,95 +47,26 @@ from colorama import init
 from argparse import ArgumentTypeError
 
 
-class SherlockFuturesSession(FuturesSession):
-    def request(self, method, url, hooks=None, *args, **kwargs):
-        """Request URL.
-
-        This extends the FuturesSession request method to calculate a response
-        time metric to each request.
-
-        It is taken (almost) directly from the following Stack Overflow answer:
-        https://github.com/ross/requests-futures#working-in-the-background
-
-        Keyword Arguments:
-        self                   -- This object.
-        method                 -- String containing method desired for request.
-        url                    -- String containing URL for request.
-        hooks                  -- Dictionary containing hooks to execute after
-                                  request finishes.
-        args                   -- Arguments.
-        kwargs                 -- Keyword arguments.
-
-        Return Value:
-        Request object.
-        """
-        # Record the start time for the request.
-        if hooks is None:
-            hooks = {}
-        start = monotonic()
-
-        def response_time(resp, *args, **kwargs):
-            """Response Time Hook.
-
-            Keyword Arguments:
-            resp                   -- Response object.
-            args                   -- Arguments.
-            kwargs                 -- Keyword arguments.
-
-            Return Value:
-            Nothing.
-            """
-            resp.elapsed = monotonic() - start
-
-            return
-
-        # Install hook to execute when response completes.
-        # Make sure that the time measurement hook is first, so we will not
-        # track any later hook's execution time.
-        try:
-            if isinstance(hooks["response"], list):
-                hooks["response"].insert(0, response_time)
-            elif isinstance(hooks["response"], tuple):
-                # Convert tuple to list and insert time measurement hook first.
-                hooks["response"] = list(hooks["response"])
-                hooks["response"].insert(0, response_time)
-            else:
-                # Must have previously contained a single hook function,
-                # so convert to list.
-                hooks["response"] = [response_time, hooks["response"]]
-        except KeyError:
-            # No response hook was already defined, so install it ourselves.
-            hooks["response"] = [response_time]
-
-        return super(SherlockFuturesSession, self).request(
-            method, url, hooks=hooks, *args, **kwargs
-        )
-
-
-def get_response(request_future, error_type, social_network):
+async def await_response(completed_task: asyncio.Task) -> dict[APIResponse | Response, str, str]:
     # Default for Response object if some failure occurs.
     response = None
 
     error_context = "General Unknown Error"
     exception_text = None
     try:
-        response = request_future.result()
-        if response.status_code:
+        # get the result by awaiting it or task.result()
+        response: APIResponse | Response = await completed_task 
+
+        if response.status:
             # Status code exists in response object
             error_context = None
-    except requests.exceptions.HTTPError as errh:
-        error_context = "HTTP Error"
-        exception_text = str(errh)
-    except requests.exceptions.ProxyError as errp:
-        error_context = "Proxy Error"
-        exception_text = str(errp)
-    except requests.exceptions.ConnectionError as errc:
-        error_context = "Error Connecting"
-        exception_text = str(errc)
-    except requests.exceptions.Timeout as errt:
+    except TimeoutError as err:
         error_context = "Timeout Error"
-        exception_text = str(errt)
-    except requests.exceptions.RequestException as err:
+        exception_text = str(err)
+    except Error as err:
+        error_context = "Playwright Error"
+        exception_text = str(err)
+    except Exception as err:
         error_context = "Unknown Error"
         exception_text = str(err)
 
@@ -213,25 +141,10 @@ async def sherlock(
     # Notify caller that we are starting the query.
     query_notify.start(username)
 
-    # Normal requests
-    underlying_session = requests.session()
-
-    # Limit number of workers to 20.
-    # This is probably vastly overkill.
-    if len(site_data) >= 20:
-        max_workers = 20
-    else:
-        max_workers = len(site_data)
-
-    # Create multi-threaded session for all requests.
-    session = SherlockFuturesSession(
-        max_workers=max_workers, session=underlying_session
-    )
-
     # Results from analysis of all sites
     results_total = {}
-
-    # First create futures for all requests. This allows for the requests to run in parallel
+    tasks = {}
+    
     for social_network, net_info in site_data.items():
         # Results from analysis of this specific site
         results_site = {"url_main": net_info.get("urlMain")}
@@ -240,6 +153,7 @@ async def sherlock(
 
         # A user agent is needed because some sites don't return the correct
         # information since they think that we are bots (Which we actually are...)
+        # TODO: Fix headers, stealth already applies it, only apply extra headers if needed.
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0",
         }
@@ -270,8 +184,9 @@ async def sherlock(
             request_payload = net_info.get("request_payload")
             request = None
 
+
             if request_method is not None:
-                request = engine.get_request_fn(request_method)
+                request = await engine.get_request_fn(request_method)
 
             if request_payload is not None:
                 request_payload = interpolate_string(request_payload, username)
@@ -284,55 +199,44 @@ async def sherlock(
                 # from where the user profile normally can be found.
                 url_probe = interpolate_string(url_probe, username)
 
+            kwargs = {
+                'url': url_probe,
+                'headers': headers,
+                'max_redirects': 20,
+                'timeout': timeout,
+                'request_payload': request_payload,
+            }
+
             if request is None:
                 if net_info["errorType"] == "status_code":
                     # In most cases when we are detecting by status code,
                     # it is not necessary to get the entire body:  we can
                     # detect fine with just the HEAD response.
-                    request = engine.get_request_fn('HEAD')
-
+                    request = await engine.get_request_fn('HEAD')
 
             if net_info["errorType"] == "response_url":
                 # Site forwards request to a different URL if username not
                 # found.  Disallow the redirect so we can capture the
                 # http status from the original URL request.
-                allow_redirects = False
-            else:
-                # Allow whatever redirect that the site wants to do.
-                # The final result of the request will be what is available.
-                allow_redirects = True
-
-            # This future starts running the request in a new thread, doesn't block the main thread
+                kwargs['max_redirects'] = 0
+            
             if proxy is not None:
-                proxies = {"http": proxy, "https": proxy}
-                future = request(
-                    url=url_probe,
-                    headers=headers,
-                    proxies=proxies,
-                    allow_redirects=allow_redirects,
-                    timeout=timeout,
-                    json=request_payload,
-                )
-            else:
-                future = request(
-                    url=url_probe,
-                    headers=headers,
-                    allow_redirects=allow_redirects,
-                    timeout=timeout,
-                    json=request_payload,
-                )
+                kwargs['proxy'] = {"http": proxy, "https": proxy}
 
-            # Store future in data for access later
-            net_info["request_future"] = future
+            task = asyncio.create_task(engine.fetch_site(request_fn=request, **kwargs))
 
-        # Add this site's results into final dictionary with all the other results.
-        results_total[social_network] = results_site
+            # store in tasks as key to retrieve later using as_completed
+            tasks[task] = {'social_network': social_network, 'net_info': net_info, 'results_site': results_site}
+            
+            
+    # receive tasks as soon as they are completed
+    # use tasks dict retrieve social_network, net_info, results_site
+    async for completed_task in asyncio.as_completed(tasks):
 
-    # Open the file containing account links
-    for social_network, net_info in site_data.items():
-        # Retrieve results again
-        results_site = results_total.get(social_network)
-
+        social_network = tasks[completed_task]['social_network']
+        results_site = tasks[completed_task]['results_site']
+        net_info = tasks[completed_task]['net_info']
+        
         # Retrieve other site information again
         url = results_site.get("url_user")
         status = results_site.get("status")
@@ -345,11 +249,7 @@ async def sherlock(
         if isinstance(error_type, str):
             error_type: list[str] = [error_type]
 
-        # Retrieve future and ensure it has finished
-        future = net_info["request_future"]
-        r, error_text, exception_text = get_response(
-            request_future=future, error_type=error_type, social_network=social_network
-        )
+        r, error_text, exception_text = await await_response(completed_task=completed_task)
 
         # Get response time for response of our request.
         try:
@@ -359,11 +259,11 @@ async def sherlock(
 
         # Attempt to get request information
         try:
-            http_status = r.status_code
+            http_status = r.status
         except Exception:
             http_status = "?"
         try:
-            response_text = r.text.encode(r.encoding or "UTF-8")
+            response_text = r.text.encode("UTF-8")
         except Exception:
             response_text = ""
 
@@ -427,9 +327,9 @@ async def sherlock(
                     if isinstance(error_codes, int):
                         error_codes = [error_codes]
 
-                    if error_codes is not None and r.status_code in error_codes:
+                    if error_codes is not None and r.status in error_codes:
                         query_status = QueryStatus.AVAILABLE
-                    elif r.status_code >= 300 or r.status_code < 200:
+                    elif r.status >= 300 or r.status < 200:
                         query_status = QueryStatus.AVAILABLE
 
                 if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
@@ -438,7 +338,7 @@ async def sherlock(
                     # match the request.  Instead, we will ensure that the response
                     # code indicates that the request was successful (i.e. no 404, or
                     # forward to some odd redirect).
-                    if 200 <= r.status_code < 300:
+                    if 200 <= r.status < 300:
                         query_status = QueryStatus.CLAIMED
                     else:
                         query_status = QueryStatus.AVAILABLE
@@ -455,7 +355,7 @@ async def sherlock(
                 pass
             print("Results...")
             try:
-                print(f"RESPONSE CODE : {r.status_code}")
+                print(f"RESPONSE CODE : {r.status}")
             except Exception:
                 pass
             try:
@@ -805,16 +705,16 @@ async def main():
             all_usernames.append(username)
 
     # keep headless false for debugging 
-    async with PlaywrightEngine(headless=False) as engine:
+    async with PlaywrightEngine(headless=True) as engine:
         for username in all_usernames:
             results = await sherlock(
                 username,
+                engine,
                 site_data,
                 query_notify,
                 dump_response=args.dump_response,
                 proxy=args.proxy,
                 timeout=args.timeout,
-                engine=engine
                 )
 
     if args.output:

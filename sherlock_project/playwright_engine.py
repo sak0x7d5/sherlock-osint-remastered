@@ -1,24 +1,28 @@
-from playwright.async_api import Playwright, Page, Browser, BrowserContext, async_playwright
+from playwright.async_api import Playwright, Page, Browser, BrowserContext, async_playwright, Route
 from typing import Any, Protocol
 from playwright_stealth.stealth import Stealth
 import asyncio
+from time import perf_counter
+from dataclasses import dataclass
+from playwright.async_api import Response, APIResponse
 
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
 
 class PlaywrightEngine:
-    def __init__(self, concurrency: int = 20, headless: bool = True, stealth: bool = True):
+    def __init__(self, concurrency: int = 20, headless: bool = True, stealth: bool = True, proxy: dict = None):
         self.sem = asyncio.Semaphore(concurrency)
         self.playwright = None
         self.browser = None
         self.context = None
         self.headless = headless
         self.stealth = stealth
+        self.proxy = proxy
 
     async def __aenter__(self):
         self.playwright: Playwright = await async_playwright().start()
         self.browser: Browser = await self.playwright.chromium.launch(headless=self.headless)
-        self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True)
+        self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
         print("Playwright Started!")
 
         # intialize mappings when context is not None
@@ -47,34 +51,86 @@ class PlaywrightEngine:
         if method not in self._fn_mapping:
             raise RuntimeError(f"Unsupported request_method: {method}")
         return self._fn_mapping[method]
+    
+    @staticmethod
+    async def handle_route(route: Route):
+        try:
+            if not route.request.is_navigation_request():
+                return await route.continue_()
+            
+            # Fetch without following redirect
+            response = await route.fetch(max_redirects=0)
+            headers = response.headers
 
-    async def fetch_site(self, url: str, request_fn: None | RequestMethod = None, timeout: float = 60000,**kwargs: Any):
+            # Check for Location header instead of status
+            location = headers.pop("location", None) or headers.pop("Location", None) 
+            
+            if location:
+                await route.fulfill(
+                    status=response.status,
+                    headers=headers,
+                    body=""
+                )
+                return
+            
+            # Not a redirect -> continue normally
+            await route.fulfill(response=response)
+        except Exception as e:
+            pass
+            try:
+                await route.continue_()
+            except Exception:
+                pass
+
+    async def _fetch_with_page(self, url, headers, timeout, max_redirects, wait_until='networkidle') -> Response | None:
+        page: Page = await self.context.new_page()
+        if headers:
+            await page.set_extra_http_headers(headers)
+        if max_redirects == 0:
+            wait_until = 'commit'
+            await page.route("**/*", self.handle_route)
+        try:
+            start = perf_counter()
+            resp = await page.goto(url, wait_until=wait_until, timeout=timeout)
+            if resp is not None:
+                resp.elapsed = perf_counter() - start
+                if max_redirects == 0:
+                    resp.text = ""  # don't fetch body, we only need status code
+                else:
+                    try:
+                        resp.text = await resp.text()
+                    except Exception as e:
+                        resp.text = ""
+                        pass
+        except Exception as e:
+            pass
+        finally:
+            await page.close()
+        return resp
+    
+    async def _fetch_with_api(self, request_fn, url, headers, timeout, max_redirects, request_payload) -> APIResponse | None:
+        start = perf_counter()
+        resp: APIResponse | None = await request_fn(url, timeout=timeout, headers=headers, max_redirects=max_redirects, data=request_payload)
+
+        if resp is not None:
+            resp.elapsed = (perf_counter() - start)
+            resp.text = await resp.text()
+        return resp
+    
+    async def fetch_site(self, url: str, request_fn: None | RequestMethod = None, **kwargs: Any):
         async with self.sem:
-            resp = None
-            # request_function = None -> use page.goto
-            if not request_fn:
-                page: Page = await self.context.new_page()
-                try:
-                    resp = await page.goto(url, wait_until='networkidle', timeout=timeout,**kwargs)
-                except Exception as e:
-                    print(f'Error occurred: {e}')
-                finally:
-                    await page.close()
-            else:
-                resp = await request_fn(url, timeout=timeout, **kwargs)
-            return resp
-        
-if __name__ == '__main__':
-    async def main():
-        # urls = [(i, 'https://example.com/') for i in range(50)]
-        urls = ['https://example.com/'] * 5
-        async with PlaywrightEngine(headless=True) as engine:
-            tasks = {asyncio.create_task(engine.fetch_site(url)): i for i, url in enumerate(urls)}
-            # use async for, and map the site_url with the task completion
-            # DONE! with python 3.13
-            async for task in asyncio.as_completed(tasks):
-                id = tasks[task]
-                result = await task
-                print(id, result)
-                
-    asyncio.run(main())
+            # TODO:make sherlock handle this
+            # seperate page and requests kwargs there
+            headers: dict = kwargs.get('headers')
+            timeout: float = kwargs.get('timeout', 60) * 1000
+            request_payload = kwargs.get('request_payload')
+            max_redirects: int = kwargs.get('max_redirects', 20)
+
+            # default to page.goto if not specified
+            try:
+                if request_fn is None:
+                    return await self._fetch_with_page(url, headers, timeout, max_redirects)
+                return await self._fetch_with_api(request_fn, url, headers, timeout, max_redirects, request_payload)
+            except Exception as e:
+                return None
+            
