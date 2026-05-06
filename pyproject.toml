@@ -43,7 +43,7 @@ repository = "https://github.com/sherlock-project/sherlock"
 "Bug Tracker" = "https://github.com/sherlock-project/sherlock/issues"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = ">=3.13,<4.0"
 certifi = ">=2019.6.16"
 colorama = "^0.4.1"
 PySocks = "^1.7.0"
