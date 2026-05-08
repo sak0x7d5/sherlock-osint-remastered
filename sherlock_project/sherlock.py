@@ -176,6 +176,7 @@ async def sherlock(
             results_site["http_status"] = ""
             results_site["response_text"] = ""
             query_notify.update(results_site["status"])
+            results_total[social_network] = results_site
         else:
             # URL of user on site (if it exists)
             results_site["url_user"] = url
