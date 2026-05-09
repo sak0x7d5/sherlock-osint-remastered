@@ -187,7 +187,7 @@ async def sherlock(
 
 
             if request_method is not None:
-                request = await engine.get_request_fn(request_method)
+                request = engine.get_request_fn(request_method)
 
             if request_payload is not None:
                 request_payload = interpolate_string(request_payload, username)
@@ -213,7 +213,7 @@ async def sherlock(
                     # In most cases when we are detecting by status code,
                     # it is not necessary to get the entire body:  we can
                     # detect fine with just the HEAD response.
-                    request = await engine.get_request_fn('HEAD')
+                    request = engine.get_request_fn('HEAD')
 
             if net_info["errorType"] == "response_url":
                 # Site forwards request to a different URL if username not

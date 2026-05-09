@@ -47,7 +47,7 @@ class PlaywrightEngine:
 
         print("Playwright Stopped!")
 
-    async def get_request_fn(self, method: str):
+    def get_request_fn(self, method: str):
         if method not in self._fn_mapping:
             raise RuntimeError(f"Unsupported request_method: {method}")
         return self._fn_mapping[method]
