@@ -103,7 +103,7 @@ class TestLiveTargets:
 
 @pytest.mark.asyncio()
 async def test_username_illegal_regex(sites_info, playwright_engine):
-    site: str = 'BitBucket'
+    site: str = 'Bitwarden Forum'
     invalid_handle: str = '*#$Y&*JRE'
     pattern = re.compile(sites_info[site]['regexCheck'])
     # Ensure that the username actually fails regex before testing sherlock
