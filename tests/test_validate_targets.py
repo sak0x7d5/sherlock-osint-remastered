@@ -5,7 +5,7 @@ import rstr
 from sherlock_project.sherlock import sherlock
 from sherlock_project.notify import QueryNotify
 from sherlock_project.result import QueryResult, QueryStatus
-
+from sherlock_project.playwright_engine import PlaywrightEngine
 
 FALSE_POSITIVE_ATTEMPTS: int = 2    # Since the usernames are randomly generated, it's POSSIBLE that a real username can be hit
 FALSE_POSITIVE_QUANTIFIER_UPPER_BOUND: int = 15  # If a pattern uses quantifiers such as `+` `*` or `{n,}`, limit the upper bound (0 to disable)
@@ -26,7 +26,7 @@ def set_pattern_upper_bound(pattern: str, upper_bound: int = FALSE_POSITIVE_QUAN
 
     return pattern
 
-def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, pattern: str) -> QueryStatus:
+async def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, pattern: str, playwright_engine: PlaywrightEngine) -> QueryStatus:
     """Check if a site is likely to produce false positives."""
     status: QueryStatus = QueryStatus.UNKNOWN
 
@@ -34,11 +34,12 @@ def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, patte
         query_notify: QueryNotify = QueryNotify()
         username: str = rstr.xeger(pattern)
 
-        result: QueryResult | str = sherlock(
+        result: QueryResult | str = (await sherlock(
             username=username,
             site_data=sites_info,
             query_notify=query_notify,
-        )[site]['status']
+            engine=playwright_engine
+        ))[site]['status']
 
         if not hasattr(result, 'status'):
             raise TypeError(f"Result for site {site} does not have 'status' attribute. Actual result: {result}")
@@ -52,16 +53,17 @@ def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, patte
     return status
 
 
-def false_negative_check(sites_info: dict[str, dict[str, str]], site: str) -> QueryStatus:
+async def false_negative_check(sites_info: dict[str, dict[str, str]], site: str, playwright_engine: PlaywrightEngine) -> QueryStatus:
     """Check if a site is likely to produce false negatives."""
     status: QueryStatus = QueryStatus.UNKNOWN
     query_notify: QueryNotify = QueryNotify()
 
-    result: QueryResult | str = sherlock(
+    result: QueryResult | str = (await sherlock(
         username=sites_info[site]['username_claimed'],
         site_data=sites_info,
         query_notify=query_notify,
-    )[site]['status']
+        engine=playwright_engine
+    ))[site]['status']
 
     if not hasattr(result, 'status'):
             raise TypeError(f"Result for site {site} does not have 'status' attribute. Actual result: {result}")
@@ -76,7 +78,8 @@ def false_negative_check(sites_info: dict[str, dict[str, str]], site: str) -> Qu
 class Test_All_Targets:
 
     @pytest.mark.validate_targets_fp
-    def test_false_pos(self, chunked_sites: dict[str, dict[str, str]]):
+    @pytest.mark.asyncio
+    async def test_false_pos(self, chunked_sites: dict[str, dict[str, str]], playwright_engine):
         """Iterate through all sites in the manifest to discover possible false-positive inducting targets."""
         pattern: str
         for site in chunked_sites:
@@ -88,13 +91,14 @@ class Test_All_Targets:
             if FALSE_POSITIVE_QUANTIFIER_UPPER_BOUND > 0:
                 pattern = set_pattern_upper_bound(pattern)
 
-            result: QueryStatus = false_positive_check(chunked_sites, site, pattern)
+            result: QueryStatus = await false_positive_check(chunked_sites, site, pattern, playwright_engine)
             assert result is QueryStatus.AVAILABLE, f"{site} produced false positive with pattern {pattern}, result was {result}"
 
     @pytest.mark.validate_targets_fn
-    def test_false_neg(self, chunked_sites: dict[str, dict[str, str]]):
+    @pytest.mark.asyncio
+    async def test_false_neg(self, chunked_sites: dict[str, dict[str, str]], playwright_engine):
         """Iterate through all sites in the manifest to discover possible false-negative inducting targets."""
         for site in chunked_sites:
-            result: QueryStatus = false_negative_check(chunked_sites, site)
+            result: QueryStatus = await false_negative_check(chunked_sites, site, playwright_engine)
             assert result is QueryStatus.CLAIMED, f"{site} produced false negative, result was {result}"
 
