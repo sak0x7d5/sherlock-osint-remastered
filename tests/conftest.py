@@ -11,7 +11,7 @@ def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, s
     sites_iterable: dict[str, dict[str, str]] = {site.name: site.information for site in sites_obj}
     return sites_iterable
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope='session', loop_scope='session')
 async def playwright_engine():
     async with PlaywrightEngine() as engine:
         yield engine
