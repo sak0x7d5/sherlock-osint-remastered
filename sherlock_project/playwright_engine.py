@@ -83,6 +83,7 @@ class PlaywrightEngine:
                 pass
 
     async def _fetch_with_page(self, url, headers, timeout, max_redirects, wait_until='networkidle') -> Response | None:
+        resp = None
         page: Page = await self.context.new_page()
         if headers:
             await page.set_extra_http_headers(headers)
@@ -101,9 +102,6 @@ class PlaywrightEngine:
                         resp.text = await resp.text()
                     except Exception as e:
                         resp.text = ""
-                        pass
-        except Exception as e:
-            pass
         finally:
             await page.close()
         return resp
@@ -127,10 +125,7 @@ class PlaywrightEngine:
             max_redirects: int = kwargs.get('max_redirects', 20)
 
             # default to page.goto if not specified
-            try:
-                if request_fn is None:
-                    return await self._fetch_with_page(url, headers, timeout, max_redirects)
-                return await self._fetch_with_api(request_fn, url, headers, timeout, max_redirects, request_payload)
-            except Exception as e:
-                return None
-            
+            if request_fn is None:
+                return await self._fetch_with_page(url, headers, timeout, max_redirects)
+            return await self._fetch_with_api(request_fn, url, headers, timeout, max_redirects, request_payload)
+           
