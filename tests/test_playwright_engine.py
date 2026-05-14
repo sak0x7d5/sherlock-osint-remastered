@@ -14,6 +14,7 @@ def test_get_request_fn_returns_callable(valid_method: str, playwright_engine: P
     assert callable(method_fn)
 
 @pytest.mark.asyncio()
+@pytest.mark.online
 @pytest.mark.parametrize(
     "status,url", [
         (302, r'https://httpbin.org/redirect-to?url=https%3A%2F%2Fhttpbin.org%2F&status_code=302'),
