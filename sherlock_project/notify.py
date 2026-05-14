@@ -249,7 +249,7 @@ class QueryNotifyPrint(QueryNotify):
             )
 
 
-    def finish(self, message="The processing has been finished."):
+    def finish(self, elapsed_time: float = 0, message="The processing has been finished."):
         """Notify Finish.
         Will print the last line to the standard output.
         Keyword Arguments:
@@ -262,7 +262,9 @@ class QueryNotifyPrint(QueryNotify):
 
         print(Style.BRIGHT + Fore.GREEN + "[" +
               Fore.YELLOW + "*" +
-              Fore.GREEN + "] Search completed with" +
+              Fore.GREEN + "]" + 
+              Fore.WHITE + f" [{elapsed_time:.2f}s]" + 
+              Fore.GREEN + " Search completed with" +
               Fore.WHITE + f" {NumberOfResults} " +
               Fore.GREEN + "results" + Style.RESET_ALL
               )

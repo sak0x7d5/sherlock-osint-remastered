@@ -23,7 +23,7 @@ import os
 import re
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from json import loads as json_loads
-from time import monotonic
+from time import perf_counter
 from typing import Optional
 import asyncio
 
@@ -706,7 +706,8 @@ async def main():
             all_usernames.append(username)
 
     # keep headless false for debugging 
-    async with PlaywrightEngine(headless=True) as engine:
+    start_time = perf_counter()
+    async with PlaywrightEngine(headless=False) as engine:
         for username in all_usernames:
             results = await sherlock(
                 username,
@@ -717,7 +718,7 @@ async def main():
                 proxy=args.proxy,
                 timeout=args.timeout,
                 )
-
+    elapsed_time = (perf_counter() - start_time)
     if args.output:
         result_file = args.output
     elif args.folderoutput:
@@ -823,7 +824,7 @@ async def main():
         DataFrame.to_excel(f"{username}.xlsx", sheet_name="sheet1", index=False)
 
     print()
-    query_notify.finish()
+    query_notify.finish(elapsed_time=elapsed_time)
 
 
 if __name__ == "__main__":
