@@ -21,23 +21,21 @@ class PlaywrightEngine:
 
     async def __aenter__(self):
         self.browser: Browser = await launch_async(headless=self.headless, humanize=True)
-        self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
+        self.api = (await self.browser.new_context()).request
         print("Playwright Started!")
 
         # intialize mappings when context is not None
         self._fn_mapping = {
-        'GET': self.context.request.get,
-        'HEAD': self.context.request.head,
-        'POST': self.context.request.post,
-        'PUT': self.context.request.put,
+        'GET': self.api.get,
+        'HEAD': self.api.head,
+        'POST': self.api.post,
+        'PUT': self.api.put,
         }
 
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.context.close()
         await self.browser.close()
-
         print("Playwright Stopped!")
 
     def get_request_fn(self, method: str):
@@ -76,7 +74,8 @@ class PlaywrightEngine:
                 pass
 
     async def _fetch_with_page(self, url, headers, timeout, max_redirects, wait_until : Literal['commit', 'domcontentloaded', 'load', 'networkidle'] | None = 'networkidle'):
-        page: Page = await self.context.new_page()
+        context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
+        page: Page = await context.new_page()
         try:
             if headers:
                 await page.set_extra_http_headers(headers)
@@ -106,6 +105,7 @@ class PlaywrightEngine:
 
         finally:
             await page.close()
+            await context.close()
         
         return response
     
