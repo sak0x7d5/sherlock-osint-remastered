@@ -1,6 +1,5 @@
-from playwright.async_api import Playwright, Page, Browser, BrowserContext, async_playwright, Route
+from playwright.async_api import Page, Browser, BrowserContext, Route
 from typing import Any, Protocol, Literal
-from playwright_stealth.stealth import Stealth
 import asyncio
 from time import perf_counter
 from dataclasses import dataclass
@@ -32,11 +31,6 @@ class PlaywrightEngine:
         'POST': self.context.request.post,
         'PUT': self.context.request.put,
         }
-        
-        # Apply stealth
-        if self.stealth:
-            await Stealth().apply_stealth_async(self.context)
-            print("Stealth Applied!")
 
         return self
 
