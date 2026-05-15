@@ -5,6 +5,7 @@ import asyncio
 from time import perf_counter
 from dataclasses import dataclass
 from playwright.async_api import Response, APIResponse
+from cloakbrowser import launch_async
 
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
@@ -20,8 +21,7 @@ class PlaywrightEngine:
         self.proxy = proxy
 
     async def __aenter__(self):
-        self.playwright: Playwright = await async_playwright().start()
-        self.browser: Browser = await self.playwright.chromium.launch(headless=self.headless)
+        self.browser: Browser = await launch_async(headless=self.headless, humanize=True)
         self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
         print("Playwright Started!")
 
@@ -43,7 +43,6 @@ class PlaywrightEngine:
     async def __aexit__(self, exc_type, exc, tb):
         await self.context.close()
         await self.browser.close()
-        await self.playwright.stop()
 
         print("Playwright Stopped!")
 
