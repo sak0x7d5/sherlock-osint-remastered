@@ -151,12 +151,7 @@ async def sherlock(
 
         # Record URL of main site
 
-        # A user agent is needed because some sites don't return the correct
-        # information since they think that we are bots (Which we actually are...)
-        # TODO: Fix headers, stealth already applies it, only apply extra headers if needed.
-        headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0",
-        }
+        headers = {}
 
         if "headers" in net_info:
             # Override/append any extra headers required by a given site.
