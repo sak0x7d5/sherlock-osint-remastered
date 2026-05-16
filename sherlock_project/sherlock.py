@@ -700,9 +700,8 @@ async def main():
         else:
             all_usernames.append(username)
 
-    # keep headless false for debugging 
     start_time = perf_counter()
-    async with PlaywrightEngine(headless=False) as engine:
+    async with PlaywrightEngine(headless=True) as engine:
         for username in all_usernames:
             results = await sherlock(
                 username,
