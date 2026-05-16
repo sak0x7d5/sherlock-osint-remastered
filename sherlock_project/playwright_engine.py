@@ -115,7 +115,10 @@ class PlaywrightEngine:
 
         if resp is not None:
             resp.elapsed = (perf_counter() - start)
-            resp.text = await resp.text()
+            try:
+                resp.text = await resp.text()
+            except Exception:
+                resp.text = ''
         return resp
     
     async def fetch_site(self, url: str, request_fn: None | RequestMethod = None, **kwargs: Any):
