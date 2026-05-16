@@ -3,7 +3,7 @@ from typing import Any, Protocol, Literal
 import asyncio
 from time import perf_counter
 from dataclasses import dataclass
-from playwright.async_api import Response, APIResponse
+from playwright.async_api import APIResponse, APIRequestContext
 from cloakbrowser import launch_async
 
 class RequestMethod(Protocol):
@@ -21,7 +21,8 @@ class PlaywrightEngine:
 
     async def __aenter__(self):
         self.browser: Browser = await launch_async(headless=self.headless, humanize=True)
-        self.api = (await self.browser.new_context()).request
+        self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
+        self.api: APIRequestContext = self.context.request
         print("Playwright Started!")
 
         # intialize mappings when context is not None
@@ -35,6 +36,7 @@ class PlaywrightEngine:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        await self.context.close()
         await self.browser.close()
         print("Playwright Stopped!")
 
@@ -73,9 +75,8 @@ class PlaywrightEngine:
             except Exception:
                 pass
 
-    async def _fetch_with_page(self, url, headers, timeout, max_redirects, wait_until : Literal['commit', 'domcontentloaded', 'load', 'networkidle'] | None = 'networkidle'):
-        context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
-        page: Page = await context.new_page()
+    async def _fetch_with_page(self, url, headers, timeout, max_redirects, wait_until : Literal['commit', 'domcontentloaded', 'load', 'networkidle'] | None = 'load'):
+        page: Page = await self.context.new_page()
         try:
             if headers:
                 await page.set_extra_http_headers(headers)
@@ -105,7 +106,6 @@ class PlaywrightEngine:
 
         finally:
             await page.close()
-            await context.close()
         
         return response
     
