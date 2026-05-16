@@ -130,7 +130,8 @@
     "username_claimed": "jadi"
   },
   "Archive of Our Own": {
-    "errorType": "status_code",
+    "errorType": "message",
+    "errorMsg": "The page you were looking for doesn't exist.",
     "regexCheck": "^[^.]*?$",
     "url": "https://archiveofourown.org/users/{}",
     "urlMain": "https://archiveofourown.org/",
