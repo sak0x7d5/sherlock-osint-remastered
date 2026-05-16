@@ -10,7 +10,7 @@ class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
 
 class PlaywrightEngine:
-    def __init__(self, concurrency: int = 20, headless: bool = True, stealth: bool = True, proxy: dict = None):
+    def __init__(self, concurrency: int = 30, headless: bool = True, stealth: bool = True, proxy: dict = None):
         self.sem = asyncio.Semaphore(concurrency)
         self.playwright = None
         self.browser = None
