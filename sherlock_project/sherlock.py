@@ -28,7 +28,7 @@ from typing import Optional
 import asyncio
 
 import requests
-from playwright.async_api import APIResponse, Response, Error, TimeoutError
+from playwright.async_api import APIResponse, Response, TimeoutError, Error as PlaywrightError
 from sherlock_project.playwright_engine import PlaywrightEngine
 
 from sherlock_project.__init__ import (
@@ -47,31 +47,39 @@ from colorama import init
 from argparse import ArgumentTypeError
 
 
-async def await_response(completed_task: asyncio.Task) -> dict[APIResponse | Response, str, str]:
-    # Default for Response object if some failure occurs.
+async def await_response(completed_task: asyncio.Task) -> tuple[APIResponse | Response | None, str, str | None]:
     response = None
-
     error_context = "General Unknown Error"
     exception_text = None
-    try:
-        # get the result by awaiting it or task.result()
-        response: APIResponse | Response = await completed_task 
 
-        if response.status:
-            # Status code exists in response object
-            error_context = None
-    except TimeoutError as err:
-        error_context = "Timeout Error"
+    try:
+        response = await completed_task
+
+        if hasattr(response, "status") and response.status is not None:
+            error_context = None  # Success
+
+    except PlaywrightError as err:
+        error_msg = str(err).lower()
         exception_text = str(err)
-    except Error as err:
-        error_context = "Playwright Error"
-        exception_text = str(err)
-    except Exception as err:
+
+        if "timeout" in error_msg:
+            error_context = "Timeout Error"
+        elif any(x in error_msg for x in ["econnreset", "connection reset"]):
+            error_context = "Connection Reset Error"
+        elif any(x in error_msg for x in ["enotfound", "getaddrinfo", "name or service not known"]):
+            error_context = "DNS Error"
+        elif any(x in error_msg for x in ["socket hang up", "disconnected", "tls", "secure connection"]):
+            error_context = "Network / TLS Error"
+        elif "parse error" in error_msg:
+            error_context = "Parse Error (WAF?)"
+        else:
+            error_context = "Playwright Error"
+
+    except Exception as err:          # Final safety net
         error_context = "Unknown Error"
-        exception_text = str(err)
+        exception_text = f"{type(err).__name__}: {err}"
 
     return response, error_context, exception_text
-
 
 def interpolate_string(input_object, username):
     if isinstance(input_object, str):
