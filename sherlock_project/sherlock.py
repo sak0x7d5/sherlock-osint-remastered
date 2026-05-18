@@ -207,7 +207,7 @@ async def sherlock(
                 'url': url_probe,
                 'headers': headers,
                 'max_redirects': 20,
-                'timeout': timeout,
+                'timeout': timeout * 1000,
                 'request_payload': request_payload,
             }
 
