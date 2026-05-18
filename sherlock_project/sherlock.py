@@ -203,36 +203,37 @@ async def sherlock(
                 # from where the user profile normally can be found.
                 url_probe = interpolate_string(url_probe, username)
 
-            kwargs = {
+            # shared params
+            base_kwargs = {
                 'url': url_probe,
                 'headers': headers,
-                'max_redirects': 20,
+                'max_redirects': 0 if net_info["errorType"] == "response_url" else 20,
                 'timeout': timeout * 1000,
-                'request_payload': request_payload,
             }
+
+            if proxy is not None:
+                base_kwargs['proxy'] = {"http": proxy, "https": proxy}
 
             if request is None:
                 if net_info["errorType"] == "status_code":
-                    # In most cases when we are detecting by status code,
-                    # it is not necessary to get the entire body:  we can
-                    # detect fine with just the HEAD response.
                     request = engine.get_request_fn('HEAD')
-
-            if net_info["errorType"] == "response_url":
-                # Site forwards request to a different URL if username not
-                # found.  Disallow the redirect so we can capture the
-                # http status from the original URL request.
-                kwargs['max_redirects'] = 0
-            
-            if proxy is not None:
-                kwargs['proxy'] = {"http": proxy, "https": proxy}
-
-            task = asyncio.create_task(engine.fetch_site(request_fn=request, **kwargs))
-
+                    task = asyncio.create_task(engine.fetch_with_api(
+                        request_fn=request,
+                        request_payload=request_payload,
+                        **base_kwargs
+                    ))
+                else:
+                    task = asyncio.create_task(engine.fetch_with_page(**base_kwargs))
+            else:
+                task = asyncio.create_task(engine.fetch_with_api(
+                    request_fn=request,
+                    request_payload=request_payload,
+                    **base_kwargs
+                ))
+                
             # store in tasks as key to retrieve later using as_completed
             tasks[task] = {'social_network': social_network, 'net_info': net_info, 'results_site': results_site}
-            
-            
+           
     # receive tasks as soon as they are completed
     # use tasks dict retrieve social_network, net_info, results_site
     async for completed_task in asyncio.as_completed(tasks):
