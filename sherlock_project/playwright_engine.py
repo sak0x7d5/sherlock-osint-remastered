@@ -92,6 +92,8 @@ class PlaywrightEngine:
                 start = perf_counter()
 
                 if max_redirects == 0:
+                    # Use 'commit' for pure redirect checking (max_redirects=0).
+                    # It returns immediately after headers are received, before page content loads.
                     wait_until = 'commit'
                     await page.route("**/*", self.handle_route)
 
