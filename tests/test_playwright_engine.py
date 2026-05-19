@@ -1,7 +1,5 @@
 import pytest
-import pytest_asyncio
 from sherlock_project.playwright_engine import PlaywrightEngine
-import asyncio
 
 @pytest.mark.parametrize("invalid_method", ['', 'unkonwn_method'])
 def test_get_request_fn_raise_error(invalid_method: str, playwright_engine: PlaywrightEngine):
