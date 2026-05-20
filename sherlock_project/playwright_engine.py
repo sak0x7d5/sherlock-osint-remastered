@@ -44,42 +44,11 @@ class PlaywrightEngine:
             raise RuntimeError(f"Unsupported request_method: {method}")
         return self._fn_mapping[method]
     
-    @staticmethod
-    async def handle_route(route: Route):
-        try:
-            if not route.request.is_navigation_request():
-                return await route.continue_()
-            
-            # Fetch without following redirect
-            response = await route.fetch(max_redirects=0)
-            headers = response.headers
-
-            # Check for Location header instead of status
-            location = headers.pop("location", None) or headers.pop("Location", None) 
-            
-            if location:
-                await route.fulfill(
-                    status=response.status,
-                    headers=headers,
-                    body=""
-                )
-                return
-            
-            # Not a redirect -> continue normally
-            await route.fulfill(response=response)
-        except Exception as e:
-            pass
-            try:
-                await route.continue_()
-            except Exception:
-                pass
-
     async def fetch_with_page(
             self, 
             url: str, 
             headers: dict | None = None,
             timeout: float = 60000,
-            max_redirects: int = 20, 
             wait_until: Literal['commit', 'domcontentloaded', 'load', 'networkidle'] | None = 'load'
             ) -> Response | None: 
         
@@ -90,12 +59,6 @@ class PlaywrightEngine:
                     await page.set_extra_http_headers(headers)
 
                 start = perf_counter()
-
-                if max_redirects == 0:
-                    # Use 'commit' for pure redirect checking (max_redirects=0).
-                    # It returns immediately after headers are received, before page content loads.
-                    wait_until = 'commit'
-                    await page.route("**/*", self.handle_route)
 
                 response = await page.goto(
                     url, 
@@ -124,14 +87,13 @@ class PlaywrightEngine:
             request_fn, 
             url: str, 
             headers: dict | None = None, 
-            timeout: float = 60000, 
-            max_redirects: int = 20, 
+            timeout: float = 60000,
             request_payload: Any | bytes | str | None  = None
             ) -> APIResponse | None:
         
         async with self.sem:
             start = perf_counter()
-            resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, max_redirects=max_redirects, data=request_payload)
+            resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, data=request_payload)
             if resp is not None:
                 resp.elapsed = (perf_counter() - start)
                 try:

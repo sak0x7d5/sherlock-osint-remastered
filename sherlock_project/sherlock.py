@@ -207,7 +207,6 @@ async def sherlock(
             base_kwargs = {
                 'url': url_probe,
                 'headers': headers,
-                'max_redirects': 0 if net_info["errorType"] == "response_url" else 20,
                 'timeout': timeout * 1000,
             }
 
@@ -338,15 +337,10 @@ async def sherlock(
                         query_status = QueryStatus.AVAILABLE
 
                 if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
-                    # For this detection method, we have turned off the redirect.
-                    # So, there is no need to check the response URL: it will always
-                    # match the request.  Instead, we will ensure that the response
-                    # code indicates that the request was successful (i.e. no 404, or
-                    # forward to some odd redirect).
-                    if 200 <= r.status < 300:
-                        query_status = QueryStatus.CLAIMED
-                    else:
+                    if r.url.rstrip('/') == net_info['errorUrl'].rstrip('/'):
                         query_status = QueryStatus.AVAILABLE
+                    else:
+                        query_status = QueryStatus.CLAIMED
 
         if dump_response:
             print("+++++++++++++++++++++")
