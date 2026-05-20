@@ -398,8 +398,7 @@
     "username_claimed": "always_fixing"
   },
   "Carbonmade": {
-    "errorType": "response_url",
-    "errorUrl": "https://carbonmade.com/fourohfour?domain={}.carbonmade.com",
+    "errorType": "status_code",
     "regexCheck": "^[\\w@-]+?$",
     "url": "https://{}.carbonmade.com",
     "urlMain": "https://carbonmade.com/",
