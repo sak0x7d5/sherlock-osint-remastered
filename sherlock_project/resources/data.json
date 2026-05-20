@@ -215,7 +215,7 @@
   },
   "BOOTH": {
     "errorType": "response_url",
-    "errorUrl": "https://booth.pm/",
+    "errorUrl": "https://booth.pm/en",
     "regexCheck": "^[\\w@-]+?$",
     "url": "https://{}.booth.pm/",
     "urlMain": "https://booth.pm/",
