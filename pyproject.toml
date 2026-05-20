@@ -48,13 +48,12 @@ certifi = ">=2019.6.16"
 colorama = "^0.4.1"
 PySocks = "^1.7.0"
 requests = "^2.22.0"
-requests-futures = "^1.0.0"
 stem = "^1.8.0"
 pandas = "^2.2.1"
 openpyxl = "^3.0.10"
 tomli = "^2.2.1"
 playwright = "^1.59.0"
-playwright-stealth = "^2.0.3"
+cloakbrowser = {extras = ["geoip"], version = "^0.3.28"}
 
 [tool.poetry.group.dev.dependencies]
 jsonschema = "^4.0.0"
