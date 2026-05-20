@@ -2518,12 +2518,11 @@
     "username_claimed": "blue"
   },
   "TryHackMe": {
-    "errorMsg": "{\"success\":false}",
+    "errorMsg": "Page not found",
     "errorType": "message",
     "regexCheck": "^[a-zA-Z0-9.]{1,16}$",
     "url": "https://tryhackme.com/p/{}",
     "urlMain": "https://tryhackme.com/",
-    "urlProbe": "https://tryhackme.com/api/user/exist/{}",
     "username_claimed": "ashu"
   },
   "Tuna": {
