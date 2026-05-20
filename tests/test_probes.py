@@ -101,6 +101,28 @@ class TestLiveTargets:
                 break
         assert status is QueryStatus.AVAILABLE, f"Could not validate available username after {num_attempts} attempts with randomly generated usernames {attempted_usernames}."
 
+    @pytest.mark.parametrize("username,expected", [
+    # redirects to errorUrl -> username not found -> AVAILABLE
+    ("https://httpbin.org/", QueryStatus.AVAILABLE),
+    ("https://httpbin.org", QueryStatus.AVAILABLE),
+    # doesn't redirect to errorUrl -> username found -> CLAIMED  
+    ("https://example.com/", QueryStatus.CLAIMED),])
+    async def test_error_type_response_url(self, username, expected, playwright_engine):
+        site_data = {
+            'Test': {
+                "url": "https://httpbin.org/redirect-to?url={}",
+                "errorType": "response_url",
+                "errorUrl": "https://httpbin.org/",
+                "urlMain": "https://httpbin.org",
+            }
+        }
+        assert await simple_query(
+            sites_info=site_data,
+            site='Test',
+            username=username,
+            playwright_engine=playwright_engine
+        ) == expected
+        
 @pytest.mark.asyncio()
 async def test_username_illegal_regex(sites_info, playwright_engine):
     site: str = 'Bitwarden Forum'
