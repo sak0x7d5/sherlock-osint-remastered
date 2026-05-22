@@ -3,7 +3,7 @@ from typing import Any, Protocol, Literal
 import asyncio
 from time import perf_counter
 from playwright.async_api import APIResponse, APIRequestContext, Response
-from cloakbrowser import launch_async
+from cloakbrowser import launch_async, ensure_binary
 
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
@@ -18,6 +18,7 @@ class PlaywrightEngine:
         self.proxy = proxy
 
     async def __aenter__(self):
+        ensure_binary()
         self.browser: Browser = await launch_async(headless=self.headless, humanize=True)
         self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
         self.api: APIRequestContext = self.context.request
