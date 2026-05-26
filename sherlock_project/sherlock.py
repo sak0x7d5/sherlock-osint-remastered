@@ -235,162 +235,168 @@ async def sherlock(
            
     # receive tasks as soon as they are completed
     # use tasks dict retrieve social_network, net_info, results_site
-    async for completed_task in asyncio.as_completed(tasks):
+    try:
+        async for completed_task in asyncio.as_completed(tasks):
+            social_network = tasks[completed_task]['social_network']
+            results_site = tasks[completed_task]['results_site']
+            net_info = tasks[completed_task]['net_info']
+            
+            # Retrieve other site information again
+            url = results_site.get("url_user")
+            status = results_site.get("status")
+            if status is not None:
+                # We have already determined the user doesn't exist here
+                continue
 
-        social_network = tasks[completed_task]['social_network']
-        results_site = tasks[completed_task]['results_site']
-        net_info = tasks[completed_task]['net_info']
-        
-        # Retrieve other site information again
-        url = results_site.get("url_user")
-        status = results_site.get("status")
-        if status is not None:
-            # We have already determined the user doesn't exist here
-            continue
+            # Get the expected error type
+            error_type = net_info["errorType"]
+            if isinstance(error_type, str):
+                error_type: list[str] = [error_type]
 
-        # Get the expected error type
-        error_type = net_info["errorType"]
-        if isinstance(error_type, str):
-            error_type: list[str] = [error_type]
+            r, error_text, exception_text = await await_response(completed_task=completed_task)
 
-        r, error_text, exception_text = await await_response(completed_task=completed_task)
+            # Get response time for response of our request.
+            try:
+                response_time = r.elapsed
+            except AttributeError:
+                response_time = None
 
-        # Get response time for response of our request.
-        try:
-            response_time = r.elapsed
-        except AttributeError:
-            response_time = None
+            # Attempt to get request information
+            try:
+                http_status = r.status
+            except Exception:
+                http_status = "?"
+            try:
+                response_text = r.text.encode("UTF-8")
+            except Exception:
+                response_text = ""
 
-        # Attempt to get request information
-        try:
-            http_status = r.status
-        except Exception:
-            http_status = "?"
-        try:
-            response_text = r.text.encode("UTF-8")
-        except Exception:
-            response_text = ""
+            query_status = QueryStatus.UNKNOWN
+            error_context = None
 
-        query_status = QueryStatus.UNKNOWN
-        error_context = None
+            # As WAFs advance and evolve, they will occasionally block Sherlock and
+            # lead to false positives and negatives. Fingerprints should be added
+            # here to filter results that fail to bypass WAFs. Fingerprints should
+            # be highly targetted. Comment at the end of each fingerprint to
+            # indicate target and date fingerprinted.
+            WAFHitMsgs = [
+                r'.loading-spinner{visibility:hidden}body.no-js .challenge-running{display:none}body.dark{background-color:#222;color:#d9d9d9}body.dark a{color:#fff}body.dark a:hover{color:#ee730a;text-decoration:underline}body.dark .lds-ring div{border-color:#999 transparent transparent}body.dark .font-red{color:#b20f03}body.dark', # 2024-05-13 Cloudflare
+                r'<span id="challenge-error-text">', # 2024-11-11 Cloudflare error page
+                r'AwsWafIntegration.forceRefreshToken', # 2024-11-11 Cloudfront (AWS)
+                r'{return l.onPageView}}),Object.defineProperty(r,"perimeterxIdentifiers",{enumerable:' # 2024-04-09 PerimeterX / Human Security
+            ]
 
-        # As WAFs advance and evolve, they will occasionally block Sherlock and
-        # lead to false positives and negatives. Fingerprints should be added
-        # here to filter results that fail to bypass WAFs. Fingerprints should
-        # be highly targetted. Comment at the end of each fingerprint to
-        # indicate target and date fingerprinted.
-        WAFHitMsgs = [
-            r'.loading-spinner{visibility:hidden}body.no-js .challenge-running{display:none}body.dark{background-color:#222;color:#d9d9d9}body.dark a{color:#fff}body.dark a:hover{color:#ee730a;text-decoration:underline}body.dark .lds-ring div{border-color:#999 transparent transparent}body.dark .font-red{color:#b20f03}body.dark', # 2024-05-13 Cloudflare
-            r'<span id="challenge-error-text">', # 2024-11-11 Cloudflare error page
-            r'AwsWafIntegration.forceRefreshToken', # 2024-11-11 Cloudfront (AWS)
-            r'{return l.onPageView}}),Object.defineProperty(r,"perimeterxIdentifiers",{enumerable:' # 2024-04-09 PerimeterX / Human Security
-        ]
+            if error_text is not None:
+                error_context = error_text
 
-        if error_text is not None:
-            error_context = error_text
+            elif any(hitMsg in r.text for hitMsg in WAFHitMsgs):
+                query_status = QueryStatus.WAF
 
-        elif any(hitMsg in r.text for hitMsg in WAFHitMsgs):
-            query_status = QueryStatus.WAF
-
-        else:
-            if any(errtype not in ["message", "status_code", "response_url"] for errtype in error_type):
-                error_context = f"Unknown error type '{error_type}' for {social_network}"
-                query_status = QueryStatus.UNKNOWN
             else:
-                if "message" in error_type:
-                    # error_flag True denotes no error found in the HTML
-                    # error_flag False denotes error found in the HTML
-                    error_flag = True
-                    errors = net_info.get("errorMsg")
-                    # errors will hold the error message
-                    # it can be string or list
-                    # by isinstance method we can detect that
-                    # and handle the case for strings as normal procedure
-                    # and if its list we can iterate the errors
-                    if isinstance(errors, str):
-                        # Checks if the error message is in the HTML
-                        # if error is present we will set flag to False
-                        if errors in r.text:
-                            error_flag = False
-                    else:
-                        # If it's list, it will iterate all the error message
-                        for error in errors:
-                            if error in r.text:
+                if any(errtype not in ["message", "status_code", "response_url"] for errtype in error_type):
+                    error_context = f"Unknown error type '{error_type}' for {social_network}"
+                    query_status = QueryStatus.UNKNOWN
+                else:
+                    if "message" in error_type:
+                        # error_flag True denotes no error found in the HTML
+                        # error_flag False denotes error found in the HTML
+                        error_flag = True
+                        errors = net_info.get("errorMsg")
+                        # errors will hold the error message
+                        # it can be string or list
+                        # by isinstance method we can detect that
+                        # and handle the case for strings as normal procedure
+                        # and if its list we can iterate the errors
+                        if isinstance(errors, str):
+                            # Checks if the error message is in the HTML
+                            # if error is present we will set flag to False
+                            if errors in r.text:
                                 error_flag = False
-                                break
-                    if error_flag:
-                        query_status = QueryStatus.CLAIMED
-                    else:
-                        query_status = QueryStatus.AVAILABLE
+                        else:
+                            # If it's list, it will iterate all the error message
+                            for error in errors:
+                                if error in r.text:
+                                    error_flag = False
+                                    break
+                        if error_flag:
+                            query_status = QueryStatus.CLAIMED
+                        else:
+                            query_status = QueryStatus.AVAILABLE
 
-                if "status_code" in error_type and query_status is not QueryStatus.AVAILABLE:
-                    error_codes = net_info.get("errorCode")
-                    query_status = QueryStatus.CLAIMED
-
-                    # Type consistency, allowing for both singlets and lists in manifest
-                    if isinstance(error_codes, int):
-                        error_codes = [error_codes]
-
-                    if error_codes is not None and r.status in error_codes:
-                        query_status = QueryStatus.AVAILABLE
-                    elif r.status >= 300 or r.status < 200:
-                        query_status = QueryStatus.AVAILABLE
-
-                if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
-                    if r.url.rstrip('/') == net_info['errorUrl'].rstrip('/'):
-                        query_status = QueryStatus.AVAILABLE
-                    else:
+                    if "status_code" in error_type and query_status is not QueryStatus.AVAILABLE:
+                        error_codes = net_info.get("errorCode")
                         query_status = QueryStatus.CLAIMED
 
-        if dump_response:
-            print("+++++++++++++++++++++")
-            print(f"TARGET NAME   : {social_network}")
-            print(f"USERNAME      : {username}")
-            print(f"TARGET URL    : {url}")
-            print(f"TEST METHOD   : {error_type}")
-            try:
-                print(f"STATUS CODES  : {net_info['errorCode']}")
-            except KeyError:
-                pass
-            print("Results...")
-            try:
-                print(f"RESPONSE CODE : {r.status}")
-            except Exception:
-                pass
-            try:
-                print(f"ERROR TEXT    : {net_info['errorMsg']}")
-            except KeyError:
-                pass
-            print(">>>>> BEGIN RESPONSE TEXT")
-            try:
-                print(r.text)
-            except Exception:
-                pass
-            print("<<<<< END RESPONSE TEXT")
-            print("VERDICT       : " + str(query_status))
-            print("+++++++++++++++++++++")
+                        # Type consistency, allowing for both singlets and lists in manifest
+                        if isinstance(error_codes, int):
+                            error_codes = [error_codes]
 
-        # Notify caller about results of query.
-        result: QueryResult = QueryResult(
-            username=username,
-            site_name=social_network,
-            site_url_user=url,
-            status=query_status,
-            query_time=response_time,
-            context=error_context,
-        )
-        query_notify.update(result)
+                        if error_codes is not None and r.status in error_codes:
+                            query_status = QueryStatus.AVAILABLE
+                        elif r.status >= 300 or r.status < 200:
+                            query_status = QueryStatus.AVAILABLE
 
-        # Save status of request
-        results_site["status"] = result
+                    if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
+                        if r.url.rstrip('/') == net_info['errorUrl'].rstrip('/'):
+                            query_status = QueryStatus.AVAILABLE
+                        else:
+                            query_status = QueryStatus.CLAIMED
 
-        # Save results from request
-        results_site["http_status"] = http_status
-        results_site["response_text"] = response_text
+            if dump_response:
+                print("+++++++++++++++++++++")
+                print(f"TARGET NAME   : {social_network}")
+                print(f"USERNAME      : {username}")
+                print(f"TARGET URL    : {url}")
+                print(f"TEST METHOD   : {error_type}")
+                try:
+                    print(f"STATUS CODES  : {net_info['errorCode']}")
+                except KeyError:
+                    pass
+                print("Results...")
+                try:
+                    print(f"RESPONSE CODE : {r.status}")
+                except Exception:
+                    pass
+                try:
+                    print(f"ERROR TEXT    : {net_info['errorMsg']}")
+                except KeyError:
+                    pass
+                print(">>>>> BEGIN RESPONSE TEXT")
+                try:
+                    print(r.text)
+                except Exception:
+                    pass
+                print("<<<<< END RESPONSE TEXT")
+                print("VERDICT       : " + str(query_status))
+                print("+++++++++++++++++++++")
 
-        # Add this site's results into final dictionary with all of the other results.
-        results_total[social_network] = results_site
+            # Notify caller about results of query.
+            result: QueryResult = QueryResult(
+                username=username,
+                site_name=social_network,
+                site_url_user=url,
+                status=query_status,
+                query_time=response_time,
+                context=error_context,
+            )
+            query_notify.update(result)
 
+            # Save status of request
+            results_site["status"] = result
+
+            # Save results from request
+            results_site["http_status"] = http_status
+            results_site["response_text"] = response_text
+
+            # Add this site's results into final dictionary with all of the other results.
+            results_total[social_network] = results_site
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pending = list(tasks.keys())
+
+        for task in pending:
+            task.cancel()
+
+        raise
     return results_total
 
 
@@ -417,15 +423,6 @@ def timeout_check(value):
         )
 
     return float_value
-
-
-def handler(signal_received, frame):
-    """Exit gracefully without throwing errors
-
-    Source: https://www.devdungeon.com/content/python-catch-sigint-ctrl-c
-    """
-    sys.exit(0)
-
 
 async def main():
     parser = ArgumentParser(
@@ -585,9 +582,6 @@ async def main():
 
     args = parser.parse_args()
 
-    # If the user presses CTRL-C, exit gracefully without throwing errors
-    signal.signal(signal.SIGINT, handler)
-
     # Check for newer version of Sherlock. If it exists, let the user know about it
     try:
         latest_release_raw = requests.get(forge_api_latest_release, timeout=10).text
@@ -704,17 +698,22 @@ async def main():
             all_usernames.append(username)
 
     start_time = perf_counter()
-    async with PlaywrightEngine(headless=True) as engine:
-        for username in all_usernames:
-            results = await sherlock(
-                username,
-                engine,
-                site_data,
-                query_notify,
-                dump_response=args.dump_response,
-                proxy=args.proxy,
-                timeout=args.timeout,
-                )
+    try:
+        async with PlaywrightEngine(headless=True) as engine:
+            for username in all_usernames:
+                results = await sherlock(
+                    username,
+                    engine,
+                    site_data,
+                    query_notify,
+                    dump_response=args.dump_response,
+                    proxy=args.proxy,
+                    timeout=args.timeout,
+                    )
+    except asyncio.CancelledError:
+        # use pass instead of raise
+        # we still want the final results output
+        pass
     elapsed_time = (perf_counter() - start_time)
     if args.output:
         result_file = args.output
@@ -825,4 +824,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

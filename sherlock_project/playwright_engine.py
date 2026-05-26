@@ -3,6 +3,7 @@ from typing import Any, Protocol, Literal
 import asyncio
 from time import perf_counter
 from playwright.async_api import APIResponse, APIRequestContext, Response
+from playwright.async_api import Error as PlaywrightError
 from cloakbrowser import launch_async, ensure_binary
 
 class RequestMethod(Protocol):
@@ -19,7 +20,7 @@ class PlaywrightEngine:
 
     async def __aenter__(self):
         ensure_binary()
-        self.browser: Browser = await launch_async(headless=self.headless, humanize=True)
+        self.browser: Browser = await launch_async(headless=self.headless, humanize=True, handle_sigint=False)
         self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
         self.api: APIRequestContext = self.context.request
         print("Playwright Started!")
@@ -35,9 +36,11 @@ class PlaywrightEngine:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.context.close()
-        await self.browser.close()
-        print("Playwright Stopped!")
+        if not self.context.is_closed():
+            await self.context.close()
+
+        if self.browser:
+            await self.browser.close()
 
     def get_request_fn(self, method: str):
         if method not in self._fn_mapping:
@@ -52,35 +55,46 @@ class PlaywrightEngine:
             wait_until: Literal['commit', 'domcontentloaded', 'load', 'networkidle'] | None = 'load'
             ) -> Response | None: 
         
-        async with self.sem:
-            page: Page = await self.context.new_page()
-            try:
+        page: Page | None = None
+        resp: Response | None = None
+        try:
+            async with self.sem:
+                page = await self.context.new_page()
+
                 if headers:
                     await page.set_extra_http_headers(headers)
 
                 start = perf_counter()
 
-                response = await page.goto(
+                resp = await page.goto(
                     url, 
                     wait_until=wait_until, 
                     timeout=timeout
                 )
 
-                if response is None:
+                if resp is None:
                     return None
 
-                response.elapsed = perf_counter() - start
+                resp.elapsed = perf_counter() - start
 
                 try:
-                    response.text = await page.content()
-                except Exception as e:
-                    response.text = ""
-                    print(f"page.content() failed: {e}")
+                    resp.text = await page.content()
+                except Exception:
+                    resp.text = ""
 
-            finally:
+                return resp
+
+        except asyncio.CancelledError:
+            raise
+
+        except PlaywrightError:
+            raise
+
+        finally:
+            if page and not page.is_closed() and not asyncio.current_task().cancelling():
                 await page.close()
-            
-            return response
+
+        return resp
     
     async def fetch_with_api(
             self,
@@ -91,13 +105,19 @@ class PlaywrightEngine:
             request_payload: Any | bytes | str | None  = None
             ) -> APIResponse | None:
         
-        async with self.sem:
-            start = perf_counter()
-            resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, data=request_payload)
-            if resp is not None:
-                resp.elapsed = (perf_counter() - start)
-                try:
-                    resp.text = await resp.text()
-                except Exception:
-                    resp.text = ''
-            return resp
+        resp: Response | None = None
+        try:
+            async with self.sem:
+                start = perf_counter()
+                resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, data=request_payload)
+                if resp is not None:
+                    resp.elapsed = (perf_counter() - start)
+                    try:
+                        resp.text = await resp.text()
+                    except Exception:
+                        resp.text = ''
+
+        except asyncio.CancelledError:
+            raise
+
+        return resp
