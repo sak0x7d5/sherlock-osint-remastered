@@ -120,4 +120,7 @@ class PlaywrightEngine:
         except asyncio.CancelledError:
             raise
 
+        except PlaywrightError:
+            raise
+
         return resp
