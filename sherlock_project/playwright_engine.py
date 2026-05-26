@@ -1,4 +1,4 @@
-from playwright.async_api import Page, Browser, BrowserContext, Route
+from playwright.async_api import Page, Browser, BrowserContext
 from typing import Any, Protocol, Literal
 import asyncio
 from time import perf_counter
