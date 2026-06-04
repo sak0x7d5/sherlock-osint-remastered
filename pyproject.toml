@@ -54,6 +54,7 @@ openpyxl = "^3.0.10"
 tomli = "^2.2.1"
 playwright = "^1.59.0"
 cloakbrowser = {extras = ["geoip"], version = "^0.3.28"}
+aiosqlite = "^0.22.1"
 
 [tool.poetry.group.dev.dependencies]
 jsonschema = "^4.0.0"

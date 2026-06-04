@@ -30,7 +30,7 @@ import asyncio
 import requests
 from playwright.async_api import APIResponse, Response, TimeoutError, Error as PlaywrightError
 from sherlock_project.playwright_engine import PlaywrightEngine
-
+from sherlock_project.database import SherlockDB
 from sherlock_project.__init__ import (
     __longname__,
     __shortname__,
@@ -111,6 +111,7 @@ def multiple_usernames(username):
 async def sherlock(
     username: str,
     engine: PlaywrightEngine,
+    db: SherlockDB,
     site_data: dict[str, dict[str, str]],
     query_notify: QueryNotify,
     dump_response: bool = False,
@@ -381,6 +382,17 @@ async def sherlock(
             )
             query_notify.update(result)
 
+            await db.save_result(
+                username=username, 
+                site_url=url,
+                status_code=http_status,
+                status=str(query_status), 
+                response_text=response_text,
+                site_name=social_network,
+                query_time_ms=response_time,
+                error_context=error_context
+                )
+
             # Save status of request
             results_site["status"] = result
 
@@ -397,6 +409,8 @@ async def sherlock(
             task.cancel()
 
         raise
+    finally:
+        await db.close()
     return results_total
 
 
@@ -696,16 +710,27 @@ async def main():
                 all_usernames.append(name)
         else:
             all_usernames.append(username)
-
+    
+    db = await SherlockDB.create("sherlock.db")
     start_time = perf_counter()
     try:
         async with PlaywrightEngine(headless=True) as engine:
             for username in all_usernames:
+                # if the user didn't specify any site list then only scan 
+                # the sites not already in the database for that username
+                if not args.site_list:
+                    saved_sites = await db.get_saved_sites(username=username)
+                    site_data = {
+                        site_name: site_data_all[site_name] for site_name in site_data_all.keys() 
+                        if site_name not in saved_sites
+                        }
+                
                 results = await sherlock(
-                    username,
-                    engine,
-                    site_data,
-                    query_notify,
+                    username=username,
+                    engine=engine,
+                    db=db,
+                    site_data=site_data,
+                    query_notify=query_notify,
                     dump_response=args.dump_response,
                     proxy=args.proxy,
                     timeout=args.timeout,

@@ -9,13 +9,14 @@ from sherlock_project.result import QueryStatus
 #from sherlock_interactives import Interactives
 
 
-async def simple_query(sites_info: dict, site: str, username: str, playwright_engine: PlaywrightEngine) -> QueryStatus:
+async def simple_query(sites_info: dict, site: str, username: str, playwright_engine: PlaywrightEngine, db) -> QueryStatus:
     query_notify = QueryNotify()
     site_data: dict = {}
     site_data[site] = sites_info[site]
     results_total = await sherlock(
         username=username,
         site_data=site_data,
+        db=db,
         query_notify=query_notify,
         engine=playwright_engine
     )
@@ -30,8 +31,8 @@ class TestLiveTargets:
         ('AllMyLinks', 'blue'),
     ])
     @pytest.mark.asyncio()
-    async def test_known_positives_via_message(self, sites_info, site, username, playwright_engine):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine) is QueryStatus.CLAIMED
+    async def test_known_positives_via_message(self, sites_info, site, username, playwright_engine, db):
+        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
 
 
     # Known positives should only use sites trusted to be reliable and unchanging
@@ -42,8 +43,8 @@ class TestLiveTargets:
         ('Docker Hub', 'sherlock'),
     ])
     @pytest.mark.asyncio()
-    async def test_known_positives_via_status_code(self, sites_info, site, username, playwright_engine):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine) is QueryStatus.CLAIMED
+    async def test_known_positives_via_status_code(self, sites_info, site, username, playwright_engine, db):
+        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
 
 
     # Known positives should only use sites trusted to be reliable and unchanging
@@ -52,8 +53,8 @@ class TestLiveTargets:
         ('devRant', 'blue'),
     ])
     @pytest.mark.asyncio()
-    async def test_known_positives_via_response_url(self, sites_info, site, username, playwright_engine):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine) is QueryStatus.CLAIMED
+    async def test_known_positives_via_response_url(self, sites_info, site, username, playwright_engine, db):
+        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
 
 
     # Randomly generate usernames of high length and test for positive availability
@@ -65,7 +66,7 @@ class TestLiveTargets:
         ('Codecademy', 30)
     ])
     @pytest.mark.asyncio()
-    async def test_likely_negatives_via_message(self, sites_info, site, random_len, playwright_engine):
+    async def test_likely_negatives_via_message(self, sites_info, site, random_len, playwright_engine, db):
         num_attempts: int = 3
         attempted_usernames: list[str] = []
         status: QueryStatus = QueryStatus.CLAIMED
@@ -73,7 +74,7 @@ class TestLiveTargets:
             acceptable_types = string.ascii_letters + string.digits
             random_handle = ''.join(random.choice(acceptable_types) for _ in range (random_len))
             attempted_usernames.append(random_handle)
-            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine)
+            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine, db=db)
             if status is QueryStatus.AVAILABLE:
                 break
         assert status is QueryStatus.AVAILABLE, f"Could not validate available username after {num_attempts} attempts with randomly generated usernames {attempted_usernames}."
@@ -96,7 +97,7 @@ class TestLiveTargets:
             acceptable_types = string.ascii_letters + string.digits
             random_handle = ''.join(random.choice(acceptable_types) for _ in range (random_len))
             attempted_usernames.append(random_handle)
-            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine)
+            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine, db=db)
             if status is QueryStatus.AVAILABLE:
                 break
         assert status is QueryStatus.AVAILABLE, f"Could not validate available username after {num_attempts} attempts with randomly generated usernames {attempted_usernames}."
@@ -124,11 +125,11 @@ class TestLiveTargets:
         ) == expected
         
 @pytest.mark.asyncio()
-async def test_username_illegal_regex(sites_info, playwright_engine):
+async def test_username_illegal_regex(sites_info, playwright_engine, db):
     site: str = 'Bitwarden Forum'
     invalid_handle: str = '*#$Y&*JRE'
     pattern = re.compile(sites_info[site]['regexCheck'])
     # Ensure that the username actually fails regex before testing sherlock
     assert pattern.match(invalid_handle) is None
-    assert await simple_query(sites_info=sites_info, site=site, username=invalid_handle, playwright_engine=playwright_engine) is QueryStatus.ILLEGAL
+    assert await simple_query(sites_info=sites_info, site=site, username=invalid_handle, playwright_engine=playwright_engine, db=db) is QueryStatus.ILLEGAL
 

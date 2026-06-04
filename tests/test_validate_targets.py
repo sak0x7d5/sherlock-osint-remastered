@@ -26,7 +26,7 @@ def set_pattern_upper_bound(pattern: str, upper_bound: int = FALSE_POSITIVE_QUAN
 
     return pattern
 
-async def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, pattern: str, playwright_engine: PlaywrightEngine) -> QueryStatus:
+async def false_positive_check(sites_info: dict[str, dict[str, str]], site: str, pattern: str, playwright_engine: PlaywrightEngine, db) -> QueryStatus:
     """Check if a site is likely to produce false positives."""
     status: QueryStatus = QueryStatus.UNKNOWN
 
@@ -38,7 +38,8 @@ async def false_positive_check(sites_info: dict[str, dict[str, str]], site: str,
             username=username,
             site_data=sites_info,
             query_notify=query_notify,
-            engine=playwright_engine
+            engine=playwright_engine,
+            db=db
         ))[site]['status']
 
         if not hasattr(result, 'status'):
@@ -53,13 +54,14 @@ async def false_positive_check(sites_info: dict[str, dict[str, str]], site: str,
     return status
 
 
-async def false_negative_check(sites_info: dict[str, dict[str, str]], site: str, playwright_engine: PlaywrightEngine) -> QueryStatus:
+async def false_negative_check(sites_info: dict[str, dict[str, str]], site: str, playwright_engine: PlaywrightEngine, db) -> QueryStatus:
     """Check if a site is likely to produce false negatives."""
     status: QueryStatus = QueryStatus.UNKNOWN
     query_notify: QueryNotify = QueryNotify()
 
     result: QueryResult | str = (await sherlock(
         username=sites_info[site]['username_claimed'],
+        db=db,
         site_data=sites_info,
         query_notify=query_notify,
         engine=playwright_engine

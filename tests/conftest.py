@@ -5,6 +5,8 @@ import pytest
 import pytest_asyncio
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
+from sherlock_project.database import SherlockDB
+
 
 def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:
     sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=honor_exclusions)
@@ -15,6 +17,14 @@ def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, s
 async def playwright_engine():
     async with PlaywrightEngine() as engine:
         yield engine
+
+
+@pytest_asyncio.fixture()
+async def db() -> SherlockDB:
+    db = await SherlockDB.create(":memory:")
+    yield db
+    await db.close()
+
 
 @pytest.fixture()
 def sites_obj():
