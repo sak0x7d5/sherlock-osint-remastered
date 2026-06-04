@@ -89,7 +89,7 @@ class TestLiveTargets:
         ('Docker Hub', 30)
     ])
     @pytest.mark.asyncio()
-    async def test_likely_negatives_via_status_code(self, sites_info, site, random_len, playwright_engine):
+    async def test_likely_negatives_via_status_code(self, sites_info, site, random_len, playwright_engine, db):
         num_attempts: int = 3
         attempted_usernames: list[str] = []
         status: QueryStatus = QueryStatus.CLAIMED
@@ -108,7 +108,7 @@ class TestLiveTargets:
     ("https://httpbin.org", QueryStatus.AVAILABLE),
     # doesn't redirect to errorUrl -> username found -> CLAIMED  
     ("https://example.com/", QueryStatus.CLAIMED),])
-    async def test_error_type_response_url(self, username, expected, playwright_engine):
+    async def test_error_type_response_url(self, username, expected, playwright_engine, db, httpbin_available):
         site_data = {
             'Test': {
                 "url": "https://httpbin.org/redirect-to?url={}",
@@ -119,6 +119,7 @@ class TestLiveTargets:
         }
         assert await simple_query(
             sites_info=site_data,
+            db=db,
             site='Test',
             username=username,
             playwright_engine=playwright_engine

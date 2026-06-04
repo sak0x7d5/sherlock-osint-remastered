@@ -3,6 +3,7 @@ import json
 import urllib
 import pytest
 import pytest_asyncio
+import requests
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
 from sherlock_project.database import SherlockDB
@@ -66,3 +67,15 @@ def pytest_generate_tests(metafunc):
         params = [{name: data} for name, data in sites_info.items()]
         ids = list(sites_info.keys())
         metafunc.parametrize("chunked_sites", params, ids=ids)
+
+def is_httpbin_up() -> bool:
+    try:
+        r = requests.get("https://httpbin.org/status/200", timeout=3)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+@pytest.fixture(scope="session")
+def httpbin_available():
+    if not is_httpbin_up():
+        pytest.skip("httpbin.org is unavailable")
