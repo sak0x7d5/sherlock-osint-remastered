@@ -4,7 +4,7 @@ import asyncio
 from time import perf_counter
 from playwright.async_api import APIResponse, APIRequestContext, Response
 from playwright.async_api import Error as PlaywrightError
-from cloakbrowser import launch_async, ensure_binary
+from cloakbrowser import launch_async, ensure_binary, binary_info
 
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
@@ -19,7 +19,8 @@ class PlaywrightEngine:
         self.proxy = proxy
 
     async def __aenter__(self):
-        ensure_binary()
+        self.ensure_browser_binary()
+
         self.browser: Browser = await launch_async(headless=self.headless, humanize=True, handle_sigint=False)
         self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
         self.api: APIRequestContext = self.context.request
@@ -34,6 +35,14 @@ class PlaywrightEngine:
         }
 
         return self
+    
+
+    @staticmethod
+    def ensure_browser_binary():
+        if not binary_info()["installed"]:
+            print("[*] Chrome browser binary not found. Installing...")
+            ensure_binary()
+            print("\033[H\033[J", end="")
 
     async def __aexit__(self, exc_type, exc, tb):
         if not self.context.is_closed():
