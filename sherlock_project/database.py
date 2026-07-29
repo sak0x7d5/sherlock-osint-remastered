@@ -1,11 +1,43 @@
 from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+
 import aiosqlite
+
+from sherlock_project.result import QueryStatus
+
+
+@dataclass(frozen=True, slots=True)
+class AIExtractionJob:
+    site_id: int
+    username: str
+    site_name: str
+    response_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AIProfileEvidenceRecord:
+    site_id: int
+    site_name: str
+    site_url: str | None
+    scanned_at: str | None
+    ai_extraction: str | None
+    ai_extraction_contract_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileSummaryCache:
+    profile_summary: str | None
+    input_hash: str | None
+    updated_at: str | None
 
 
 class SherlockDB:
     def __init__(self, database_path: str) -> None:
         self.database_path = database_path
         self.db: aiosqlite.Connection | None = None
+        self._write_lock = asyncio.Lock()
 
     @classmethod
     async def create(cls, database_path: str) -> "SherlockDB":
@@ -17,10 +49,35 @@ class SherlockDB:
         if self.db is not None:
             return
 
-        self.db = await aiosqlite.connect(self.database_path)
-        self.db.row_factory = aiosqlite.Row
-        await self.db.execute("PRAGMA foreign_keys = ON")
-        await self._initialize_tables()
+        connection = aiosqlite.connect(self.database_path)
+        self.db = connection
+
+        try:
+            await connection
+            connection.row_factory = aiosqlite.Row
+            await connection.execute("PRAGMA foreign_keys = ON")
+            await self._initialize_tables()
+        except BaseException as exc:
+            try:
+                await connection.rollback()
+            except BaseException as cleanup_error:
+                exc.add_note(
+                    "Database rollback during connection cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
+
+            try:
+                await connection.close()
+            except BaseException as cleanup_error:
+                exc.add_note(
+                    "Database close during connection cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
+            finally:
+                if self.db is connection:
+                    self.db = None
+
+            raise
 
     async def close(self) -> None:
         if self.db is not None:
@@ -37,16 +94,18 @@ class SherlockDB:
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS usernames (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 profile_summary TEXT,
+                profile_summary_input_hash TEXT,
+                profile_summary_updated_at TIMESTAMP,
                 last_scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
                 username_id INTEGER NOT NULL,
                 site_name TEXT NOT NULL,
                 site_url TEXT,
@@ -56,45 +115,90 @@ class SherlockDB:
                 error_context TEXT,
                 response_text TEXT,
                 ai_extraction TEXT,
+                ai_extraction_contract_hash TEXT,
                 scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (username_id) REFERENCES usernames(id),
                 UNIQUE(username_id, site_name)
             )
         """)
 
+        await self._ensure_column(
+            table_name="usernames",
+            column_name="profile_summary_input_hash",
+            definition="TEXT",
+        )
+        await self._ensure_column(
+            table_name="usernames",
+            column_name="profile_summary_updated_at",
+            definition="TIMESTAMP",
+        )
+        await self._ensure_column(
+            table_name="results",
+            column_name="ai_extraction_contract_hash",
+            definition="TEXT",
+        )
+
         await db.commit()
+
+    async def _ensure_column(
+        self,
+        *,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        db = self._require_db()
+        async with db.execute(f"PRAGMA table_info({table_name})") as cur:
+            columns = await cur.fetchall()
+        if any(row["name"] == column_name for row in columns):
+            return
+        await db.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+        )
 
     async def clear_tables(self) -> None:
         db = self._require_db()
 
-        await db.execute("DELETE FROM results")
-        await db.execute("DELETE FROM usernames")
-        await db.commit()
+        async with self._write_lock:
+            try:
+                await db.execute("DELETE FROM results")
+                await db.execute("DELETE FROM usernames")
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def _ensure_username_id(self, username: str) -> int:
+        db = self._require_db()
+
+        await db.execute(
+            "INSERT OR IGNORE INTO usernames (username) VALUES (?)",
+            (username,),
+        )
+
+        async with db.execute(
+            "SELECT id FROM usernames WHERE username = ?",
+            (username,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            raise RuntimeError(f"Failed to get username id for {username!r}")
+
+        return int(row["id"])
 
     async def get_or_create_username_id(self, username: str) -> int:
         db = self._require_db()
 
-        try:
-            await db.execute(
-                "INSERT OR IGNORE INTO usernames (username) VALUES (?)",
-                (username,),
-            )
+        async with self._write_lock:
+            try:
+                username_id = await self._ensure_username_id(username)
+                await db.commit()
+                return username_id
 
-            async with db.execute(
-                "SELECT id FROM usernames WHERE username = ?",
-                (username,),
-            ) as cur:
-                row = await cur.fetchone()
-
-            if row is None:
-                raise RuntimeError(f"Failed to get username id for {username!r}")
-
-            await db.commit()
-            return int(row["id"])
-
-        except Exception:
-            await db.rollback()
-            raise
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def save_result(
         self,
@@ -107,91 +211,375 @@ class SherlockDB:
         error_context: str | None = None,
         response_text: str | None = None,
         ai_extraction: str | None = None,
-    ) -> None:
+        ai_extraction_contract_hash: str | None = None,
+        force_ai_extraction: bool = False,
+    ) -> int:
         db = self._require_db()
-        username_id = await self.get_or_create_username_id(username)
 
-        try:
-            await db.execute(
-                """
-                INSERT INTO results (
-                    username_id,
-                    site_name,
-                    site_url,
-                    status,
-                    status_code,
-                    query_time_ms,
-                    error_context,
-                    response_text,
-                    ai_extraction
+        async with self._write_lock:
+            try:
+                username_id = await self._ensure_username_id(username)
+
+                async with db.execute(
+                    """
+                    INSERT INTO results (
+                        username_id,
+                        site_name,
+                        site_url,
+                        status,
+                        status_code,
+                        query_time_ms,
+                        error_context,
+                        response_text,
+                        ai_extraction,
+                        ai_extraction_contract_hash
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(username_id, site_name) DO UPDATE SET
+                        site_url = excluded.site_url,
+                        status = excluded.status,
+                        status_code = excluded.status_code,
+                        query_time_ms = excluded.query_time_ms,
+                        error_context = excluded.error_context,
+                        response_text = excluded.response_text,
+                        ai_extraction = CASE
+                            WHEN excluded.ai_extraction IS NOT NULL
+                                THEN excluded.ai_extraction
+                            WHEN ?
+                                THEN NULL
+                            WHEN excluded.status IS NOT results.status
+                                OR excluded.response_text IS NOT results.response_text
+                                THEN NULL
+                            ELSE results.ai_extraction
+                        END,
+                        ai_extraction_contract_hash = CASE
+                            WHEN excluded.ai_extraction IS NOT NULL
+                                THEN excluded.ai_extraction_contract_hash
+                            WHEN ?
+                                THEN NULL
+                            WHEN excluded.status IS NOT results.status
+                                OR excluded.response_text IS NOT results.response_text
+                                THEN NULL
+                            ELSE results.ai_extraction_contract_hash
+                        END,
+                        scanned_at = CURRENT_TIMESTAMP
+                        RETURNING id, ai_extraction
+                    """,
+                    (
+                        username_id,
+                        site_name,
+                        site_url,
+                        status,
+                        status_code,
+                        query_time_ms,
+                        error_context,
+                        response_text,
+                        ai_extraction,
+                        (
+                            ai_extraction_contract_hash
+                            if ai_extraction is not None
+                            else None
+                        ),
+                        force_ai_extraction,
+                        force_ai_extraction,
+                    ),
+                ) as cur:
+                    row = await cur.fetchone()
+
+                if row is None:
+                    raise RuntimeError(f"Failed to get site id for {site_name!r}")
+
+                result_id = int(row["id"])
+                if row["ai_extraction"] is None or ai_extraction is not None:
+                    await self._invalidate_profile_summary(username_id)
+                await db.commit()
+                return result_id
+
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def get_pending_ai_extraction_ids(
+        self,
+        username: str,
+        *,
+        contract_hash: str,
+    ) -> list[int]:
+        db = self._require_db()
+
+        async with db.execute(
+            """
+            SELECT r.id
+            FROM results r
+            JOIN usernames u
+                ON u.id = r.username_id
+            WHERE u.username = ?
+                AND (
+                    r.ai_extraction IS NULL
+                    OR r.ai_extraction_contract_hash IS NOT ?
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(username_id, site_name) DO UPDATE SET
-                    site_url = excluded.site_url,
-                    status = excluded.status,
-                    status_code = excluded.status_code,
-                    query_time_ms = excluded.query_time_ms,
-                    error_context = excluded.error_context,
-                    response_text = excluded.response_text,
-                    ai_extraction = COALESCE(excluded.ai_extraction, results.ai_extraction),
-                    scanned_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    username_id,
-                    site_name,
-                    site_url,
-                    status,
-                    status_code,
-                    query_time_ms,
-                    error_context,
-                    response_text,
-                    ai_extraction,
-                ),
-            )
-            await db.commit()
+                AND r.status = ?
+                AND NULLIF(TRIM(r.response_text), '') IS NOT NULL
+            ORDER BY r.id
+            """,
+            (username, contract_hash, str(QueryStatus.CLAIMED)),
+        ) as cur:
+            rows = await cur.fetchall()
 
-        except Exception:
-            await db.rollback()
-            raise
+        return [int(row["id"]) for row in rows]
+
+    async def get_ai_extraction_job(
+        self,
+        site_id: int,
+        *,
+        contract_hash: str,
+    ) -> AIExtractionJob | None:
+        db = self._require_db()
+
+        async with self._write_lock:
+            try:
+                async with db.execute(
+                    """
+                    SELECT
+                        r.id,
+                        r.username_id,
+                        u.username,
+                        r.site_name,
+                        r.response_text,
+                        r.ai_extraction_contract_hash
+                    FROM results r
+                    JOIN usernames u
+                        ON u.id = r.username_id
+                    WHERE r.id = ?
+                        AND (
+                            r.ai_extraction IS NULL
+                            OR r.ai_extraction_contract_hash IS NOT ?
+                        )
+                        AND r.status = ?
+                        AND NULLIF(TRIM(r.response_text), '') IS NOT NULL
+                    """,
+                    (site_id, contract_hash, str(QueryStatus.CLAIMED)),
+                ) as cur:
+                    row = await cur.fetchone()
+
+                if row is None:
+                    return None
+
+                if row["ai_extraction_contract_hash"] != contract_hash:
+                    await db.execute(
+                        """
+                        UPDATE results
+                        SET
+                            ai_extraction = NULL,
+                            ai_extraction_contract_hash = NULL
+                        WHERE id = ?
+                        """,
+                        (site_id,),
+                    )
+                    await self._invalidate_profile_summary(int(row["username_id"]))
+                    await db.commit()
+
+            except BaseException:
+                await db.rollback()
+                raise
+
+        return AIExtractionJob(
+            site_id=int(row["id"]),
+            username=str(row["username"]),
+            site_name=str(row["site_name"]),
+            response_text=str(row["response_text"]),
+        )
 
     async def update_result_ai_extraction(
         self,
-        username: str,
-        site_name: str,
+        site_id: int,
         ai_extraction: str,
+        *,
+        contract_hash: str,
     ) -> None:
         db = self._require_db()
-        username_id = await self.get_or_create_username_id(username)
 
-        await db.execute(
-            """
-            UPDATE results
-            SET ai_extraction = ?,
-                scanned_at = CURRENT_TIMESTAMP
-            WHERE username_id = ? AND site_name = ?
-            """,
-            (ai_extraction, username_id, site_name),
-        )
-        await db.commit()
+        async with self._write_lock:
+            try:
+                async with db.execute(
+                    """
+                    UPDATE results
+                    SET
+                        ai_extraction = ?,
+                        ai_extraction_contract_hash = ?
+                    WHERE id = ?
+                    """,
+                    (ai_extraction, contract_hash, site_id),
+                ) as cur:
+                    if cur.rowcount == 0:
+                        raise RuntimeError(f"Failed to update AI extraction for site id {site_id!r}")
+
+                await db.execute(
+                    """
+                    UPDATE usernames
+                    SET
+                        profile_summary_input_hash = NULL
+                    WHERE id = (
+                        SELECT username_id
+                        FROM results
+                        WHERE id = ?
+                    )
+                    """,
+                    (site_id,),
+                )
+                await db.commit()
+
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def update_username_profile_summary(
         self,
         username: str,
         profile_summary: str,
+        input_hash: str | None = None,
     ) -> None:
         db = self._require_db()
 
+        async with self._write_lock:
+            try:
+                await db.execute(
+                    """
+                    INSERT INTO usernames (
+                        username,
+                        profile_summary,
+                        profile_summary_input_hash,
+                        profile_summary_updated_at
+                    )
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(username) DO UPDATE SET
+                        profile_summary = excluded.profile_summary,
+                        profile_summary_input_hash = excluded.profile_summary_input_hash,
+                        profile_summary_updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (username, profile_summary, input_hash),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def get_ai_profile_evidence(
+        self,
+        username: str,
+    ) -> list[AIProfileEvidenceRecord]:
+        db = self._require_db()
+        async with db.execute(
+            """
+            SELECT
+                r.id,
+                r.site_name,
+                r.site_url,
+                r.scanned_at,
+                r.ai_extraction,
+                r.ai_extraction_contract_hash
+            FROM results r
+            JOIN usernames u
+                ON u.id = r.username_id
+            WHERE u.username = ?
+                AND r.status = ?
+                AND NULLIF(TRIM(r.response_text), '') IS NOT NULL
+            ORDER BY r.id
+            """,
+            (username, str(QueryStatus.CLAIMED)),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [
+            AIProfileEvidenceRecord(
+                site_id=int(row["id"]),
+                site_name=str(row["site_name"]),
+                site_url=str(row["site_url"]) if row["site_url"] is not None else None,
+                scanned_at=(
+                    str(row["scanned_at"])
+                    if row["scanned_at"] is not None
+                    else None
+                ),
+                ai_extraction=(
+                    str(row["ai_extraction"])
+                    if row["ai_extraction"] is not None
+                    else None
+                ),
+                ai_extraction_contract_hash=(
+                    str(row["ai_extraction_contract_hash"])
+                    if row["ai_extraction_contract_hash"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ]
+
+    async def get_profile_summary_cache(
+        self,
+        username: str,
+    ) -> ProfileSummaryCache | None:
+        db = self._require_db()
+        async with db.execute(
+            """
+            SELECT
+                profile_summary,
+                profile_summary_input_hash,
+                profile_summary_updated_at
+            FROM usernames
+            WHERE username = ?
+            """,
+            (username,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            return None
+        return ProfileSummaryCache(
+            profile_summary=(
+                str(row["profile_summary"])
+                if row["profile_summary"] is not None
+                else None
+            ),
+            input_hash=(
+                str(row["profile_summary_input_hash"])
+                if row["profile_summary_input_hash"] is not None
+                else None
+            ),
+            updated_at=(
+                str(row["profile_summary_updated_at"])
+                if row["profile_summary_updated_at"] is not None
+                else None
+            ),
+        )
+
+    async def invalidate_username_profile_summary(self, username: str) -> None:
+        db = self._require_db()
+        async with self._write_lock:
+            try:
+                await db.execute(
+                    """
+                    UPDATE usernames
+                    SET profile_summary_input_hash = NULL
+                    WHERE username = ?
+                    """,
+                    (username,),
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def _invalidate_profile_summary(self, username_id: int) -> None:
+        db = self._require_db()
         await db.execute(
             """
-            INSERT INTO usernames (username, profile_summary)
-            VALUES (?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                profile_summary = excluded.profile_summary,
-                last_scanned_at = CURRENT_TIMESTAMP
+            UPDATE usernames
+            SET
+                profile_summary_input_hash = NULL
+            WHERE id = ?
             """,
-            (username, profile_summary),
+            (username_id,),
         )
-        await db.commit()
 
     async def get_username_by_id(self, username_id: int) -> str | None:
         db = self._require_db()
@@ -203,7 +591,7 @@ class SherlockDB:
             row = await cur.fetchone()
 
         return row["username"] if row else None
-    
+
     async def get_saved_sites(self, username: str) -> set[str]:
         db = self._require_db()
 
