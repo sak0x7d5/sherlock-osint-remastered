@@ -15,6 +15,11 @@ key-reuse sequences). Candidate runs enforce accuracy, warm latency, input-token
 reduction, and output-token regression gates against the baseline report.
 
 Legacy numeric latency baselines remain supported when no report is supplied.
+An existing prompt that fails correctness gates may be used strictly as a
+performance reference only with
+``SHERLOCK_PASS_ONE_ALLOW_INELIGIBLE_BASELINE=1``; the report must still contain
+all 48 timing/token samples, and the candidate must pass every absolute
+correctness gate.
 The live test is skipped during normal runs so collection never starts or loads
 a local model accidentally.
 """
@@ -49,6 +54,9 @@ from sherlock_project.ai_engine import (
 ENABLE_ENV = "SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE"
 CAPTURE_BASELINE_ENV = "SHERLOCK_PASS_ONE_CAPTURE_BASELINE"
 BASELINE_REPORT_ENV = "SHERLOCK_PASS_ONE_BASELINE_REPORT"
+ALLOW_INELIGIBLE_BASELINE_ENV = (
+    "SHERLOCK_PASS_ONE_ALLOW_INELIGIBLE_BASELINE"
+)
 REPORT_PATH_ENV = "SHERLOCK_PASS_ONE_REPORT_PATH"
 BASELINE_P50_ENV = "SHERLOCK_PASS_ONE_BASELINE_P50_SECONDS"
 BASELINE_P95_ENV = "SHERLOCK_PASS_ONE_BASELINE_P95_SECONDS"
@@ -69,6 +77,7 @@ def _env_flag_enabled(name: str) -> bool:
 @dataclass(frozen=True, slots=True)
 class BenchmarkBaseline:
     source: str
+    accuracy_eligible: bool
     warm_p50_seconds: float
     warm_p95_seconds: float
     input_p50_tokens: float | None = None
@@ -651,13 +660,31 @@ def _baseline_from_report_payload(
     payload: dict[str, Any],
     *,
     source: str,
+    allow_ineligible: bool = False,
 ) -> BenchmarkBaseline:
     if payload.get("schema_version") != 1:
         raise ValueError("baseline report schema_version must be 1")
     if payload.get("benchmark") != "sherlock_pass_one_acceptance":
         raise ValueError("baseline report has an unexpected benchmark name")
-    if payload.get("eligible_baseline") is not True:
+    accuracy_eligible = payload.get("eligible_baseline") is True
+    if not accuracy_eligible and not allow_ineligible:
         raise ValueError("baseline report is not marked eligible_baseline=true")
+    if not accuracy_eligible:
+        expected_calls = _nested_value(payload, "workload", "expected_calls")
+        observed_calls = _nested_value(payload, "workload", "observed_calls")
+        input_count = _nested_value(payload, "tokens", "input", "count")
+        output_count = _nested_value(payload, "tokens", "output", "count")
+        if (
+            not isinstance(expected_calls, int)
+            or expected_calls <= 0
+            or observed_calls != expected_calls
+            or input_count != expected_calls
+            or output_count != expected_calls
+        ):
+            raise ValueError(
+                "ineligible baseline does not contain one complete "
+                "performance sample per expected call"
+            )
     model = _nested_value(payload, "model")
     if not isinstance(model, dict):
         raise ValueError("baseline report model must be an object")
@@ -691,6 +718,7 @@ def _baseline_from_report_payload(
         raise ValueError("baseline report workload.fingerprint must be a string")
     return BenchmarkBaseline(
         source=source,
+        accuracy_eligible=accuracy_eligible,
         warm_p50_seconds=_positive_report_number(
             payload,
             "latency_seconds",
@@ -724,14 +752,22 @@ def _baseline_from_report_payload(
     )
 
 
-def _load_baseline_report(path: Path) -> BenchmarkBaseline:
+def _load_baseline_report(
+    path: Path,
+    *,
+    allow_ineligible: bool = False,
+) -> BenchmarkBaseline:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"could not read baseline report {path}: {error}") from error
     if not isinstance(payload, dict):
         raise ValueError("baseline report root must be an object")
-    return _baseline_from_report_payload(payload, source=str(path.resolve()))
+    return _baseline_from_report_payload(
+        payload,
+        source=str(path.resolve()),
+        allow_ineligible=allow_ineligible,
+    )
 
 
 def _required_positive_float(name: str) -> float:
@@ -757,11 +793,17 @@ def _resolve_baseline(*, capture_baseline: bool) -> BenchmarkBaseline | None:
     report_path = os.getenv(BASELINE_REPORT_ENV, "").strip()
     if report_path:
         try:
-            return _load_baseline_report(Path(report_path).expanduser())
+            return _load_baseline_report(
+                Path(report_path).expanduser(),
+                allow_ineligible=_env_flag_enabled(
+                    ALLOW_INELIGIBLE_BASELINE_ENV
+                ),
+            )
         except ValueError as error:
             pytest.fail(str(error), pytrace=False)
     return BenchmarkBaseline(
         source="legacy numeric environment variables",
+        accuracy_eligible=True,
         warm_p50_seconds=_required_positive_float(BASELINE_P50_ENV),
         warm_p95_seconds=_required_positive_float(BASELINE_P95_ENV),
     )
@@ -1327,6 +1369,9 @@ async def test_configured_local_model_pass_one_acceptance() -> None:
         },
         "comparison": {
             "baseline_source": baseline.source if baseline is not None else None,
+            "baseline_accuracy_eligible": (
+                baseline.accuracy_eligible if baseline is not None else None
+            ),
             "extra_baseline_calls_in_this_suite": 0,
             "latency_limit_p50_110_percent": latency_limit_p50,
             "latency_limit_p95_110_percent": latency_limit_p95,
@@ -1359,11 +1404,15 @@ def _example_baseline_payload() -> dict[str, Any]:
             "temperature": 0.1,
             "context_length": 16_384,
         },
-        "workload": {"fingerprint": "fixture-fingerprint"},
+        "workload": {
+            "fingerprint": "fixture-fingerprint",
+            "expected_calls": 48,
+            "observed_calls": 48,
+        },
         "latency_seconds": {"warm_p50": 1.0, "warm_p95": 2.0},
         "tokens": {
-            "input": {"p50": 1_000},
-            "output": {"p50": 100},
+            "input": {"count": 48, "p50": 1_000},
+            "output": {"count": 48, "p50": 100},
         },
     }
 
@@ -1387,6 +1436,7 @@ def test_baseline_report_loader_keeps_comparison_metadata() -> None:
     )
 
     assert baseline.source == "baseline.json"
+    assert baseline.accuracy_eligible is True
     assert baseline.warm_p50_seconds == 1.0
     assert baseline.input_p50_tokens == 1_000
     assert baseline.output_p50_tokens == 100
@@ -1401,6 +1451,20 @@ def test_baseline_report_loader_rejects_failed_capture() -> None:
 
     with pytest.raises(ValueError, match="eligible_baseline"):
         _baseline_from_report_payload(payload, source="failed.json")
+
+
+def test_complete_failed_capture_can_be_explicit_performance_reference() -> None:
+    payload = _example_baseline_payload()
+    payload["eligible_baseline"] = False
+
+    baseline = _baseline_from_report_payload(
+        payload,
+        source="failed.json",
+        allow_ineligible=True,
+    )
+
+    assert baseline.accuracy_eligible is False
+    assert baseline.input_p50_tokens == 1_000
 
 
 def test_workload_fingerprint_is_stable_and_nonempty() -> None:
