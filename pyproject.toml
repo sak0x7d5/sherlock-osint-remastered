@@ -45,7 +45,6 @@ repository = "https://github.com/sherlock-project/sherlock"
 [tool.poetry.dependencies]
 python = ">=3.13,<4.0"
 certifi = ">=2019.6.16"
-colorama = "^0.4.1"
 rich = "^15.0.0"
 PySocks = "^1.7.0"
 requests = "^2.22.0"
@@ -74,4 +73,4 @@ pytest-asyncio = "^1.3.0"
 defusedxml = "^0.7.1"
 
 [tool.poetry.scripts]
-sherlock = 'sherlock_project.sherlock:main'
+sherlock = 'sherlock_project.sherlock:cli'
