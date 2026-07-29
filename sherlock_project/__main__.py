@@ -8,7 +8,6 @@ networks.
 """
 
 import sys
-import asyncio
 
 if __name__ == "__main__":
     # Check if the user is using the correct version of Python
@@ -19,4 +18,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     from sherlock_project import sherlock
-    asyncio.run(sherlock.main())
+    sherlock.cli()

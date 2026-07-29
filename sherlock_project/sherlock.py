@@ -17,20 +17,34 @@ except ImportError:
     sys.exit(1)
 
 import csv
-import signal
 import pandas as pd
 import os
 import re
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
-from json import loads as json_loads
+from json import dumps as json_dumps, loads as json_loads
 from time import perf_counter
-from typing import Optional
+from typing import Awaitable, Callable, Optional, Sequence
 import asyncio
 
 import requests
 from playwright.async_api import APIResponse, Response, TimeoutError, Error as PlaywrightError
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.database import SherlockDB
+from sherlock_project.ai_config import AIConfigError, AISettings, load_ai_settings
+from sherlock_project.ai_engine import (
+    AIService,
+    PassOneKeyRegistry,
+    pass_one_contract_hash,
+)
+from sherlock_project.ai_setup import run_ai_setup
+from sherlock_project.content_extraction import extract_profile_content
+from sherlock_project.investigation_context import (
+    build_investigation_context,
+    parse_inline_anchor,
+)
+from sherlock_project.profile_synthesis import IdentityAnchor
+from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
+from sherlock_project.synthesis_pipeline import synthesize_username_profile
 from sherlock_project.__init__ import (
     __longname__,
     __shortname__,
@@ -40,12 +54,14 @@ from sherlock_project.__init__ import (
 
 from sherlock_project.result import QueryStatus
 from sherlock_project.result import QueryResult
-from sherlock_project.notify import QueryNotify
-from sherlock_project.notify import QueryNotifyPrint
+from sherlock_project.notify import (
+    INTERRUPTION_MESSAGE,
+    QueryNotify,
+    QueryNotifyPrint,
+    TerminalReporter,
+)
 from sherlock_project.sites import SitesInformation
-from colorama import init
 from argparse import ArgumentTypeError
-
 
 async def await_response(completed_task: asyncio.Task) -> tuple[APIResponse | Response | None, str, str | None]:
     response = None
@@ -99,6 +115,9 @@ def check_for_parameter(username):
 
 checksymbols = ["_", "-", "."]
 
+AIEnqueue = Callable[[int], Awaitable[None]]
+AICancel = Callable[[], None]
+
 
 def multiple_usernames(username):
     """replace the parameter with with symbols and return a list of usernames"""
@@ -108,15 +127,319 @@ def multiple_usernames(username):
     return allUsernames
 
 
+def expand_usernames(usernames: list[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for username in usernames:
+        candidates = (
+            multiple_usernames(username)
+            if check_for_parameter(username)
+            else [username]
+        )
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            expanded.append(candidate)
+    return expanded
+
+
+async def synthesize_profiles(
+    *,
+    db: SherlockDB,
+    ai_service: AIService,
+    usernames: list[str],
+    force: bool,
+    inline_anchors: Sequence[IdentityAnchor] = (),
+    reporter: TerminalReporter | None = None,
+) -> None:
+    context = build_investigation_context(inline_anchors)
+    for username in usernames:
+        if reporter is not None:
+            reporter.synthesis_started(username)
+        try:
+            result = await synthesize_username_profile(
+                db=db,
+                ai_service=ai_service,
+                username=username,
+                context=context,
+                force=force,
+            )
+        except Exception as error:
+            if reporter is not None:
+                reporter.synthesis_failed(username, error)
+            continue
+
+        if reporter is not None:
+            reporter.synthesis_finished(
+                username,
+                result.profile,
+                cache_hit=result.cache_hit,
+            )
+
+
+async def report_cached_ai_evidence(
+    *,
+    db: SherlockDB,
+    usernames: Sequence[str],
+    contract_hash: str,
+    reporter: TerminalReporter | None,
+) -> None:
+    if reporter is None or not reporter.verbose:
+        return
+    for username in usernames:
+        records = await db.get_ai_profile_evidence(username)
+        reporter.ai_cached_evidence(
+            username,
+            [
+                (record.site_name, record.ai_extraction)
+                for record in records
+                if record.ai_extraction_contract_hash == contract_hash
+            ],
+        )
+
+
+async def run_synthesis_only(
+    *,
+    usernames: list[str],
+    force: bool,
+    inline_anchors: Sequence[IdentityAnchor] = (),
+    reporter: TerminalReporter | None = None,
+    ai_settings: AISettings | None = None,
+) -> None:
+    db = await SherlockDB.create("sherlock.db")
+    ai_service: AIService | None = None
+    contract_hash = pass_one_contract_hash()
+    interrupted = False
+    try:
+        await report_cached_ai_evidence(
+            db=db,
+            usernames=usernames,
+            contract_hash=contract_hash,
+            reporter=reporter,
+        )
+        needs_model = build_investigation_context(inline_anchors).has_anchors
+        if needs_model and reporter is not None:
+            reporter.ai_model_starting()
+        trace_callback = reporter.ai_trace if reporter is not None else None
+        ai_service = (
+            await AIService.create(
+                settings=ai_settings,
+                trace_callback=trace_callback,
+            )
+            if needs_model
+            else AIService(trace_callback=trace_callback)
+        )
+        if needs_model and reporter is not None:
+            reporter.ai_model_ready()
+        await synthesize_profiles(
+            db=db,
+            ai_service=ai_service,
+            usernames=usernames,
+            force=force,
+            inline_anchors=inline_anchors,
+            reporter=reporter,
+        )
+    except asyncio.CancelledError:
+        interrupted = True
+        raise
+    finally:
+        cleanup_error, cleanup_cancellation = await _close_ai_service_and_db(
+            ai_service=ai_service,
+            db=db,
+        )
+        if not interrupted:
+            if cleanup_cancellation is not None:
+                raise cleanup_cancellation
+            if cleanup_error is not None:
+                raise cleanup_error
+
+
+async def _close_ai_service_and_db(
+    *,
+    ai_service: AIService | None,
+    db: SherlockDB,
+) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+    """Attempt both closers and report the last failure plus any cancellation."""
+    cleanup_error: BaseException | None = None
+    cleanup_cancellation: asyncio.CancelledError | None = None
+    if ai_service is not None:
+        try:
+            await ai_service.close()
+        except BaseException as error:
+            cleanup_error = error
+            if isinstance(error, asyncio.CancelledError):
+                cleanup_cancellation = error
+
+    try:
+        await db.close()
+    except BaseException as error:
+        cleanup_error = error
+        if isinstance(error, asyncio.CancelledError):
+            cleanup_cancellation = error
+
+    return cleanup_error, cleanup_cancellation
+
+
+async def ai_worker(
+    ai_queue: asyncio.Queue[int],
+    sherlock_db: SherlockDB,
+    ai_service: AIService,
+    reporter: TerminalReporter | None = None,
+) -> None:
+    contract_hash = ai_service.pass_one_contract_hash
+    key_registry = PassOneKeyRegistry()
+    hydrated_usernames: set[str] = set()
+
+    while True:
+        try:
+            site_id = await ai_queue.get()
+        except asyncio.QueueShutDown:
+            return
+
+        site_name = f"site id {site_id}"
+        try:
+            job = await sherlock_db.get_ai_extraction_job(
+                site_id=site_id,
+                contract_hash=contract_hash,
+            )
+            if job is None:
+                if reporter is not None:
+                    reporter.ai_job_started(site_name)
+                    reporter.ai_job_finished("skipped")
+                continue
+            site_name = job.site_name
+            if reporter is not None:
+                reporter.ai_job_started(site_name)
+            if job.username not in hydrated_usernames:
+                await hydrate_pass_one_key_registry(
+                    sherlock_db=sherlock_db,
+                    registry=key_registry,
+                    username=job.username,
+                    contract_hash=contract_hash,
+                )
+                hydrated_usernames.add(job.username)
+            site_content = await asyncio.to_thread(
+                extract_profile_content,
+                job.response_text,
+            )
+            if not site_content:
+                await sherlock_db.update_result_ai_extraction(
+                    site_id=site_id,
+                    ai_extraction="{}",
+                    contract_hash=contract_hash,
+                )
+                if reporter is not None:
+                    reporter.ai_job_finished("no_facts")
+                continue
+
+            response = await ai_service.extract_profile(
+                username=job.username,
+                site_name=job.site_name,
+                site_content=site_content,
+                known_profile_keys=key_registry.names(job.username),
+            )
+
+            await sherlock_db.update_result_ai_extraction(
+                site_id=site_id,
+                ai_extraction=json_dumps(
+                    response.extraction,
+                    ensure_ascii=False,
+                ),
+                contract_hash=contract_hash,
+            )
+            key_registry.add(job.username, response.extraction)
+            if reporter is not None:
+                reporter.ai_job_finished(
+                    "with_facts" if response.extraction else "no_facts"
+                )
+        except Exception as error:
+            if reporter is not None:
+                reporter.ai_failed(site_name, error)
+                reporter.ai_job_finished("pending")
+        finally:
+            ai_queue.task_done()
+
+
+async def _drain_deferred_ai_jobs(
+    ai_queue: asyncio.Queue[int],
+    reporter: TerminalReporter | None = None,
+) -> None:
+    """Drain queued IDs after model startup fails, leaving rows retryable."""
+    while True:
+        try:
+            await ai_queue.get()
+        except asyncio.QueueShutDown:
+            return
+
+        try:
+            if reporter is not None:
+                reporter.ai_job_deferred()
+        finally:
+            ai_queue.task_done()
+
+
+async def run_ai_pipeline(
+    ai_queue: asyncio.Queue[int],
+    sherlock_db: SherlockDB,
+    reporter: TerminalReporter | None = None,
+    ai_settings: AISettings | None = None,
+) -> AIService | None:
+    """Load the local model, then own pass-one processing until shutdown."""
+    try:
+        ai_service = await AIService.create(
+            settings=ai_settings,
+            trace_callback=(reporter.ai_trace if reporter is not None else None),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        if reporter is not None:
+            reporter.ai_model_failed(error)
+        await _drain_deferred_ai_jobs(ai_queue, reporter)
+        return None
+
+    if reporter is not None:
+        reporter.ai_model_ready()
+
+    try:
+        await ai_worker(
+            ai_queue=ai_queue,
+            sherlock_db=sherlock_db,
+            ai_service=ai_service,
+            reporter=reporter,
+        )
+    except BaseException:
+        await ai_service.close()
+        raise
+
+    return ai_service
+
+
+def _cancel_ai_pipeline_now(
+    *,
+    ai_queue: asyncio.Queue[int] | None,
+    ai_pipeline_task: asyncio.Task[AIService | None] | None,
+) -> None:
+    """Signal active pass-one work to stop without waiting for its cleanup."""
+    if ai_queue is not None:
+        ai_queue.shutdown(immediate=True)
+    if ai_pipeline_task is not None and not ai_pipeline_task.done():
+        ai_pipeline_task.cancel()
+
+
 async def sherlock(
     username: str,
     engine: PlaywrightEngine,
     db: SherlockDB,
     site_data: dict[str, dict[str, str]],
     query_notify: QueryNotify,
+    enqueue_ai: AIEnqueue | None = None,
+    force_ai_extraction: bool = False,
     dump_response: bool = False,
     proxy: Optional[str] = None,
     timeout: int = 60,
+    on_cancel: AICancel | None = None,
 ) -> dict[str, dict[str, str | QueryResult]]:
     """Run Sherlock Analysis.
 
@@ -129,9 +452,15 @@ async def sherlock(
     query_notify           -- Object with base type of QueryNotify().
                               This will be used to notify the caller about
                               query results.
+    enqueue_ai             -- Optional callback that schedules a saved result
+                              for AI extraction.
+    force_ai_extraction    -- Re-run AI extraction for freshly saved claimed
+                              results even when their source is unchanged.
     proxy                  -- String indicating the proxy URL
     timeout                -- Time in seconds to wait before timing out request.
                               Default is 60 seconds.
+    on_cancel              -- Optional synchronous callback invoked before site
+                              task cleanup when the scan is interrupted.
 
     Return Value:
     Dictionary containing results from report. Key of dictionary is the name
@@ -148,7 +477,7 @@ async def sherlock(
     """
 
     # Notify caller that we are starting the query.
-    query_notify.start(username)
+    query_notify.start(username, total=len(site_data))
 
     # Results from analysis of all sites
     results_total = {}
@@ -268,7 +597,7 @@ async def sherlock(
             except Exception:
                 http_status = "?"
             try:
-                response_text = r.text.encode("UTF-8")
+                response_text = r.text
             except Exception:
                 response_text = ""
 
@@ -344,32 +673,28 @@ async def sherlock(
                             query_status = QueryStatus.CLAIMED
 
             if dump_response:
-                print("+++++++++++++++++++++")
-                print(f"TARGET NAME   : {social_network}")
-                print(f"USERNAME      : {username}")
-                print(f"TARGET URL    : {url}")
-                print(f"TEST METHOD   : {error_type}")
-                try:
-                    print(f"STATUS CODES  : {net_info['errorCode']}")
-                except KeyError:
-                    pass
-                print("Results...")
-                try:
-                    print(f"RESPONSE CODE : {r.status}")
-                except Exception:
-                    pass
-                try:
-                    print(f"ERROR TEXT    : {net_info['errorMsg']}")
-                except KeyError:
-                    pass
-                print(">>>>> BEGIN RESPONSE TEXT")
-                try:
-                    print(r.text)
-                except Exception:
-                    pass
-                print("<<<<< END RESPONSE TEXT")
-                print("VERDICT       : " + str(query_status))
-                print("+++++++++++++++++++++")
+                dump_lines = [
+                    "+++++++++++++++++++++",
+                    f"TARGET NAME   : {social_network}",
+                    f"USERNAME      : {username}",
+                    f"TARGET URL    : {url}",
+                    f"TEST METHOD   : {error_type}",
+                ]
+                if "errorCode" in net_info:
+                    dump_lines.append(f"STATUS CODES  : {net_info['errorCode']}")
+                dump_lines.extend(["Results...", f"RESPONSE CODE : {http_status}"])
+                if "errorMsg" in net_info:
+                    dump_lines.append(f"ERROR TEXT    : {net_info['errorMsg']}")
+                dump_lines.extend(
+                    [
+                        ">>>>> BEGIN RESPONSE TEXT",
+                        str(response_text),
+                        "<<<<< END RESPONSE TEXT",
+                        f"VERDICT       : {query_status}",
+                        "+++++++++++++++++++++",
+                    ]
+                )
+                query_notify.raw("\n".join(dump_lines))
 
             # Notify caller about results of query.
             result: QueryResult = QueryResult(
@@ -382,16 +707,27 @@ async def sherlock(
             )
             query_notify.update(result)
 
-            await db.save_result(
-                username=username, 
+            should_run_ai = (
+                enqueue_ai is not None
+                and query_status is QueryStatus.CLAIMED
+                and bool(response_text)
+            )
+
+            site_id = await db.save_result(
+                username=username,
                 site_url=url,
                 status_code=http_status,
-                status=str(query_status), 
+                status=str(query_status),
                 response_text=response_text,
                 site_name=social_network,
                 query_time_ms=response_time,
-                error_context=error_context
-                )
+                error_context=error_context,
+                force_ai_extraction=(
+                    force_ai_extraction and should_run_ai
+                ),
+            )
+            if should_run_ai:
+                await enqueue_ai(site_id)
 
             # Save status of request
             results_site["status"] = result
@@ -402,15 +738,22 @@ async def sherlock(
 
             # Add this site's results into final dictionary with all of the other results.
             results_total[social_network] = results_site
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pending = list(tasks.keys())
+    except (asyncio.CancelledError, KeyboardInterrupt) as interruption:
+        if on_cancel is not None:
+            try:
+                on_cancel()
+            except BaseException as error:
+                interruption.add_note(
+                    "Cancellation callback failed: "
+                    f"{type(error).__name__}: {error}"
+                )
 
-        for task in pending:
-            task.cancel()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
-    finally:
-        await db.close()
     return results_total
 
 
@@ -438,7 +781,9 @@ def timeout_check(value):
 
     return float_value
 
-async def main():
+async def main() -> int:
+    if len(sys.argv) >= 3 and sys.argv[1:3] == ["setup", "ai"]:
+        return await run_ai_setup(sys.argv[3:])
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
@@ -594,7 +939,122 @@ async def main():
         help="Ignore upstream exclusions (may return more false positives)",
     )
 
+    parser.add_argument(
+        "--ai",
+        action="store_true",
+        default=False,
+        help=(
+            "Extract structured profile data with the configured local AI "
+            "model. With --site, refresh only those sites and run pass one only."
+        ),
+    )
+
+    parser.add_argument(
+        "--ai-synthesize-only",
+        action="store_true",
+        default=False,
+        help="Build AI profiles from existing database extractions without scanning.",
+    )
+
+    parser.add_argument(
+        "--anchor",
+        action="append",
+        default=[],
+        type=parse_inline_anchor,
+        metavar="[TRUST:]FIELD=VALUE",
+        help=(
+            "Add a run-only identity anchor to every username. Repeat for "
+            "multiple values; unprefixed values use context trust."
+        ),
+    )
+
+    parser.add_argument(
+        "--force-ai-synthesis",
+        action="store_true",
+        default=False,
+        help=(
+            "Rebuild AI profiles during a normal --ai run even when inputs are "
+            "unchanged. --ai-synthesize-only always rebuilds."
+        ),
+    )
+
     args = parser.parse_args()
+    targeted_ai_scan = args.ai and bool(args.site_list)
+
+    if args.ai and args.ai_synthesize_only:
+        parser.error("--ai and --ai-synthesize-only cannot be used together")
+    synthesis_only_scan_options: list[str] = []
+    if args.ai_synthesize_only and args.site_list:
+        synthesis_only_scan_options.append("--site")
+    if args.ai_synthesize_only and args.local:
+        synthesis_only_scan_options.append("--local")
+    if synthesis_only_scan_options:
+        parser.error(
+            f"{' and '.join(synthesis_only_scan_options)} cannot be used with "
+            "--ai-synthesize-only. Synthesis-only performs no scan and uses all "
+            "saved extractions. Refresh selected sites with --ai --site first, "
+            "then run --ai-synthesize-only separately."
+        )
+    if args.anchor and not (args.ai or args.ai_synthesize_only):
+        parser.error("--anchor requires --ai or --ai-synthesize-only")
+    if args.force_ai_synthesis and not (args.ai or args.ai_synthesize_only):
+        parser.error("--force-ai-synthesis requires an AI mode")
+    if targeted_ai_scan and (args.anchor or args.force_ai_synthesis):
+        parser.error(
+            "--anchor and --force-ai-synthesis affect pass two, "
+            "but --site --ai runs pass one only. Refresh the site without those "
+            "options, then run --ai-synthesize-only with your anchors."
+        )
+
+    all_usernames = expand_usernames(args.username)
+    needs_ai_model = args.ai or (
+        args.ai_synthesize_only
+        and build_investigation_context(args.anchor).has_anchors
+    )
+    ai_settings: AISettings | None = None
+    if needs_ai_model:
+        try:
+            ai_settings = load_ai_settings()
+        except AIConfigError as error:
+            parser.error(str(error))
+
+    query_notify = QueryNotifyPrint(
+        result=None,
+        verbose=args.verbose,
+        print_all=args.print_all,
+        browse=args.browse,
+        no_color=args.no_color,
+    )
+    query_notify.debug("Verbose diagnostics enabled")
+    if ai_settings is not None:
+        query_notify.ai_configuration(
+            model=ai_settings.model,
+            base_url=ai_settings.base_url,
+            temperature=ai_settings.temperature,
+            context_length=ai_settings.context_length,
+        )
+    start_time = perf_counter()
+    if args.ai_synthesize_only:
+        query_notify.info(
+            "Synthesis-only mode: rebuilding profiles from saved extractions"
+        )
+        interrupted = False
+        try:
+            await run_synthesis_only(
+                usernames=all_usernames,
+                force=True,
+                inline_anchors=args.anchor,
+                reporter=query_notify,
+                ai_settings=ai_settings,
+            )
+        except asyncio.CancelledError:
+            interrupted = True
+        finally:
+            if interrupted:
+                query_notify.processing_interrupted()
+            else:
+                query_notify.finish(elapsed_time=perf_counter() - start_time)
+        return 130 if interrupted else 0
 
     # Check for newer version of Sherlock. If it exists, let the user know about it
     try:
@@ -603,33 +1063,28 @@ async def main():
         latest_remote_tag = latest_release_json["tag_name"]
 
         if latest_remote_tag[1:] != __version__:
-            print(
-                f"Update available! {__version__} --> {latest_remote_tag[1:]}"
-                f"\n{latest_release_json['html_url']}"
+            query_notify.update_available(
+                __version__,
+                latest_remote_tag[1:],
+                latest_release_json["html_url"],
             )
 
     except Exception as error:
-        print(f"A problem occurred while checking for an update: {error}")
+        query_notify.debug(
+            f"Sherlock update check failed ({type(error).__name__})"
+        )
 
-    # Make prompts
     if args.proxy is not None:
-        print("Using the proxy: " + args.proxy)
-
-    if args.no_color:
-        # Disable color output.
-        init(strip=True, convert=False)
-    else:
-        # Enable color output.
-        init(autoreset=True)
+        query_notify.info(f"Using proxy {args.proxy}")
 
     # Check if both output methods are entered as input.
     if args.output is not None and args.folderoutput is not None:
-        print("You can only use one of the output methods.")
+        query_notify.fatal("You can only use one output method")
         sys.exit(1)
 
     # Check validity for single username output.
     if args.output is not None and len(args.username) != 1:
-        print("You can only use --output with a single username")
+        query_notify.fatal("--output can only be used with one username")
         sys.exit(1)
 
     # Create object with all information about sites we are aware of.
@@ -651,7 +1106,9 @@ async def main():
 
                     # Check if it's a valid pull request
                     if "message" in pull_request_json:
-                        print(f"ERROR: Pull request #{pull_number} not found.")
+                        query_notify.fatal(
+                            f"Pull request #{pull_number} was not found"
+                        )
                         sys.exit(1)
 
                     head_commit_sha = pull_request_json["head"]["sha"]
@@ -663,7 +1120,10 @@ async def main():
                 do_not_exclude=args.site_list,
             )
     except Exception as error:
-        print(f"ERROR:  {error}")
+        query_notify.fatal(
+            "Unable to load site definitions",
+            detail=type(error).__name__,
+        )
         sys.exit(1)
 
     if not args.nsfw:
@@ -692,39 +1152,96 @@ async def main():
                 site_missing.append(f"'{site}'")
 
         if site_missing:
-            print(f"Error: Desired sites not found: {', '.join(site_missing)}.")
+            query_notify.warning(
+                f"Requested sites were not found: {', '.join(site_missing)}"
+            )
 
         if not site_data:
+            query_notify.fatal("None of the requested sites are available")
             sys.exit(1)
 
-    # Create notify object for query results.
-    query_notify = QueryNotifyPrint(
-        result=None, verbose=args.verbose, print_all=args.print_all, browse=args.browse
-    )
-
     # Run report on all specified users.
-    all_usernames = []
-    for username in args.username:
-        if check_for_parameter(username):
-            for name in multiple_usernames(username):
-                all_usernames.append(name)
-        else:
-            all_usernames.append(username)
-    
     db = await SherlockDB.create("sherlock.db")
-    start_time = perf_counter()
+    results = {}
+    ai_service: AIService | None = None
+    ai_queue: asyncio.Queue[int] | None = None
+    ai_pipeline_task: asyncio.Task[AIService | None] | None = None
+    ai_pipeline_awaited = False
+    enqueue_ai_callback: AIEnqueue | None = None
+    scheduled_ai_ids: set[int] = set()
+    current_pass_one_contract_hash: str | None = None
+    interrupted = False
+    ai_cancellation_signalled = False
+
+    def cancel_ai_pipeline() -> None:
+        nonlocal ai_cancellation_signalled
+        if ai_cancellation_signalled:
+            return
+        ai_cancellation_signalled = True
+        _cancel_ai_pipeline_now(
+            ai_queue=ai_queue,
+            ai_pipeline_task=ai_pipeline_task,
+        )
+
     try:
-        async with PlaywrightEngine(headless=True) as engine:
+        if args.ai:
+            current_pass_one_contract_hash = pass_one_contract_hash()
+            if not targeted_ai_scan:
+                await report_cached_ai_evidence(
+                    db=db,
+                    usernames=all_usernames,
+                    contract_hash=current_pass_one_contract_hash,
+                    reporter=query_notify,
+                )
+            query_notify.ai_model_starting()
+            if targeted_ai_scan:
+                query_notify.targeted_ai_mode()
+            ai_queue = asyncio.Queue()
+            ai_pipeline_task = asyncio.create_task(
+                run_ai_pipeline(
+                    ai_queue=ai_queue,
+                    sherlock_db=db,
+                    reporter=query_notify,
+                    ai_settings=ai_settings,
+                ),
+                name="ai-pipeline",
+            )
+            # Let model loading begin before browser startup and site scanning.
+            await asyncio.sleep(0)
+
+            async def enqueue_ai_result(site_id: int) -> None:
+                if site_id in scheduled_ai_ids:
+                    return
+
+                if ai_queue is None:
+                    raise RuntimeError("AI queue is not available")
+
+                scheduled_ai_ids.add(site_id)
+                try:
+                    await ai_queue.put(site_id)
+                    query_notify.ai_scheduled()
+                except BaseException:
+                    scheduled_ai_ids.remove(site_id)
+                    raise
+
+            enqueue_ai_callback = enqueue_ai_result
+
+        async with PlaywrightEngine(
+            headless=True,
+            status_callback=query_notify.browser_status,
+            cancellation_callback=cancel_ai_pipeline if args.ai else None,
+        ) as engine:
             for username in all_usernames:
-                # if the user didn't specify any site list then only scan 
-                # the sites not already in the database for that username
+                # If no site list was provided, skip sites already in the database.
                 if not args.site_list:
                     saved_sites = await db.get_saved_sites(username=username)
                     site_data = {
-                        site_name: site_data_all[site_name] for site_name in site_data_all.keys() 
+                        site_name: site_data_all[site_name]
+                        for site_name in site_data_all
                         if site_name not in saved_sites
-                        }
-                
+                    }
+
+                scan_started_at = perf_counter()
                 results = await sherlock(
                     username=username,
                     engine=engine,
@@ -734,11 +1251,83 @@ async def main():
                     dump_response=args.dump_response,
                     proxy=args.proxy,
                     timeout=args.timeout,
+                    enqueue_ai=enqueue_ai_callback,
+                    force_ai_extraction=targeted_ai_scan,
+                    on_cancel=cancel_ai_pipeline if args.ai else None,
+                )
+                query_notify.finish_scan(
+                    elapsed_time=perf_counter() - scan_started_at
+                )
+
+                if enqueue_ai_callback is not None and not targeted_ai_scan:
+                    if current_pass_one_contract_hash is None:
+                        raise RuntimeError("Pass 1 contract hash is unavailable")
+                    pending_ids = await db.get_pending_ai_extraction_ids(
+                        username,
+                        contract_hash=current_pass_one_contract_hash,
                     )
+                    for site_id in pending_ids:
+                        await enqueue_ai_callback(site_id)
+
+        if ai_queue is not None and ai_pipeline_task is not None:
+            query_notify.ai_draining()
+            ai_queue.shutdown()
+            ai_service = await ai_pipeline_task
+            ai_pipeline_awaited = True
+            await ai_queue.join()
+            query_notify.ai_pass_finished()
+            if targeted_ai_scan and ai_service is not None:
+                query_notify.targeted_ai_complete()
+
+        if ai_service is not None and not targeted_ai_scan:
+            await synthesize_profiles(
+                db=db,
+                ai_service=ai_service,
+                usernames=all_usernames,
+                force=args.force_ai_synthesis,
+                inline_anchors=args.anchor,
+                reporter=query_notify,
+            )
+
     except asyncio.CancelledError:
-        # use pass instead of raise
-        # we still want the final results output
-        pass
+        interrupted = True
+
+    finally:
+        if ai_pipeline_task is not None and not ai_pipeline_awaited:
+            cancel_ai_pipeline()
+
+            pipeline_result = (
+                await asyncio.gather(
+                    ai_pipeline_task,
+                    return_exceptions=True,
+                )
+            )[0]
+            if (
+                ai_service is None
+                and pipeline_result is not None
+                and not isinstance(pipeline_result, BaseException)
+            ):
+                ai_service = pipeline_result
+
+        try:
+            cleanup_error, cleanup_cancellation = (
+                await _close_ai_service_and_db(
+                    ai_service=ai_service,
+                    db=db,
+                )
+            )
+        finally:
+            query_notify.close()
+
+        if cleanup_cancellation is not None:
+            interrupted = True
+        if cleanup_error is not None and not interrupted:
+            raise cleanup_error
+
+    if interrupted:
+        query_notify.processing_interrupted()
+        return 130
+
     elapsed_time = (perf_counter() - start_time)
     if args.output:
         result_file = args.output
@@ -844,12 +1433,21 @@ async def main():
         )
         DataFrame.to_excel(f"{username}.xlsx", sheet_name="sheet1", index=False)
 
-    print()
     query_notify.finish(elapsed_time=elapsed_time)
+    return 0
+
+
+def cli() -> None:
+    """Synchronous console-script entrypoint."""
+    try:
+        exit_code = asyncio.run(main())
+    except KeyboardInterrupt:
+        print(INTERRUPTION_MESSAGE)
+        raise SystemExit(130) from None
+
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    cli()
