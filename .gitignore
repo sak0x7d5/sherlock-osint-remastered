@@ -8,6 +8,7 @@ poetry.lock
 # Regression Testing
 .coverage
 .tox/
+.pytest_cache/
 
 # Editor Configurations
 .vscode/
@@ -48,3 +49,8 @@ tests/.excluded_sites
 
 # Database
 *.db
+sherlock.db-*-response_text.bin
+
+# Local Codex experiment artifacts
+.codex-backups/
+.codex-cache/
