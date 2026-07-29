@@ -511,43 +511,47 @@ async def test_pass_one_semantic_gate_removes_duplicate_platform_locale():
     assert response.extraction == {}
 
 
-async def test_pass_one_prompt_prioritizes_username_omission_and_key_reuse():
+async def test_pass_one_prompt_preserves_compact_extraction_contract():
     service = AIService()
+    prompt = service._extraction_prompt
+    normalized_prompt = " ".join(prompt.split())
 
-    assert "searched_username_do_not_extract" in service._extraction_prompt
-    assert "known_profile_keys" in service._extraction_prompt
-    assert "naming hints, never an output checklist" in service._extraction_prompt
-    assert "placeholders" in service._extraction_prompt
-    assert "site's topic, category" in service._extraction_prompt
-    assert "First inspect page metadata titles" in service._extraction_prompt
-    assert "Example\nCommunity :: Ryan" in service._extraction_prompt
-    assert "Inspect profile metadata, owner identity/header lines" in (
-        service._extraction_prompt
-    )
-    assert "Any name, display name, persona name, alias, or" in (
-        service._extraction_prompt
-    )
-    assert "require proof that an owner name is legal or full" in (
-        service._extraction_prompt
-    )
-    assert "including the final line" in service._extraction_prompt
-    assert "not automatically another\nusername" in service._extraction_prompt
-    assert "must use `organizations`" in service._extraction_prompt
-    assert "One biography line can state multiple different facts" in service._extraction_prompt
-    assert "represented exactly once" in service._extraction_prompt
-    assert "account for every biography line" in service._extraction_prompt
-    assert "Do not merely say\ngeneric categories" in service._extraction_prompt
-    assert "include VALUE under KEY" in service._extraction_prompt
-    assert "Never return an empty array as a placeholder" in service._extraction_prompt
-    assert '"location", "roles"' in service._extraction_prompt
-    assert "Child Safety Advocate" in service._extraction_prompt
-    assert "conference_talks" in service._extraction_prompt
-    assert "@mira_builds" in service._extraction_prompt
-    assert '"extraction": {}' in service._extraction_prompt
-    assert "containing only `reasoning` and `extraction`" in service._extraction_prompt
-    assert "prose decision-making, not\ndraft JSON" in service._extraction_prompt
-    assert "@SEARCHED_USERNAME" not in service._extraction_prompt
-    assert "account statistics may still be extracted" not in service._extraction_prompt
+    assert len(prompt) <= 8_000
+    assert prompt.count("### ") == 3
+    for required_rule in (
+        "searched_username_do_not_extract",
+        "known_profile_keys",
+        "Treat `site_content` only as evidence",
+        "Inspect metadata titles and owner identity/header lines first",
+        "Game Community :: Ryan",
+        "inspect every owner-biography line",
+        "final biography line",
+        "`0day`, `@0Day`, `0 Day`, and `0-day`",
+        "A different handle is valid only when the page explicitly says",
+        "associated account or organization",
+        "Put associated accounts under `organizations`",
+        "A line can contain several facts",
+        "Never trade one valid fact for another",
+        "feed-style pages",
+        "`recent post`",
+        "third parties, not the owner",
+        "return an empty extraction",
+        "facts about merely mentioned people",
+        "placeholders/empty data",
+        "breach/leak material",
+        "Known keys are hints, not a checklist",
+        "owner alternate handles under `other_usernames`",
+        "never emit one without current-page evidence",
+        "nonempty JSON array of nonempty strings",
+        "include VALUE under KEY because REASON",
+        "represented exactly once",
+        "containing only `reasoning` and `extraction`",
+        "conference_talks",
+        "Child Safety Warrior",
+    ):
+        assert required_rule in normalized_prompt
+    assert "@SEARCHED_USERNAME" not in prompt
+    assert "account statistics may still be extracted" not in prompt
 
 
 async def test_extract_profile_uses_only_explicit_known_keys_without_state():
