@@ -3,27 +3,34 @@
 Run this benchmark explicitly against the configured LM Studio model with:
 
     SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE=1 \
-    SHERLOCK_PASS_ONE_BASELINE_P50_SECONDS=1.25 \
-    SHERLOCK_PASS_ONE_BASELINE_P95_SECONDS=1.80 \
+    SHERLOCK_PASS_ONE_CAPTURE_BASELINE=1 \
+    SHERLOCK_PASS_ONE_REPORT_PATH=/tmp/pass-one-baseline.json \
       poetry run pytest tests/test_pass_one_local_acceptance.py -q -s
 
-The baseline values must come from a frozen pre-redesign one-call run using the
-same warmed LM Studio session, model, and machine. Because that implementation
-is not retained here, this suite makes no hidden baseline generations. It makes
-exactly 48 production generations (three runs of fourteen independent fixtures
-plus three two-site key-reuse sequences) and checks warm p50 and p95 against the
-provided baselines. It is skipped during normal test runs so collection never
-starts or loads a local model accidentally.
+Then evaluate a candidate with ``SHERLOCK_PASS_ONE_BASELINE_REPORT`` pointing
+to that frozen report and a different ``SHERLOCK_PASS_ONE_REPORT_PATH``. The
+suite makes no hidden generations: each run makes exactly 48 production
+generations (three runs of fourteen independent fixtures plus three two-site
+key-reuse sequences). Candidate runs enforce accuracy, warm latency, input-token
+reduction, and output-token regression gates against the baseline report.
+
+Legacy numeric latency baselines remain supported when no report is supplied.
+The live test is skipped during normal runs so collection never starts or loads
+a local model accidentally.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 import json
 import math
 import os
+from pathlib import Path
 import re
 from statistics import median
+import subprocess
 from typing import Any
 
 import pytest
@@ -34,11 +41,15 @@ from sherlock_project.ai_engine import (
     AIService,
     DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
     OSINTResponse,
+    PASS_ONE_PROMPT_PATH,
     SAFE_EXTRACTION_KEY,
 )
 
 
 ENABLE_ENV = "SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE"
+CAPTURE_BASELINE_ENV = "SHERLOCK_PASS_ONE_CAPTURE_BASELINE"
+BASELINE_REPORT_ENV = "SHERLOCK_PASS_ONE_BASELINE_REPORT"
+REPORT_PATH_ENV = "SHERLOCK_PASS_ONE_REPORT_PATH"
 BASELINE_P50_ENV = "SHERLOCK_PASS_ONE_BASELINE_P50_SECONDS"
 BASELINE_P95_ENV = "SHERLOCK_PASS_ONE_BASELINE_P95_SECONDS"
 REPETITIONS = 3
@@ -46,8 +57,8 @@ SEARCHED_USERNAME = "0day"
 BASE_KNOWN_KEYS = ("full_name", "roles", "organizations")
 
 
-def _env_flag_enabled() -> bool:
-    return os.getenv(ENABLE_ENV, "").strip().casefold() in {
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().casefold() in {
         "1",
         "true",
         "yes",
@@ -55,13 +66,19 @@ def _env_flag_enabled() -> bool:
     }
 
 
-pytestmark = [
-    pytest.mark.local_ai_acceptance,
-    pytest.mark.skipif(
-        not _env_flag_enabled(),
-        reason=f"set {ENABLE_ENV}=1 to run the configured local model",
-    ),
-]
+@dataclass(frozen=True, slots=True)
+class BenchmarkBaseline:
+    source: str
+    warm_p50_seconds: float
+    warm_p95_seconds: float
+    input_p50_tokens: float | None = None
+    output_p50_tokens: float | None = None
+    provider: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    context_length: int | None = None
+    max_output_tokens: int | None = None
+    workload_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +482,23 @@ NOVEL_SECOND = AcceptanceCase(
 )
 
 
+def _workload_fingerprint() -> str:
+    payload = {
+        "searched_username": SEARCHED_USERNAME,
+        "base_known_keys": BASE_KNOWN_KEYS,
+        "repetitions": REPETITIONS,
+        "cases": [asdict(case) for case in CASES],
+        "novel_sequence": [asdict(NOVEL_FIRST), asdict(NOVEL_SECOND)],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
 _FORBIDDEN_KEY_WORDS = {
     "activity",
     "advertising",
@@ -559,6 +593,147 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return ordered[index]
 
 
+def _numeric_summary(values: list[int] | list[float]) -> dict[str, int | float | None]:
+    numeric_values = [float(value) for value in values]
+    if not numeric_values:
+        return {
+            "count": 0,
+            "min": None,
+            "p50": None,
+            "p95": None,
+            "max": None,
+            "total": 0,
+        }
+    return {
+        "count": len(numeric_values),
+        "min": min(numeric_values),
+        "p50": median(numeric_values),
+        "p95": _percentile(numeric_values, 0.95),
+        "max": max(numeric_values),
+        "total": sum(numeric_values),
+    }
+
+
+def _nested_value(payload: dict[str, Any], *path: str) -> Any:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            raise ValueError(f"baseline report is missing {'.'.join(path)}")
+        value = value[key]
+    return value
+
+
+def _positive_report_number(payload: dict[str, Any], *path: str) -> float:
+    value = _nested_value(payload, *path)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"baseline report {'.'.join(path)} must be a positive number"
+        )
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(
+            f"baseline report {'.'.join(path)} must be a positive number"
+        )
+    return number
+
+
+def _optional_report_number(
+    payload: dict[str, Any],
+    *path: str,
+) -> float | None:
+    try:
+        return _positive_report_number(payload, *path)
+    except ValueError:
+        return None
+
+
+def _baseline_from_report_payload(
+    payload: dict[str, Any],
+    *,
+    source: str,
+) -> BenchmarkBaseline:
+    if payload.get("schema_version") != 1:
+        raise ValueError("baseline report schema_version must be 1")
+    if payload.get("benchmark") != "sherlock_pass_one_acceptance":
+        raise ValueError("baseline report has an unexpected benchmark name")
+    if payload.get("eligible_baseline") is not True:
+        raise ValueError("baseline report is not marked eligible_baseline=true")
+    model = _nested_value(payload, "model")
+    if not isinstance(model, dict):
+        raise ValueError("baseline report model must be an object")
+    context_length = model.get("context_length")
+    if context_length is not None and (
+        isinstance(context_length, bool) or not isinstance(context_length, int)
+    ):
+        raise ValueError("baseline report model.context_length must be an integer")
+    temperature = model.get("temperature")
+    if temperature is not None and (
+        isinstance(temperature, bool)
+        or not isinstance(temperature, (int, float))
+        or not math.isfinite(float(temperature))
+    ):
+        raise ValueError("baseline report model.temperature must be finite")
+    max_output_tokens = _nested_value(
+        payload,
+        "contract",
+        "max_output_tokens",
+    )
+    if (
+        isinstance(max_output_tokens, bool)
+        or not isinstance(max_output_tokens, int)
+        or max_output_tokens <= 0
+    ):
+        raise ValueError(
+            "baseline report contract.max_output_tokens must be a positive integer"
+        )
+    workload_fingerprint = _nested_value(payload, "workload", "fingerprint")
+    if not isinstance(workload_fingerprint, str) or not workload_fingerprint:
+        raise ValueError("baseline report workload.fingerprint must be a string")
+    return BenchmarkBaseline(
+        source=source,
+        warm_p50_seconds=_positive_report_number(
+            payload,
+            "latency_seconds",
+            "warm_p50",
+        ),
+        warm_p95_seconds=_positive_report_number(
+            payload,
+            "latency_seconds",
+            "warm_p95",
+        ),
+        input_p50_tokens=_optional_report_number(
+            payload,
+            "tokens",
+            "input",
+            "p50",
+        ),
+        output_p50_tokens=_optional_report_number(
+            payload,
+            "tokens",
+            "output",
+            "p50",
+        ),
+        provider=str(model["provider"]) if model.get("provider") else None,
+        model=str(model["key"]) if model.get("key") else None,
+        temperature=(
+            float(temperature) if temperature is not None else None
+        ),
+        context_length=context_length,
+        max_output_tokens=max_output_tokens,
+        workload_fingerprint=workload_fingerprint,
+    )
+
+
+def _load_baseline_report(path: Path) -> BenchmarkBaseline:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"could not read baseline report {path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("baseline report root must be an object")
+    return _baseline_from_report_payload(payload, source=str(path.resolve()))
+
+
 def _required_positive_float(name: str) -> float:
     raw_value = os.getenv(name, "").strip()
     if not raw_value:
@@ -574,6 +749,73 @@ def _required_positive_float(name: str) -> float:
     if not math.isfinite(value) or value <= 0:
         pytest.fail(f"{name} must be a positive number of seconds", pytrace=False)
     return value
+
+
+def _resolve_baseline(*, capture_baseline: bool) -> BenchmarkBaseline | None:
+    if capture_baseline:
+        return None
+    report_path = os.getenv(BASELINE_REPORT_ENV, "").strip()
+    if report_path:
+        try:
+            return _load_baseline_report(Path(report_path).expanduser())
+        except ValueError as error:
+            pytest.fail(str(error), pytrace=False)
+    return BenchmarkBaseline(
+        source="legacy numeric environment variables",
+        warm_p50_seconds=_required_positive_float(BASELINE_P50_ENV),
+        warm_p95_seconds=_required_positive_float(BASELINE_P95_ENV),
+    )
+
+
+def _git_metadata() -> dict[str, str | bool | None]:
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        revision_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        ref_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "ref": None, "dirty": None}
+    return {
+        "commit": revision_result.stdout.strip() or None,
+        "ref": ref_result.stdout.strip() or None,
+        "dirty": bool(status_result.stdout.strip()),
+    }
+
+
+def _write_report(summary: dict[str, Any]) -> None:
+    raw_path = os.getenv(REPORT_PATH_ENV, "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path).expanduser()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        pytest.fail(f"could not write benchmark report {path}: {error}", pytrace=False)
 
 
 def _trace_issues(trace: AIRequestTrace) -> list[str]:
@@ -688,12 +930,22 @@ async def _run_case_once(
     return extraction, [f"{label}: {issue}" for issue in issues]
 
 
+@pytest.mark.local_ai_acceptance
+@pytest.mark.skipif(
+    not _env_flag_enabled(ENABLE_ENV),
+    reason=f"set {ENABLE_ENV}=1 to run the configured local model",
+)
 @pytest.mark.asyncio
 async def test_configured_local_model_pass_one_acceptance() -> None:
     """Exercise noisy sanitized inputs against the configured local model."""
 
-    baseline_p50 = _required_positive_float(BASELINE_P50_ENV)
-    baseline_p95 = _required_positive_float(BASELINE_P95_ENV)
+    capture_baseline = _env_flag_enabled(CAPTURE_BASELINE_ENV)
+    baseline = _resolve_baseline(capture_baseline=capture_baseline)
+    if capture_baseline and not os.getenv(REPORT_PATH_ENV, "").strip():
+        pytest.fail(
+            f"{CAPTURE_BASELINE_ENV}=1 requires {REPORT_PATH_ENV}",
+            pytrace=False,
+        )
     traces: list[AIRequestTrace] = []
     failures: list[str] = []
     structural_successes = 0
@@ -822,6 +1074,11 @@ async def test_configured_local_model_pass_one_acceptance() -> None:
         failures.append(
             f"suite call count: expected {expected_calls}, observed {len(traces)}"
         )
+    if structural_successes != expected_calls:
+        failures.append(
+            "structurally valid responses: "
+            f"expected {expected_calls}, observed {structural_successes}"
+        )
 
     recall = required_found / required_total if required_total else 0.0
     critical_recall = critical_found / critical_total if critical_total else 0.0
@@ -844,68 +1101,323 @@ async def test_configured_local_model_pass_one_acceptance() -> None:
         failures.append(f"exact dynamic-key reuse was {reuse_rate:.1%}, expected 100%")
 
     latencies = [trace.elapsed_seconds for trace in traces]
-    # The first generation is excluded from the warm latency gate. Model loading
-    # occurs during AIService.create(), but the first chat can still warm backend
-    # caches. No additional generations are made solely for timing.
+    # AIService.create() loads or reuses the model before this list begins, so
+    # trace zero is a first request after service creation, not a guaranteed
+    # cold-model or cold-prefix-cache measurement.
     warm_latencies = latencies[1:]
     warm_p50 = median(warm_latencies) if warm_latencies else None
     warm_p95 = _percentile(warm_latencies, 0.95)
-    latency_limit_p50 = baseline_p50 * 1.10
-    latency_limit_p95 = baseline_p95 * 1.10
-    if warm_p50 is None or warm_p50 > latency_limit_p50:
-        failures.append(
-            "warm p50 latency was "
-            f"{warm_p50 if warm_p50 is not None else 'unavailable'}s; "
-            f"limit is {latency_limit_p50:.3f}s (110% of baseline)"
-        )
-    if warm_p95 is None or warm_p95 > latency_limit_p95:
-        failures.append(
-            "warm p95 latency was "
-            f"{warm_p95 if warm_p95 is not None else 'unavailable'}s; "
-            f"limit is {latency_limit_p95:.3f}s (110% of baseline)"
-        )
+    input_tokens = [
+        trace.stats.input_tokens
+        for trace in traces
+        if trace.stats.input_tokens is not None
+    ]
     output_tokens = [
         trace.stats.output_tokens
         for trace in traces
         if trace.stats.output_tokens is not None
     ]
+    time_to_first_token = [
+        trace.stats.time_to_first_token_seconds
+        for trace in traces
+        if trace.stats.time_to_first_token_seconds is not None
+    ]
+    tokens_per_second = [
+        trace.stats.tokens_per_second
+        for trace in traces
+        if trace.stats.tokens_per_second is not None
+    ]
+    input_token_summary = _numeric_summary(input_tokens)
+    output_token_summary = _numeric_summary(output_tokens)
+    latency_limit_p50: float | None = None
+    latency_limit_p95: float | None = None
+    input_token_limit_p50: float | None = None
+    output_token_limit_p50: float | None = None
+
+    if baseline is not None:
+        if baseline.provider is not None and baseline.provider != settings.provider:
+            failures.append(
+                "baseline provider mismatch: "
+                f"{baseline.provider!r} != {settings.provider!r}"
+            )
+        if baseline.model is not None and baseline.model != settings.model:
+            failures.append(
+                f"baseline model mismatch: {baseline.model!r} != {settings.model!r}"
+            )
+        if (
+            baseline.temperature is not None
+            and baseline.temperature != settings.temperature
+        ):
+            failures.append(
+                "baseline temperature mismatch: "
+                f"{baseline.temperature!r} != {settings.temperature!r}"
+            )
+        if (
+            baseline.context_length is not None
+            and baseline.context_length != settings.context_length
+        ):
+            failures.append(
+                "baseline context length mismatch: "
+                f"{baseline.context_length!r} != {settings.context_length!r}"
+            )
+        if (
+            baseline.max_output_tokens is not None
+            and baseline.max_output_tokens
+            != DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+        ):
+            failures.append(
+                "baseline max-output-token mismatch: "
+                f"{baseline.max_output_tokens} != "
+                f"{DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS}"
+            )
+        workload_fingerprint = _workload_fingerprint()
+        if (
+            baseline.workload_fingerprint is not None
+            and baseline.workload_fingerprint != workload_fingerprint
+        ):
+            failures.append("baseline workload fingerprint does not match")
+
+        latency_limit_p50 = baseline.warm_p50_seconds * 1.10
+        latency_limit_p95 = baseline.warm_p95_seconds * 1.10
+        if warm_p50 is None or warm_p50 > latency_limit_p50:
+            failures.append(
+                "warm p50 latency was "
+                f"{warm_p50 if warm_p50 is not None else 'unavailable'}s; "
+                f"limit is {latency_limit_p50:.3f}s (110% of baseline)"
+            )
+        if warm_p95 is None or warm_p95 > latency_limit_p95:
+            failures.append(
+                "warm p95 latency was "
+                f"{warm_p95 if warm_p95 is not None else 'unavailable'}s; "
+                f"limit is {latency_limit_p95:.3f}s (110% of baseline)"
+            )
+
+        current_input_p50 = input_token_summary["p50"]
+        if baseline.input_p50_tokens is not None:
+            input_token_limit_p50 = baseline.input_p50_tokens * 0.70
+            if (
+                not isinstance(current_input_p50, (int, float))
+                or current_input_p50 > input_token_limit_p50
+            ):
+                failures.append(
+                    "input-token p50 was "
+                    f"{current_input_p50!r}; limit is "
+                    f"{input_token_limit_p50:.1f} "
+                    "(at least 30% below baseline)"
+                )
+
+        current_output_p50 = output_token_summary["p50"]
+        if baseline.output_p50_tokens is not None:
+            output_token_limit_p50 = baseline.output_p50_tokens * 1.10
+            if (
+                not isinstance(current_output_p50, (int, float))
+                or current_output_p50 > output_token_limit_p50
+            ):
+                failures.append(
+                    "output-token p50 was "
+                    f"{current_output_p50!r}; limit is "
+                    f"{output_token_limit_p50:.1f} (110% of baseline)"
+                )
+
+    fixed_prompt = AIService._structured_system_prompt(  # noqa: SLF001
+        PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8"),
+        OSINTResponse,
+    )
+    compact_schema = AIService._compact_schema(OSINTResponse)  # noqa: SLF001
+    complete_token_stats = (
+        len(input_tokens) == expected_calls
+        and len(output_tokens) == expected_calls
+    )
+    eligible_baseline = (
+        capture_baseline
+        and not failures
+        and len(traces) == expected_calls
+        and complete_token_stats
+    )
+    samples = [
+        {
+            "index": index,
+            "site_name": trace.site_name,
+            "elapsed_seconds": round(trace.elapsed_seconds, 6),
+            "time_to_first_token_seconds": (
+                round(trace.stats.time_to_first_token_seconds, 6)
+                if trace.stats.time_to_first_token_seconds is not None
+                else None
+            ),
+            "input_tokens": trace.stats.input_tokens,
+            "output_tokens": trace.stats.output_tokens,
+            "tokens_per_second": trace.stats.tokens_per_second,
+            "validation_error": trace.validation_error,
+        }
+        for index, trace in enumerate(traces, start=1)
+    ]
     summary: dict[str, Any] = {
-        "model": settings.model,
-        "provider": settings.provider,
-        "repetitions": REPETITIONS,
-        "expected_calls": expected_calls,
-        "observed_calls": len(traces),
-        "structurally_valid_responses": structural_successes,
-        "required_fact_recall": f"{required_found}/{required_total} ({recall:.1%})",
-        "critical_fact_recall": (
-            f"{critical_found}/{critical_total} ({critical_recall:.1%})"
-        ),
-        "hard_negatives_empty": (
-            f"{hard_negative_empty}/{hard_negative_total} "
-            f"({hard_negative_rate:.1%})"
-        ),
-        "exact_key_reuse": f"{reuse_successes}/{reuse_total} ({reuse_rate:.1%})",
+        "schema_version": 1,
+        "benchmark": "sherlock_pass_one_acceptance",
+        "mode": "capture_baseline" if capture_baseline else "compare_candidate",
+        "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "eligible_baseline": eligible_baseline,
+        "source": _git_metadata(),
+        "contract": {
+            "pass_one_contract_hash": service.pass_one_contract_hash,
+            "instruction_sha256": sha256(
+                PASS_ONE_PROMPT_PATH.read_bytes()
+            ).hexdigest(),
+            "instruction_chars": len(
+                PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8")
+            ),
+            "instruction_utf8_bytes": len(PASS_ONE_PROMPT_PATH.read_bytes()),
+            "schema_chars": len(compact_schema),
+            "structured_system_chars": len(fixed_prompt),
+            "structured_system_utf8_bytes": len(fixed_prompt.encode("utf-8")),
+            "max_output_tokens": DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
+            "reasoning_off": True,
+            "store": False,
+        },
+        "model": {
+            "provider": settings.provider,
+            "key": settings.model,
+            "temperature": settings.temperature,
+            "context_length": settings.context_length,
+        },
+        "workload": {
+            "fingerprint": _workload_fingerprint(),
+            "repetitions": REPETITIONS,
+            "expected_calls": expected_calls,
+            "observed_calls": len(traces),
+        },
+        "correctness": {
+            "structurally_valid_responses": structural_successes,
+            "required_facts": {
+                "found": required_found,
+                "total": required_total,
+                "rate": recall,
+            },
+            "critical_facts": {
+                "found": critical_found,
+                "total": critical_total,
+                "rate": critical_recall,
+            },
+            "hard_negatives_empty": {
+                "found": hard_negative_empty,
+                "total": hard_negative_total,
+                "rate": hard_negative_rate,
+            },
+            "exact_key_reuse": {
+                "found": reuse_successes,
+                "total": reuse_total,
+                "rate": reuse_rate,
+            },
+        },
         "latency_seconds": {
-            "baseline_source": "explicit frozen pre-redesign same-session run",
+            "first_request_after_service_create": (
+                round(latencies[0], 6) if latencies else None
+            ),
+            "warm_p50": round(warm_p50, 6) if warm_p50 is not None else None,
+            "warm_p95": round(warm_p95, 6) if warm_p95 is not None else None,
+            "all": _numeric_summary(latencies),
+        },
+        "tokens": {
+            "input": input_token_summary,
+            "output": output_token_summary,
+            "time_to_first_token_seconds": _numeric_summary(
+                time_to_first_token
+            ),
+            "tokens_per_second": _numeric_summary(tokens_per_second),
+        },
+        "comparison": {
+            "baseline_source": baseline.source if baseline is not None else None,
             "extra_baseline_calls_in_this_suite": 0,
-            "baseline_p50": baseline_p50,
-            "baseline_p95": baseline_p95,
-            "limit_p50_110_percent": round(latency_limit_p50, 3),
-            "limit_p95_110_percent": round(latency_limit_p95, 3),
-            "min": round(min(latencies), 3) if latencies else None,
-            "warm_p50": round(warm_p50, 3) if warm_p50 is not None else None,
-            "warm_p95": round(warm_p95, 3) if warm_p95 is not None else None,
-            "max": round(max(latencies), 3) if latencies else None,
+            "latency_limit_p50_110_percent": latency_limit_p50,
+            "latency_limit_p95_110_percent": latency_limit_p95,
+            "input_token_limit_p50_70_percent": input_token_limit_p50,
+            "output_token_limit_p50_110_percent": output_token_limit_p50,
         },
-        "output_tokens": {
-            "min": min(output_tokens) if output_tokens else None,
-            "p50": median(output_tokens) if output_tokens else None,
-            "p95": _percentile([float(value) for value in output_tokens], 0.95),
-            "max": max(output_tokens) if output_tokens else None,
-        },
+        "samples": samples,
         "failure_count": len(failures),
+        "failures": failures,
     }
     print("\nLOCAL PASS 1 ACCEPTANCE SUMMARY")
     print(json.dumps(summary, indent=2, sort_keys=True))
+    _write_report(summary)
 
     assert not failures, "\n" + "\n".join(f"- {item}" for item in failures)
+
+
+def _example_baseline_payload() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "benchmark": "sherlock_pass_one_acceptance",
+        "eligible_baseline": True,
+        "contract": {
+            "pass_one_contract_hash": "baseline-contract",
+            "max_output_tokens": DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
+        },
+        "model": {
+            "provider": "lmstudio",
+            "key": "example/model",
+            "temperature": 0.1,
+            "context_length": 16_384,
+        },
+        "workload": {"fingerprint": "fixture-fingerprint"},
+        "latency_seconds": {"warm_p50": 1.0, "warm_p95": 2.0},
+        "tokens": {
+            "input": {"p50": 1_000},
+            "output": {"p50": 100},
+        },
+    }
+
+
+def test_numeric_summary_uses_nearest_rank_p95() -> None:
+    assert _numeric_summary([1, 2, 3, 4]) == {
+        "count": 4,
+        "min": 1.0,
+        "p50": 2.5,
+        "p95": 4.0,
+        "max": 4.0,
+        "total": 10.0,
+    }
+    assert _numeric_summary([])["p50"] is None
+
+
+def test_baseline_report_loader_keeps_comparison_metadata() -> None:
+    baseline = _baseline_from_report_payload(
+        _example_baseline_payload(),
+        source="baseline.json",
+    )
+
+    assert baseline.source == "baseline.json"
+    assert baseline.warm_p50_seconds == 1.0
+    assert baseline.input_p50_tokens == 1_000
+    assert baseline.output_p50_tokens == 100
+    assert baseline.provider == "lmstudio"
+    assert baseline.model == "example/model"
+    assert baseline.workload_fingerprint == "fixture-fingerprint"
+
+
+def test_baseline_report_loader_rejects_failed_capture() -> None:
+    payload = _example_baseline_payload()
+    payload["eligible_baseline"] = False
+
+    with pytest.raises(ValueError, match="eligible_baseline"):
+        _baseline_from_report_payload(payload, source="failed.json")
+
+
+def test_workload_fingerprint_is_stable_and_nonempty() -> None:
+    assert _workload_fingerprint() == _workload_fingerprint()
+    assert len(_workload_fingerprint()) == 64
+
+
+def test_write_report_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "nested" / "report.json"
+    monkeypatch.setenv(REPORT_PATH_ENV, str(report_path))
+
+    _write_report({"schema_version": 1, "value": "ok"})
+
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "value": "ok",
+    }
