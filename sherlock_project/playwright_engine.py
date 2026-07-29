@@ -1,55 +1,161 @@
-from playwright.async_api import Page, Browser, BrowserContext
-from typing import Any, Protocol, Literal
 import asyncio
+import os
 from time import perf_counter
+from typing import Any, Callable, Literal, Protocol
+
+from playwright.async_api import Browser, BrowserContext, Page
 from playwright.async_api import APIResponse, APIRequestContext, Response
 from playwright.async_api import Error as PlaywrightError
-from cloakbrowser import launch_async, ensure_binary, binary_info
+
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
+
+from cloakbrowser import binary_info, ensure_binary, launch_async  # noqa: E402
+
+
+BrowserStatus = Literal["installing", "starting", "ready"]
+BrowserStatusCallback = Callable[[BrowserStatus], None]
+CancellationCallback = Callable[[], None]
 
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
 
 class PlaywrightEngine:
-    def __init__(self, concurrency: int = 30, headless: bool = True, proxy: dict = None):
+    def __init__(
+        self,
+        concurrency: int = 30,
+        headless: bool = True,
+        proxy: dict | None = None,
+        status_callback: BrowserStatusCallback | None = None,
+        cancellation_callback: CancellationCallback | None = None,
+    ):
         self.sem = asyncio.Semaphore(concurrency)
         self.playwright = None
-        self.browser = None
-        self.context = None
+        self.browser: Browser | None = None
+        self.context: BrowserContext | None = None
+        self.api: APIRequestContext | None = None
+        self._fn_mapping: dict[str, RequestMethod] = {}
         self.headless = headless
         self.proxy = proxy
+        self.status_callback = status_callback
+        self.cancellation_callback = cancellation_callback
 
     async def __aenter__(self):
-        self.ensure_browser_binary()
+        try:
+            self.ensure_browser_binary(self.status_callback)
 
-        self.browser: Browser = await launch_async(headless=self.headless, humanize=True, handle_sigint=False)
-        self.context: BrowserContext = await self.browser.new_context(ignore_https_errors=True, proxy=self.proxy)
-        self.api: APIRequestContext = self.context.request
-        print("Playwright Started!")
+            self._notify("starting")
+            self.browser = await launch_async(
+                headless=self.headless,
+                humanize=True,
+                handle_sigint=False,
+            )
+            self.context = await self.browser.new_context(
+                ignore_https_errors=True,
+                proxy=self.proxy,
+            )
+            self.api = self.context.request
+            self._notify("ready")
 
-        # intialize mappings when context is not None
-        self._fn_mapping = {
-        'GET': self.api.get,
-        'HEAD': self.api.head,
-        'POST': self.api.post,
-        'PUT': self.api.put,
-        }
+            # Initialize mappings when context is not None.
+            self._fn_mapping = {
+                'GET': self.api.get,
+                'HEAD': self.api.head,
+                'POST': self.api.post,
+                'PUT': self.api.put,
+            }
+        except BaseException as startup_error:
+            if isinstance(
+                startup_error,
+                (asyncio.CancelledError, KeyboardInterrupt),
+            ):
+                self._notify_cancellation(startup_error)
+            try:
+                await self._close_resources()
+            except BaseException as cleanup_error:
+                startup_error.add_note(
+                    f"Playwright cleanup also failed: {cleanup_error!r}"
+                )
+            raise
 
         return self
     
 
+    def _notify(self, status: BrowserStatus) -> None:
+        if self.status_callback is not None:
+            self.status_callback(status)
+
     @staticmethod
-    def ensure_browser_binary():
+    def ensure_browser_binary(
+        status_callback: BrowserStatusCallback | None = None,
+    ) -> None:
         if not binary_info()["installed"]:
-            print("[*] Chrome browser binary not found. Installing...")
+            if status_callback is not None:
+                status_callback("installing")
             ensure_binary()
-            print("\033[H\033[J", end="")
 
     async def __aexit__(self, exc_type, exc, tb):
-        if not self.context.is_closed():
-            await self.context.close()
+        if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+            self._notify_cancellation(exc)
+        try:
+            await self._close_resources()
+        except BaseException as cleanup_error:
+            if exc is None:
+                raise
+            exc.add_note(f"Playwright cleanup also failed: {cleanup_error!r}")
+        return False
 
-        if self.browser:
-            await self.browser.close()
+    def _notify_cancellation(self, cancellation: BaseException) -> None:
+        if self.cancellation_callback is None:
+            return
+        try:
+            self.cancellation_callback()
+        except BaseException as callback_error:
+            cancellation.add_note(
+                f"Playwright cancellation callback failed: {callback_error!r}"
+            )
+
+    async def _close_resources(self) -> None:
+        """Close partially or fully initialized browser resources once."""
+        context = self.context
+        browser = self.browser
+        self.context = None
+        self.api = None
+        self._fn_mapping = {}
+        self.browser = None
+
+        context_error: BaseException | None = None
+        if context is not None:
+            try:
+                if not context.is_closed():
+                    await context.close()
+            except BaseException as error:
+                if isinstance(
+                    error,
+                    (asyncio.CancelledError, KeyboardInterrupt),
+                ):
+                    self._notify_cancellation(error)
+                context_error = error
+
+        browser_error: BaseException | None = None
+        if browser is not None:
+            try:
+                await browser.close()
+            except BaseException as error:
+                if isinstance(
+                    error,
+                    (asyncio.CancelledError, KeyboardInterrupt),
+                ):
+                    self._notify_cancellation(error)
+                browser_error = error
+
+        if context_error is not None:
+            if browser_error is not None:
+                context_error.add_note(
+                    f"Browser cleanup also failed: {browser_error!r}"
+                )
+            raise context_error
+        if browser_error is not None:
+            raise browser_error
 
     def get_request_fn(self, method: str):
         if method not in self._fn_mapping:
