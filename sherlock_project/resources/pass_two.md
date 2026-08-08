@@ -48,7 +48,7 @@ equivalents both count, regardless of the field name. For example:
   `strong_match`
 - Anchor organization `Cloudflare`; current organization `Cloudflare` ->
   `strong_match`
-- Anchor location `Pakistan`; current location `Pakistan` -> `strong_match`
+- Anchor location `Portugal`; current location `Portugal` -> `strong_match`
 
 Return `unsure` when the current facts are only partially, indirectly, or
 ambiguously compatible with the supplied evidence. For example, anchor role
@@ -72,11 +72,11 @@ name component and the current-site owner name contains that component, that
 is an explicit match. Do not require the anchor to reproduce the full name,
 and do not downgrade the match because the name is a common one.
 
-Match on name components, not raw substrings. `ryan` matches the given name in
-`Ryan M. Montgomery`, but does not match `Bryan Kelly`.
+Match on name components, not raw substrings. `erik` matches the given name in
+`Erik T. Halvorsen`, but does not match `Frederik Baumann`.
 
-- Anchor name `ryan`; current owner name `Ryan M. Montgomery` -> `strong_match`
-- Anchor name `ryan`; current owner name `Ryan` -> `strong_match`
-- Anchor name `ryan`; current owner name `Bryan Kelly` -> `reject`
+- Anchor name `erik`; current owner name `Erik T. Halvorsen` -> `strong_match`
+- Anchor name `erik`; current owner name `Erik` -> `strong_match`
+- Anchor name `erik`; current owner name `Frederik Baumann` -> `reject`
 
 Before answering, verify internally that the evidence supports the chosen enum.

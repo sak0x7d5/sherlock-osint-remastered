@@ -13,9 +13,9 @@ INSTAGRAM_HTML = """
     <meta property="og:image" content="https://scontent.cdninstagram.com/signed-profile-image.jpg?token=secret">
     <meta property="og:title" content="Example Person (@fixture_handle) - Instagram photos and videos">
     <meta property="og:url" content="https://www.instagram.com/fixture_handle">
-    <meta property="og:description" content="1M Followers, 1,048 Following, 205 Posts - See Instagram photos and videos from Example Person (@fixture_handle)">
-    <meta name="description" content="1M Followers, 1,048 Following, 205 Posts - Example Person (@fixture_handle) on Instagram: &quot;\U0001f511Serial Entrepreneur
-\U0001f499Child Safety Advocate - (@example_foundation)
+    <meta property="og:description" content="48.2K Followers, 806 Following, 91 Posts - See Instagram photos and videos from Example Person (@fixture_handle)">
+    <meta name="description" content="48.2K Followers, 806 Following, 91 Posts - Example Person (@fixture_handle) on Instagram: &quot;\U0001f511Serial Entrepreneur
+\U0001f499Wildlife Rescue Volunteer - (@example_foundation)
 \U0001f916Penetration Tester&quot;">
     <link rel="alternate" href="android-app://com.instagram.android/https/instagram.com/_u/fixture_handle/">
     <link rel="canonical" href="https://www.instagram.com/fixture_handle/">
@@ -29,10 +29,10 @@ def test_extract_profile_content_reads_instagram_metadata():
     result = extract_profile_content(INSTAGRAM_HTML)
 
     assert "Example Person (@fixture_handle)" in result
-    assert "1M Followers, 1,048 Following, 205 Posts" in result
+    assert "48.2K Followers, 806 Following, 91 Posts" in result
     assert "See Instagram photos and videos" in result
     assert "Serial Entrepreneur" in result
-    assert "Child Safety Advocate - (@example_foundation)" in result
+    assert "Wildlife Rescue Volunteer - (@example_foundation)" in result
     assert "Penetration Tester" in result
     assert "Description:" in result
     assert "- Profile biography:" in result
@@ -98,7 +98,7 @@ def test_extract_profile_content_preserves_multiline_unicode_metadata():
     result = extract_profile_content(INSTAGRAM_HTML)
 
     assert "\U0001f511Serial Entrepreneur" in result
-    assert "\U0001f499Child Safety Advocate" in result
+    assert "\U0001f499Wildlife Rescue Volunteer" in result
     assert "\U0001f916Penetration Tester" in result
 
 

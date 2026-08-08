@@ -24,7 +24,7 @@ from sherlock_project.profile_synthesis import (
             "context",
         ),
         ("strong:domain=example.com", "domain", "example.com", "strong"),
-        ("context:location=Karachi", "location", "Karachi", "context"),
+        ("context:location=Lisbon", "location", "Lisbon", "context"),
         (
             "VERIFIED:email=Avery@Example.com",
             "email",
@@ -80,7 +80,7 @@ def test_build_investigation_context_deduplicates_promotes_and_is_deterministic(
         ),
         parse_inline_anchor("email=avery@example.COM"),
         parse_inline_anchor("strong:roles=Pentester"),
-        parse_inline_anchor("roles=Child Safety Advocate"),
+        parse_inline_anchor("roles=Wildlife Rescue Volunteer"),
     ]
 
     first = build_investigation_context(anchors)

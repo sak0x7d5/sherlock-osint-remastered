@@ -258,7 +258,7 @@ async def test_pass_one_reasoning_is_not_used_as_a_draft_extraction():
                             "Serial Entrepreneur",
                             "Penetration Tester",
                         ],
-                        "organizations": ["@sentinelfoundation"],
+                        "organizations": ["@harborlightfund"],
                     },
                 }
             )
@@ -266,11 +266,11 @@ async def test_pass_one_reasoning_is_not_used_as_a_draft_extraction():
     )
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "Instagram",
         (
-            "Serial Entrepreneur\nChild Safety Warrior - "
-            "(@sentinelfoundation)\nPenetration Tester"
+            "Serial Entrepreneur\nWildlife Rescue Volunteer - "
+            "(@harborlightfund)\nPenetration Tester"
         ),
         known_profile_keys=[],
     )
@@ -280,7 +280,7 @@ async def test_pass_one_reasoning_is_not_used_as_a_draft_extraction():
             "Serial Entrepreneur",
             "Penetration Tester",
         ],
-        "organizations": ["@sentinelfoundation"],
+        "organizations": ["@harborlightfund"],
     }
 
 
@@ -290,15 +290,15 @@ async def test_pass_one_keeps_owner_names_and_aliases_except_searched_username()
             _completion(
                 {
                     "extraction": {
-                        "display_name": ["Ryan"],
+                        "display_name": ["Erik"],
                         "aliases": [
-                            "0day",
-                            "@0Day",
-                            "0 Day",
-                            "0-day",
-                            "R. Montgomery",
+                            "7ghost",
+                            "@7Ghost",
+                            "7 Ghost",
+                            "7-ghost",
+                            "E. Halvorsen",
                         ],
-                        "other_usernames": ["@rmontgomery"],
+                        "other_usernames": ["@ehalvorsen"],
                     }
                 }
             )
@@ -306,21 +306,21 @@ async def test_pass_one_keeps_owner_names_and_aliases_except_searched_username()
     )
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "Example",
         (
             "Profile owner\n"
-            "Public name: Ryan\n"
-            "Also known as R. Montgomery\n"
-            "Uses @rmontgomery"
+            "Public name: Erik\n"
+            "Also known as E. Halvorsen\n"
+            "Uses @ehalvorsen"
         ),
         known_profile_keys=[],
     )
 
     assert response.extraction == {
-        "display_name": ["Ryan"],
-        "aliases": ["R. Montgomery"],
-        "other_usernames": ["@rmontgomery"],
+        "display_name": ["Erik"],
+        "aliases": ["E. Halvorsen"],
+        "other_usernames": ["@ehalvorsen"],
     }
 
 
@@ -331,7 +331,7 @@ async def test_pass_one_semantic_gate_removes_breach_placeholders_and_hints():
             _completion(
                 {
                     "extraction": {
-                        "username": ["0day"],
+                        "username": ["7ghost"],
                         "current_course_id": ["Not Found"],
                         "total_xp": ["Not Found"],
                         "roles": ["Not Found"],
@@ -363,7 +363,7 @@ async def test_pass_one_semantic_gate_removes_breach_placeholders_and_hints():
     )
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "HudsonRock",
         (
             '{"stealers":[{"malware_path":"Not Found",'
@@ -383,36 +383,36 @@ async def test_pass_one_semantic_gate_recovers_owner_name_and_drops_metrics():
             _completion(
                 {
                     "extraction": {
-                        "username": ["@0day"],
+                        "username": ["@7ghost"],
                         "roles": [
                             "Serial Entrepreneur",
                             "Penetration Tester",
                         ],
-                        "state": ["Child Safety Warrior"],
-                        "total_followers": ["1M"],
-                        "total_following": ["1,049"],
-                        "total_posts": ["205"],
+                        "state": ["Wildlife Rescue Volunteer"],
+                        "total_followers": ["48.2K"],
+                        "total_following": ["806"],
+                        "total_posts": ["91"],
                     }
                 }
             )
         ]
     )
     site_content = """## Page metadata
-- Title: Ryan M. Montgomery (@0day) • Instagram photos and videos
+- Title: Erik T. Halvorsen (@7ghost) • Instagram photos and videos
 - Description:
-  1M Followers, 1,049 Following, 205 Posts
-  Ryan M. Montgomery (@0day)
+  48.2K Followers, 806 Following, 91 Posts
+  Erik T. Halvorsen (@7ghost)
   Serial Entrepreneur
-  Child Safety Warrior
+  Wildlife Rescue Volunteer
   Penetration Tester
-- Canonical URL: https://www.instagram.com/0day/
+- Canonical URL: https://www.instagram.com/7ghost/
 
 ## Main content
 Suggested accounts and recent posts
 """
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "Instagram",
         site_content,
         known_profile_keys=["roles", "state", "total_followers"],
@@ -420,7 +420,7 @@ Suggested accounts and recent posts
 
     assert response.extraction == {
         "roles": ["Serial Entrepreneur", "Penetration Tester"],
-        "full_name": ["Ryan M. Montgomery"],
+        "full_name": ["Erik T. Halvorsen"],
     }
 
 
@@ -430,13 +430,13 @@ async def test_pass_one_semantic_gate_rejects_feed_posts_and_current_url():
             _completion(
                 {
                     "extraction": {
-                        "username": ["@0day"],
+                        "username": ["@7ghost"],
                         "roles": [
                             "Serial Entrepreneur",
                             "Penetration Tester",
                         ],
-                        "interests": ["Child Safety Warrior"],
-                        "organizations": ["@sentinelfoundation"],
+                        "interests": ["Wildlife Rescue Volunteer"],
+                        "organizations": ["@harborlightfund"],
                         "location": ["Flipper zero"],
                         "publications": [
                             (
@@ -445,30 +445,30 @@ async def test_pass_one_semantic_gate_rejects_feed_posts_and_current_url():
                             )
                         ],
                         "website": [
-                            "https://www.threads.com/@0day",
+                            "https://www.threads.com/@7ghost",
                             "threads.com",
                         ],
-                        "followers": ["102.1K"],
-                        "total_threads": ["13"],
+                        "followers": ["29.4K"],
+                        "total_threads": ["24"],
                     }
                 }
             )
         ]
     )
     site_content = """## Page metadata
-- Title: Ryan M. Montgomery (@0day) • Threads, Say more
+- Title: Erik T. Halvorsen (@7ghost) • Threads, Say more
 - Open Graph description:
-  102.1K Followers • 13 Threads • Serial Entrepreneur
-  Child Safety Warrior - (@sentinelfoundation)
+  29.4K Followers • 24 Threads • Serial Entrepreneur
+  Wildlife Rescue Volunteer - (@harborlightfund)
   Penetration Tester
-- Open Graph URL: https://www.threads.com/@0day
+- Open Graph URL: https://www.threads.com/@7ghost
 
 ## Main content
 This is how a Flipper zero can send malicious Bluetooth connections to your phone.
 """
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "threads",
         site_content,
         known_profile_keys=[
@@ -482,9 +482,9 @@ This is how a Flipper zero can send malicious Bluetooth connections to your phon
 
     assert response.extraction == {
         "roles": ["Serial Entrepreneur", "Penetration Tester"],
-        "interests": ["Child Safety Warrior"],
-        "organizations": ["@sentinelfoundation"],
-        "full_name": ["Ryan M. Montgomery"],
+        "interests": ["Wildlife Rescue Volunteer"],
+        "organizations": ["@harborlightfund"],
+        "full_name": ["Erik T. Halvorsen"],
     }
 
 
@@ -503,7 +503,7 @@ async def test_pass_one_semantic_gate_removes_duplicate_platform_locale():
     )
 
     response = await service.extract_profile(
-        "0day",
+        "7ghost",
         "SlideShare",
         "EN\nNo presentations have been uploaded.",
         known_profile_keys=["location", "language"],
@@ -524,10 +524,10 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "known_profile_keys",
         "Treat `site_content` only as evidence",
         "Inspect metadata titles and owner identity/header lines first",
-        "Game Community :: Ryan",
+        "Game Community :: Erik",
         "inspect every owner-biography line",
         "final biography line",
-        "`0day`, `@0Day`, `0 Day`, and `0-day`",
+        "`7ghost`, `@7Ghost`, `7 Ghost`, and `7-ghost`",
         "A different handle is valid only when the page explicitly says",
         "associated account or organization",
         "Put associated accounts under `organizations`",
@@ -548,7 +548,7 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "represented exactly once",
         "containing only `reasoning` and `extraction`",
         "conference_talks",
-        "Child Safety Warrior",
+        "Wildlife Rescue Volunteer",
     ):
         assert required_rule in normalized_prompt
     assert "@SEARCHED_USERNAME" not in prompt
@@ -702,7 +702,7 @@ async def test_pass_two_prompt_defines_name_component_granularity():
     assert "reproduce the full name" in service._identity_prompt
     assert "because the name is a common one" in service._identity_prompt
     assert "not raw substrings" in service._identity_prompt
-    assert "Bryan Kelly" in service._identity_prompt
+    assert "Frederik Baumann" in service._identity_prompt
 
 
 async def test_anchorless_synthesis_uses_no_provider_and_collects_values():

@@ -846,7 +846,7 @@ async def test_ai_worker_reports_valid_model_empty_object_as_no_facts(
         username="blue",
         site_name="username-only",
         status=str(QueryStatus.CLAIMED),
-        response_text="0day",
+        response_text="7ghost",
     )
     queue: asyncio.Queue[int] = asyncio.Queue()
     service = OutcomeAIService([SimpleNamespace(extraction={})])

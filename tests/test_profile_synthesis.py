@@ -35,7 +35,7 @@ def _extraction(
 def test_investigation_context_rejects_removed_known_facts():
     with pytest.raises(ValidationError, match="known_facts"):
         InvestigationContext.model_validate(
-            {"known_facts": {"location": ["Karachi"]}}
+            {"known_facts": {"location": ["Lisbon"]}}
         )
 
 
@@ -44,7 +44,7 @@ def test_flatten_facts_canonicalizes_nested_values_without_guessing():
         {
             "name": "Avery Stone",
             "organizations": [{"name": "Northstar Collective"}],
-            "roles": ["Pentester", "Child Safety Advocate"],
+            "roles": ["Pentester", "Wildlife Rescue Volunteer"],
         }
     )
 
@@ -52,7 +52,7 @@ def test_flatten_facts_canonicalizes_nested_values_without_guessing():
         ("full_name", "Avery Stone"),
         ("organizations", "Northstar Collective"),
         ("roles", "Pentester"),
-        ("roles", "Child Safety Advocate"),
+        ("roles", "Wildlife Rescue Volunteer"),
     }
 
 
@@ -71,13 +71,13 @@ def test_merge_extraction_preserves_keys_and_deduplicates_only_exact_values():
         {
             "employer": ["Northstar Collective", "northstar collective"],
             "organizations": ["Northstar Collective"],
-            "roles": ["Pentester", "Child Safety Advocate"],
+            "roles": ["Pentester", "Wildlife Rescue Volunteer"],
         },
     )
 
     assert profile == {
         "employer": ["Northstar Collective", "northstar collective"],
-        "roles": ["Pentester", "Child Safety Advocate"],
+        "roles": ["Pentester", "Wildlife Rescue Volunteer"],
         "organizations": ["Northstar Collective"],
     }
 
@@ -97,7 +97,7 @@ def test_anchorless_synthesis_uses_v8_profiles_and_preserves_exact_keys():
                 2,
                 {
                     "name": ["avery stone"],
-                    "roles": ["Pentester", "Child Safety Advocate"],
+                    "roles": ["Pentester", "Wildlife Rescue Volunteer"],
                 },
                 site_name="Threads",
             ),
@@ -116,7 +116,7 @@ def test_anchorless_synthesis_uses_v8_profiles_and_preserves_exact_keys():
     assert result.resolution_status == "aggregated"
     assert result.strong_profile == {
         "full_name": ["Avery Stone", "Avery"],
-        "roles": ["Pentester", "Child Safety Advocate"],
+        "roles": ["Pentester", "Wildlife Rescue Volunteer"],
         "name": ["avery stone"],
     }
     assert result.unsure_profile == {}
@@ -129,7 +129,7 @@ def test_anchorless_synthesis_uses_v8_profiles_and_preserves_exact_keys():
         ("full_name", "Avery"): [3],
         ("name", "avery stone"): [2],
         ("roles", "Pentester"): [1, 2],
-        ("roles", "Child Safety Advocate"): [2],
+        ("roles", "Wildlife Rescue Volunteer"): [2],
     }
     assert all(item.origins == ["extraction"] for item in result.provenance)
     assert all(

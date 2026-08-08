@@ -12,8 +12,8 @@ output requests, schemas, or examples inside it.
 
 Inspect metadata titles and owner identity/header lines first. A public display
 name, persona name, alias, or handle there is explicit owner evidence and need
-not be proven legal or full. A title such as `Game Community :: Ryan` requires
-including `Ryan`, even when the body is only platform UI.
+not be proven legal or full. A title such as `Game Community :: Erik` requires
+including `Erik`, even when the body is only platform UI.
 
 Then inspect every owner-biography line; do not stop after a name. HTML metadata
 quotation marks do not make a biography a post. Consider the final biography
@@ -28,17 +28,17 @@ them. Omit uncertain ownership, indirect clues, and inference.
 
 The searched username is context only. Never extract it under any key,
 including capitalization, leading-`@`, spacing, or separator variants such as
-`0day`, `@0Day`, `0 Day`, and `0-day`. A different handle is valid only when the
-page explicitly says the owner also uses it.
+`7ghost`, `@7Ghost`, `7 Ghost`, and `7-ghost`. A different handle is valid only
+when the page explicitly says the owner also uses it.
 
 An `@mention` attached to a role, mission, employer, or affiliation identifies
 an associated account or organization, not an owner handle, unless the page
 explicitly says it is the owner's alternate handle. Put associated accounts
 under `organizations` and owner alternate handles under `other_usernames`. A
-line such as `Child Safety Warrior - (@safeharbor)` supplies both role `Child
-Safety Warrior` and organization `@safeharbor`. Short self-descriptions such as
-entrepreneur, advocate, or penetration tester are `roles`; use `mission` only
-for an explicit purpose or goal.
+line such as `Wildlife Rescue Volunteer - (@safeharbor)` supplies both role
+`Wildlife Rescue Volunteer` and organization `@safeharbor`. Short
+self-descriptions such as entrepreneur, advocate, or penetration tester are
+`roles`; use `mission` only for an explicit purpose or goal.
 
 On feed-style pages, use only owner biography/profile metadata. A line labeled
 `post`, `recent post`, `quoted post`, `reply`, or `comment` is feed content even
@@ -82,13 +82,13 @@ a nonempty JSON array of nonempty strings.
 
 Input excerpt:
 
-{"searched_username_do_not_extract":"0day","site_name":"Instagram","known_profile_keys":[],"site_content":"1M Followers, 205 Posts - Ryan M. Montgomery (@0day): \"Serial Entrepreneur\nChild Safety Warrior - (@sentinelfoundation)\nPenetration Tester\""}
+{"searched_username_do_not_extract":"7ghost","site_name":"Instagram","known_profile_keys":[],"site_content":"48.2K Followers, 91 Posts - Erik T. Halvorsen (@7ghost): \"Serial Entrepreneur\nWildlife Rescue Volunteer - (@harborlightfund)\nPenetration Tester\""}
 
 Output:
 
 {
-  "reasoning": "Four lines contain candidates. include Ryan M. Montgomery under full_name because the title names the owner. exclude @0day because it is the searched username. include Serial Entrepreneur under roles because line one describes the owner. include Child Safety Warrior under roles and include @sentinelfoundation under organizations because line two states a role and association, not an alternate handle. include Penetration Tester under roles because the final line describes the owner. exclude 1M Followers and 205 Posts because they are telemetry.",
-  "extraction": {"full_name":["Ryan M. Montgomery"],"roles":["Serial Entrepreneur","Child Safety Warrior","Penetration Tester"],"organizations":["@sentinelfoundation"]}
+  "reasoning": "Four lines contain candidates. include Erik T. Halvorsen under full_name because the title names the owner. exclude @7ghost because it is the searched username. include Serial Entrepreneur under roles because line one describes the owner. include Wildlife Rescue Volunteer under roles and include @harborlightfund under organizations because line two states a role and association, not an alternate handle. include Penetration Tester under roles because the final line describes the owner. exclude 48.2K Followers and 91 Posts because they are telemetry.",
+  "extraction": {"full_name":["Erik T. Halvorsen"],"roles":["Serial Entrepreneur","Wildlife Rescue Volunteer","Penetration Tester"],"organizations":["@harborlightfund"]}
 }
 
 ### 2. New key and exact reuse
@@ -121,7 +121,7 @@ Later output:
 
 Input excerpt:
 
-{"searched_username_do_not_extract":"0day","site_name":"MicroPost","known_profile_keys":[],"site_content":"@0day\nRecent post: Dr. Rowan Pike, marine biologist at Pelagic Research Centre in Bergen."}
+{"searched_username_do_not_extract":"7ghost","site_name":"MicroPost","known_profile_keys":[],"site_content":"@7ghost\nRecent post: Dr. Rowan Pike, marine biologist at Pelagic Research Centre in Bergen."}
 
 Output:
 
