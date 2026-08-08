@@ -9,15 +9,13 @@ source = "init"
 [tool.poetry]
 name = "sherlock-project"
 version = "0.16.0"
-description = "Hunt down social media accounts by username across social networks"
+description = "Hunt down social media accounts by username across social networks, with local-model profile analysis"
 license = "MIT"
+# Independent derivative of the Sherlock Project; upstream authors and
+# maintainers do not maintain this work. Attribution is in NOTICE.md and
+# LICENSE. Not published to PyPI under this name — see NOTICE.md#naming.
 authors = [
-    "Siddharth Dushantha <siddharth.dushantha@gmail.com>"
-]
-maintainers = [
-    "Paul Pfeister <code@pfeister.dev>",
-    "Matheus Felipe <matheusfelipeog@protonmail.com>",
-    "Sondre Karlsen Dyrnes <sondre@villdyr.no>"
+    "sak0x7d5 <70936061+sak0x7d5@users.noreply.github.com>"
 ]
 readme = "docs/pyproject/README.md"
 packages = [ { include = "sherlock_project"} ]
@@ -35,12 +33,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Security"
 ]
-homepage = "https://sherlockproject.xyz/"
-repository = "https://github.com/sherlock-project/sherlock"
+homepage = "https://github.com/sak0x7d5/sherlock-osint-remastered"
+repository = "https://github.com/sak0x7d5/sherlock-osint-remastered"
 
 
 [tool.poetry.urls]
-"Bug Tracker" = "https://github.com/sherlock-project/sherlock/issues"
+"Bug Tracker" = "https://github.com/sak0x7d5/sherlock-osint-remastered/issues"
+"Upstream Project" = "https://github.com/sherlock-project/sherlock"
 
 [tool.poetry.dependencies]
 python = ">=3.13,<4.0"

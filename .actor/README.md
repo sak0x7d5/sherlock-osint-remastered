@@ -1,5 +1,11 @@
 # Sherlock Actor on Apify
 
+> [!NOTE]
+> This Actor definition is inherited from the upstream [Sherlock Project](https://github.com/sherlock-project/sherlock)
+> and documents *their* published Actor. No Actor is published for this
+> derivative, and the badge below does not point at this repository's build.
+> See [NOTICE.md](../NOTICE.md).
+
 [![Sherlock Actor](https://apify.com/actor-badge?actor=netmilk/sherlock)](https://apify.com/netmilk/sherlock?fpr=sherlock)
 
 This Actor wraps the [Sherlock Project](https://sherlockproject.xyz/) to provide serverless username reconnaissance across social networks in the cloud. It helps you find usernames across multiple social media platforms without installing and running the tool locally.
