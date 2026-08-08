@@ -102,3 +102,9 @@ ignore = [
 # and its own callers catch ValueError to fall back. Switching the isinstance
 # branches to TypeError as TRY004 suggests would slip past those handlers.
 "tests/test_pass_one_local_acceptance.py" = ["TRY004"]
+
+# ValueError is the manifest-parse contract across the loaders: sites.py raises
+# it for bad json, and adapt_wmn_site/load_wmn_manifest raise it for unusable
+# site rules. A malformed 'sites' array is the same class of failure, so it
+# reports the same way. TRY004's TypeError would split one contract in two.
+"sherlock_project/wmn_adapter.py" = ["TRY004"]
