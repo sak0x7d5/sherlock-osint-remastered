@@ -684,6 +684,25 @@ async def test_pass_two_prompt_allows_semantic_anchor_matches():
     assert schema["additionalProperties"] is False
 
 
+async def test_pass_two_prompt_makes_current_site_the_only_subject():
+    service = AIService()
+
+    assert "`current_site.extraction` is the only subject" in service._identity_prompt
+    assert "never compared" in service._identity_prompt
+    assert "is not evidence about the current" in service._identity_prompt
+    assert "If that list is empty, return `reject`" in service._identity_prompt
+    assert "must rest on at least one fact taken" in service._identity_prompt
+
+
+async def test_pass_two_prompt_defines_name_component_granularity():
+    service = AIService()
+
+    assert "matches at the granularity it was supplied" in service._identity_prompt
+    assert "name component" in service._identity_prompt
+    assert "A given name on its own is weak evidence" in service._identity_prompt
+    assert "return `unsure`, never `strong_match`" in service._identity_prompt
+
+
 async def test_anchorless_synthesis_uses_no_provider_and_collects_values():
     service = AIService()
 
