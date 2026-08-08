@@ -83,6 +83,13 @@ class Verdict:
 # of one unless the rule explicitly expects that code.
 NON_CONTENT_CODES = frozenset({401, 403, 407, 429, 451, 500, 502, 503, 504})
 
+# 404 and 410 are the web's unambiguous statement that a resource is not there,
+# and no entry in the dataset treats either as a hit. They outrank a marker
+# match, unlike an ordinary code disagreement: a generic marker such as
+# 'username' or 'Timeline' will match somewhere in a large 404 page, which is
+# how a site that correctly reports nothing still gets read as a hit.
+ABSENCE_CODES = frozenset({404, 410})
+
 
 def _signature_matches(marker: str, body: str | None) -> bool | None:
     """Whether a marker is present in a body.
@@ -139,6 +146,22 @@ def evaluate(
 
     marker_says_exists = _signature_matches(exists_rule.get("string", ""), body)
     marker_says_missing = _signature_matches(missing_rule.get("string", ""), body)
+
+    # The one place a status code outranks a marker. It earns the exception by
+    # being unambiguous where other codes are not: a 500 or a 403 says nothing
+    # about whether the account exists, but a 404 says exactly that it does not.
+    # Unlike the non-content codes above, the body here is the site's real
+    # not-found page, so its miss marker is still worth reading -- it is what
+    # separates a confirmed absence from a merely probable one.
+    if status_code in ABSENCE_CODES and exists_code not in ABSENCE_CODES:
+        # CONFIRMED means the same thing here as everywhere else: the code and
+        # the marker both said so. An unread body is not agreement.
+        confirmed = code_says_missing and marker_says_missing is True
+        return Verdict(
+            False,
+            QueryConfidence.CONFIRMED if confirmed else QueryConfidence.PROBABLE,
+            f"status {status_code} means the resource is not there",
+        )
 
     # Both markers present. Usually a stale rule -- but when one marker is a
     # substring of the other, the shorter match is an artifact of the longer

@@ -191,6 +191,43 @@ class TestUnreadableBody:
         assert evaluate(rule(), 418, None).exists is None
 
 
+class TestAbsenceCodes:
+    """404/410 outrank a marker -- the one place a code wins.
+
+    A generic marker ('username', 'Timeline', 'summary') will match somewhere in
+    almost any large 404 page. Letting the marker win there turns a site that
+    correctly reports nothing into a confident hit; two of the four false
+    positives in a full 680-site run were exactly this.
+    """
+
+    @pytest.mark.parametrize("code", [404, 410])
+    def test_absence_code_beats_a_matching_hit_marker(self, code):
+        verdict = evaluate(rule(m_code=302), code, f"<html>{HIT}</html>")
+        assert verdict.exists is False
+        assert "not there" in verdict.reason
+
+    def test_confirmed_when_the_rules_miss_code_and_marker_both_agree(self):
+        verdict = evaluate(rule(), 404, f"<html>{MISS}</html>")
+        assert verdict.exists is False
+        assert verdict.confidence is QueryConfidence.CONFIRMED
+
+    def test_only_probable_when_the_miss_marker_is_absent(self):
+        """A 404 still settles existence, but nothing corroborated it."""
+        verdict = evaluate(rule(), 404, f"<html>{HIT}</html>")
+        assert verdict.exists is False
+        assert verdict.confidence is QueryConfidence.PROBABLE
+
+    def test_probable_when_the_rule_expected_a_different_miss_code(self):
+        verdict = evaluate(rule(m_code=302), 404, "<html>whatever</html>")
+        assert verdict.exists is False
+        assert verdict.confidence is QueryConfidence.PROBABLE
+
+    def test_a_rule_expecting_404_as_a_hit_is_still_honoured(self):
+        """No dataset entry does this today, but the guard must not assume."""
+        inverted = rule(e_code=404, m_code=200)
+        assert evaluate(inverted, 404, f"<html>{HIT}</html>").exists is True
+
+
 class TestNonContentResponses:
     """A blocked or errored response did not deliver the resource.
 
