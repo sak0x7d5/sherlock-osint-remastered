@@ -29,7 +29,7 @@ import asyncio
 import requests
 from playwright.async_api import APIResponse, Response, TimeoutError, Error as PlaywrightError
 from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.database import SherlockDB
+from sherlock_project.database import SherlockDB, default_database_path
 from sherlock_project.ai_config import AIConfigError, AISettings, load_ai_settings
 from sherlock_project.ai_engine import (
     AIService,
@@ -207,7 +207,10 @@ async def run_synthesis_only(
     reporter: TerminalReporter | None = None,
     ai_settings: AISettings | None = None,
 ) -> None:
-    db = await SherlockDB.create("sherlock.db")
+    database_path = default_database_path()
+    if reporter is not None:
+        reporter.debug(f"Using database at {database_path}")
+    db = await SherlockDB.create(str(database_path))
     ai_service: AIService | None = None
     contract_hash = pass_one_contract_hash()
     interrupted = False
@@ -1161,7 +1164,9 @@ async def main() -> int:
             sys.exit(1)
 
     # Run report on all specified users.
-    db = await SherlockDB.create("sherlock.db")
+    database_path = default_database_path()
+    query_notify.debug(f"Using database at {database_path}")
+    db = await SherlockDB.create(str(database_path))
     results = {}
     ai_service: AIService | None = None
     ai_queue: asyncio.Queue[int] | None = None

@@ -1,11 +1,12 @@
 import asyncio
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import pytest
 
-from sherlock_project.database import SherlockDB
+from sherlock_project.database import SherlockDB, default_database_path
 from sherlock_project.result import QueryStatus
 
 pytestmark = pytest.mark.asyncio
@@ -851,3 +852,42 @@ async def test_query_when_closed(db: SherlockDB):
 
     with pytest.raises(RuntimeError):
         await db.get_username_by_id(1)
+
+
+async def test_default_database_path_does_not_follow_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Results must land in one place regardless of where sherlock is run."""
+    before = default_database_path({})
+
+    monkeypatch.chdir(tmp_path)
+    after = default_database_path({})
+
+    assert before == after
+    assert before.is_absolute()
+    assert before.name == "sherlock.db"
+
+
+async def test_default_database_path_honors_env_override(tmp_path: Path):
+    override = tmp_path / "investigation.db"
+
+    assert default_database_path({"SHERLOCK_DB": str(override)}) == override
+
+
+async def test_default_database_path_expands_user_in_override():
+    resolved = default_database_path({"SHERLOCK_DB": "~/sherlock/results.db"})
+
+    assert "~" not in str(resolved)
+    assert resolved.is_absolute()
+
+
+async def test_connect_creates_missing_parent_directories(tmp_path: Path):
+    """The user data directory does not exist until we write to it."""
+    nested = tmp_path / "does" / "not" / "exist" / "sherlock.db"
+
+    database = await SherlockDB.create(str(nested))
+    try:
+        assert nested.exists()
+    finally:
+        await database.close()
