@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from types import SimpleNamespace
+from typing import Self
 
 import pytest
 
@@ -9,7 +10,6 @@ from sherlock_project.ai_config import AIConfigError, AISettings
 from sherlock_project.investigation_context import parse_inline_anchor
 from sherlock_project.notify import QueryNotify
 from sherlock_project.profile_synthesis import ProfileSynthesis
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -208,7 +208,7 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -329,7 +329,7 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             events.append("browser_started")
             return self
 
@@ -437,7 +437,7 @@ async def test_model_load_failure_finishes_scan_and_skips_synthesis(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -758,7 +758,7 @@ async def test_main_scan_cancellation_returns_130_and_skips_exports(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(
@@ -874,7 +874,7 @@ async def test_main_ai_generation_cancellation_closes_once_and_skips_synthesis(
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -1152,7 +1152,7 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
                 await release_scan_cleanup.wait()
                 raise
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -1269,7 +1269,7 @@ async def test_main_interruption_survives_ai_and_database_close_failures(
             pass
 
     class FakeEngine:
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:
@@ -1440,7 +1440,7 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
         ) -> None:
             self.cancellation_callback = cancellation_callback
 
-        async def __aenter__(self) -> "FakeEngine":
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_args: object) -> None:

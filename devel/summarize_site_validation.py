@@ -2,9 +2,11 @@
 # This module summarizes the results of site validation tests queued by
 # workflow validate_modified_targets for presentation in Issue comments.
 
-from defusedxml import ElementTree as ET
 import sys
 from pathlib import Path
+
+from defusedxml import ElementTree as ET
+
 
 def summarize_junit_xml(xml_path: Path) -> str:
     tree = ET.parse(xml_path)
@@ -44,8 +46,8 @@ def summarize_junit_xml(xml_path: Path) -> str:
         if error is not None:
             errors_detected = True
 
-    for result in results:
-        summary_lines.append(f"| {result} | {results[result].get('F+ Check', 'Error!')} | {results[result].get('F- Check', 'Error!')} |")
+    for result, checks in results.items():
+        summary_lines.append(f"| {result} | {checks.get('F+ Check', 'Error!')} | {checks.get('F- Check', 'Error!')} |")
 
     if failures > 0:
         summary_lines.append("\n___\n" +

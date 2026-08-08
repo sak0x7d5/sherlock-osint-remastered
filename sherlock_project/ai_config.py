@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import os
-from pathlib import Path
 import tomllib
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
+import tomli_w
 from platformdirs import user_config_path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-import tomli_w
-
 
 CONFIG_VERSION = 1
 DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"

@@ -5,11 +5,11 @@ import pytest
 
 from sherlock_project.ai_config import AISettings
 from sherlock_project.ai_engine import (
+    DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
+    PASS_TWO_MAX_OUTPUT_TOKENS,
     AIRequestTrace,
     AIService,
-    DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
     OSINTResponse,
-    PASS_TWO_MAX_OUTPUT_TOKENS,
     PassOneKeyRegistry,
     StructuredResponseError,
     TargetDecision,
@@ -25,7 +25,6 @@ from sherlock_project.profile_synthesis import (
     InvestigationContext,
     SiteExtraction,
 )
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -440,8 +439,10 @@ async def test_pass_one_semantic_gate_rejects_feed_posts_and_current_url():
                         "organizations": ["@sentinelfoundation"],
                         "location": ["Flipper zero"],
                         "publications": [
-                            "This is how a Flipper zero can send malicious "
-                            "Bluetooth connections to your phone."
+                            (
+                                "This is how a Flipper zero can send malicious "
+                                "Bluetooth connections to your phone."
+                            )
                         ],
                         "website": [
                             "https://www.threads.com/@0day",

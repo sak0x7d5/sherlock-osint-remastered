@@ -191,10 +191,14 @@ async def test_schema_initialization_error_survives_cleanup_errors(monkeypatch):
 
     assert exc_info.value is initialization_error
     assert exc_info.value.__notes__ == [
-        "Database rollback during connection cleanup also failed: "
-        "OSError('rollback failed')",
-        "Database close during connection cleanup also failed: "
-        "OSError('close failed')",
+        (
+            "Database rollback during connection cleanup also failed: "
+            "OSError('rollback failed')"
+        ),
+        (
+            "Database close during connection cleanup also failed: "
+            "OSError('close failed')"
+        ),
     ]
 
 

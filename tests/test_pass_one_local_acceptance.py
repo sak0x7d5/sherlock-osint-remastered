@@ -26,30 +26,29 @@ a local model accidentally.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from hashlib import sha256
 import json
 import math
 import os
-from pathlib import Path
 import re
-from statistics import median
 import subprocess
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+from statistics import median
 from typing import Any
 
 import pytest
 
 from sherlock_project.ai_config import load_ai_settings
 from sherlock_project.ai_engine import (
-    AIRequestTrace,
-    AIService,
     DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
-    OSINTResponse,
     PASS_ONE_PROMPT_PATH,
     SAFE_EXTRACTION_KEY,
+    AIRequestTrace,
+    AIService,
+    OSINTResponse,
 )
-
 
 ENABLE_ENV = "SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE"
 CAPTURE_BASELINE_ENV = "SHERLOCK_PASS_ONE_CAPTURE_BASELINE"
@@ -1261,11 +1260,11 @@ async def test_configured_local_model_pass_one_acceptance() -> None:
                     f"{output_token_limit_p50:.1f} (110% of baseline)"
                 )
 
-    fixed_prompt = AIService._structured_system_prompt(  # noqa: SLF001
+    fixed_prompt = AIService._structured_system_prompt(
         PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8"),
         OSINTResponse,
     )
-    compact_schema = AIService._compact_schema(OSINTResponse)  # noqa: SLF001
+    compact_schema = AIService._compact_schema(OSINTResponse)
     complete_token_stats = (
         len(input_tokens) == expected_calls
         and len(output_tokens) == expected_calls
@@ -1297,7 +1296,7 @@ async def test_configured_local_model_pass_one_acceptance() -> None:
         "schema_version": 1,
         "benchmark": "sherlock_pass_one_acceptance",
         "mode": "capture_baseline" if capture_baseline else "compare_candidate",
-        "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "captured_at_utc": datetime.now(UTC).isoformat(),
         "eligible_baseline": eligible_baseline,
         "source": _git_metadata(),
         "contract": {

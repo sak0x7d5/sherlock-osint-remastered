@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from pathlib import Path
-import re
 from time import perf_counter
 from typing import Annotated, Any, Literal, TypeVar
 from urllib.parse import urlsplit
@@ -28,9 +28,9 @@ from sherlock_project.ai_provider import (
     ProviderWideError,
 )
 from sherlock_project.profile_synthesis import (
-    InvestigationContext,
-    InvalidExtraction,
     IdentityStatus,
+    InvalidExtraction,
+    InvestigationContext,
     ProfileSynthesis,
     SiteExtraction,
     SourceDecision,
@@ -42,7 +42,6 @@ from sherlock_project.profile_synthesis import (
     normalize_value,
     synthesis_warnings,
 )
-
 
 PASS_ONE_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_one.md"
 PASS_TWO_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_two.md"
@@ -518,10 +517,8 @@ def _is_excluded_pass_one_value(
         return True
     if casefolded.startswith("this user has no "):
         return True
-    if casefolded.startswith("no ") and (
-        casefolded.endswith(" yet")
-        or casefolded.endswith(" at this time")
-        or casefolded.endswith(" available")
+    if casefolded.startswith("no ") and casefolded.endswith(
+        (" yet", " at this time", " available")
     ):
         return True
     if key in {"role", "roles", "title"} and (
@@ -690,7 +687,7 @@ class AIService:
         *,
         provider: AIProvider | None = None,
         trace_callback: AITraceCallback | None = None,
-    ) -> "AIService":
+    ) -> AIService:
         resolved_settings = settings or (
             provider.settings if provider is not None else load_ai_settings()
         )

@@ -1,7 +1,9 @@
-import os
 import json
+import os
+
 import pytest
 from jsonschema import validate
+
 
 def test_validate_manifest_against_local_schema():
     """Ensures that the manifest matches the local schema, for situations where the schema is being changed."""

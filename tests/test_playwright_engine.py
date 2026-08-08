@@ -4,8 +4,10 @@ import subprocess
 import sys
 
 import pytest
+
 import sherlock_project.playwright_engine as playwright_module
 from sherlock_project.playwright_engine import PlaywrightEngine
+
 
 @pytest.mark.parametrize("invalid_method", ['', 'unkonwn_method'])
 def test_get_request_fn_raise_error(invalid_method: str, playwright_engine: PlaywrightEngine):

@@ -72,3 +72,33 @@ defusedxml = "^0.7.1"
 
 [tool.poetry.scripts]
 sherlock = 'sherlock_project.sherlock:cli'
+
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Ruff's default rule set grows between releases, so the pinned version in
+# tox.ini is what keeps lint reproducible. Everything ignored below is a
+# deliberate design decision, not a backlog.
+ignore = [
+    # Failure isolation is this tool's central design property: one site, one
+    # AI extraction job, or one cleanup step failing must never abort a scan
+    # that is already in flight. The broad handlers implementing that are
+    # load-bearing -- see ai_worker, _close_ai_service_and_db, PlaywrightEngine
+    # teardown, and the manifest/exclusions fallbacks in sites.py. Narrowing
+    # them would convert recoverable degradation into aborted investigations.
+    "BLE001",  # blind-except
+    "S110",    # try-except-pass
+    "S112",    # try-except-continue
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Report writing happens after every awaited task has completed, so blocking
+# file I/O there cannot stall concurrent work.
+"sherlock_project/sherlock.py" = ["ASYNC230"]
+
+# This module uses ValueError as its single "malformed baseline report" signal
+# and its own callers catch ValueError to fall back. Switching the isinstance
+# branches to TypeError as TRY004 suggests would slip past those handlers.
+"tests/test_pass_one_local_acceptance.py" = ["TRY004"]

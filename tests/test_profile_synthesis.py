@@ -3,8 +3,8 @@ from pydantic import ValidationError
 
 from sherlock_project.profile_synthesis import (
     IdentityAnchor,
-    InvestigationContext,
     InvalidExtraction,
+    InvestigationContext,
     SiteExtraction,
     SynthesisEvidence,
     aggregate_synthesis,
