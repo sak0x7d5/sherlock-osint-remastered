@@ -4,12 +4,31 @@ This module supports storing information about websites.
 This is the raw data that will be used to search for usernames.
 """
 import json
+import os
 import secrets
 
 import requests
 
+from sherlock_project.wmn_adapter import adapt_wmn_manifest
+
 MANIFEST_URL = "https://data.sherlockproject.xyz"
 EXCLUSIONS_URL = "https://raw.githubusercontent.com/sherlock-project/sherlock/refs/heads/exclusions/false_positive_exclusions.txt"
+
+# The bundled WhatsMyName dataset is the default manifest. It ships with the
+# package, so the common path makes no network call at all -- neither for the
+# manifest nor for exclusions. The exclusions list existed only to patch the
+# legacy dataset's false positives; a two-sided rule that stops matching now
+# reports UNKNOWN instead, so there is nothing left to subtract.
+WMN_MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "resources", "wmn-data.json")
+
+
+def is_wmn_manifest(site_data) -> bool:
+    """Whether parsed json is a WhatsMyName manifest rather than a legacy one.
+
+    WMN is an object with a 'sites' array; the legacy manifest is a flat object
+    keyed by site name. Sniffing lets --json keep accepting either.
+    """
+    return isinstance(site_data, dict) and isinstance(site_data.get("sites"), list)
 
 class SiteInformation:
     def __init__(self, name, url_home, url_username_format, username_claimed,
@@ -112,11 +131,12 @@ class SitesInformation:
         Nothing.
         """
 
+        self.rejected = []
+
         if not data_file_path:
-            # The default data file is the live data.json which is in the GitHub repo. The reason why we are using
-            # this instead of the local one is so that the user has the most up-to-date data. This prevents
-            # users from creating issue about false positives which has already been fixed or having outdated data
-            data_file_path = MANIFEST_URL
+            # Bundled by default: no network call, and no runtime dependency on
+            # anyone else's infrastructure to run a scan.
+            data_file_path = WMN_MANIFEST_PATH
 
         if data_file_path.lower().startswith("http"):
             # Reference is to a URL.
@@ -153,6 +173,10 @@ class SitesInformation:
                 raise FileNotFoundError(f"Problem while attempting to access "
                                         f"data file '{data_file_path}'."
                                         )
+
+        if is_wmn_manifest(site_data):
+            self._load_wmn(site_data)
+            return
 
         site_data.pop('$schema', None)
 
@@ -200,6 +224,26 @@ class SitesInformation:
             except TypeError:
                 print(f"Encountered TypeError parsing json contents for target '{site_name}' at {data_file_path}\nSkipping target.\n")
 
+
+    def _load_wmn(self, site_data: dict):
+        """Populate from a WhatsMyName manifest.
+
+        Rejected rules are retained rather than raised so a caller can surface
+        dataset rot without losing the sites that still work.
+        """
+        adapted, self.rejected = adapt_wmn_manifest(site_data)
+
+        self.sites = {
+            name: SiteInformation(
+                name,
+                record["urlMain"],
+                record["url"],
+                record["username_claimed"],
+                record,
+                record["isNSFW"],
+            )
+            for name, record in adapted.items()
+        }
 
     def remove_nsfw_sites(self, do_not_remove: list | None = None):
         """

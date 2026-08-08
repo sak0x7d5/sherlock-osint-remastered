@@ -82,6 +82,29 @@ def normalize_username(username: str, strip_bad_char: str | None) -> str:
     return "".join(char for char in username if char not in strip_bad_char)
 
 
+def preferred_transport(record: dict[str, Any]) -> str:
+    """Choose "api" or "browser" for a site record.
+
+    An API endpoint is cheap and safe to trust. An HTML page is not: a login
+    wall or block page renders as an ordinary 200 and can contain the rule's
+    own miss marker. Instagram reports CONFIRMED missing for a real account
+    that way -- a *confident* wrong answer, which no retry-when-undecided
+    fallback would ever catch, because nothing looked uncertain.
+
+    ``uri_pretty`` is the dataset's own signal for which is which: present means
+    ``uri_check`` is an API and the profile lives elsewhere; absent means
+    ``uri_check`` is itself the page a human would open. ``protection`` is used
+    as a hint on top, but cannot carry the routing alone -- it covers 58 of 720
+    entries and misses Reddit, Instagram, Issuu and Pinterest, all of which fail
+    over the raw API path.
+    """
+    if record.get("protection"):
+        return "browser"
+    if record.get("urlProfile") and record["urlProfile"] != record.get("url"):
+        return "api"
+    return "browser"
+
+
 def _validate(entry: dict[str, Any]) -> str | None:
     """Return a rejection reason, or None if the entry is usable."""
     missing = [key for key in REQUIRED_KEYS if key not in entry]

@@ -33,7 +33,7 @@ class QueryResult:
     Describes result of query about a given username.
     """
     def __init__(self, username, site_name, site_url_user, status,
-                 query_time=None, context=None):
+                 query_time=None, context=None, confidence=None):
         """Create Query Result Object.
 
         Contains information about a specific method of detecting usernames on
@@ -57,6 +57,13 @@ class QueryResult:
                                   an error, this might indicate the type of
                                   error that occurred.
                                   Default of None.
+        confidence             -- Enumeration of type QueryConfidence()
+                                  recording how much of the site rule actually
+                                  matched. Orthogonal to status: the status is
+                                  what was decided, the confidence is how much
+                                  agreed. Lets consumers weight evidence rather
+                                  than treating every hit as equally true.
+                                  Default of None.
 
         Return Value:
         Nothing.
@@ -68,6 +75,7 @@ class QueryResult:
         self.status        = status
         self.query_time    = query_time
         self.context       = context
+        self.confidence    = confidence
 
 
     def __str__(self):
