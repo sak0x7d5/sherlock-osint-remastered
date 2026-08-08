@@ -2,7 +2,7 @@
   <br>
   <img src="images/sherlock-logo.png" alt="sherlock"/>
   <br>
-  <span>Hunt down social media accounts by username across 400+ social networks</span>
+  <span>Hunt down social media accounts by username across <a href="sites.md">400+ social networks</a></span>
   <br>
 </p>
 
