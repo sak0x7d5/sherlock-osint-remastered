@@ -1,46 +1,60 @@
-name: Update Site List
+name: Site Rules
 
-# Trigger the workflow when changes are pushed to the main branch
-# and the changes include the sherlock_project/resources/data.json file
+# Validates the site manifest and keeps the generated site listing honest.
+#
+# This derivative owns its own site data. Upstream's variant of this workflow
+# pushed generated output into the Sherlock Project's website repository using
+# their deploy secrets; that step is not ours to run. See NOTICE.md.
+
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/update-site-list.yml'
+      - 'devel/site-list.py'
+      - 'docs/sites.md'
+      - 'sherlock_project/resources/data.json'
+      - 'sherlock_project/resources/data.schema.json'
   push:
     branches:
-      - master
+      - main
+      - 'release/**'
     paths:
-      - sherlock_project/resources/data.json
+      - '.github/workflows/update-site-list.yml'
+      - 'devel/site-list.py'
+      - 'docs/sites.md'
+      - 'sherlock_project/resources/data.json'
+      - 'sherlock_project/resources/data.schema.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-rules-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  sync-json-data:
-    # Use the latest version of Ubuntu as the runner environment
+  validate:
+    name: Validate manifest and listing
     runs-on: ubuntu-latest
-
     steps:
-      # Check out the code at the specified pull request head commit
       - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+        uses: actions/checkout@v6
 
-      # Install Python 3
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          python-version: '3.13'
 
-      # Execute the site_list.py Python script
-      - name: Execute site-list.py
-        run: python devel/site-list.py
+      # site-list.py needs only jsonschema, so this stays independent of the
+      # project's runtime dependencies and runs in seconds.
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jsonschema
 
-      - name: Pushes to another repository
-        uses: sdushantha/github-action-push-to-another-repository@main
-        env:
-          SSH_DEPLOY_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
-          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
-        with:
-          source-directory: 'output'
-          destination-github-username: 'sherlock-project'
-          commit-message: 'Updated site list'
-          destination-repository-name: 'sherlockproject.xyz'
-          user-email: siddharth.dushantha@gmail.com
-          target-branch: master
+      # Verifies three things at once: the manifest conforms to the schema
+      # bundled here, it is in normalized form, and docs/sites.md was
+      # regenerated alongside it. Prints a diff and remediation on failure.
+      - name: Validate site rules
+        run: python devel/site-list.py --check
