@@ -27,6 +27,30 @@ is preserved as the license requires.
 - The scan loop's argument surface and output formats (CSV, XLSX, TXT).
 - Issue templates, code of conduct, and the regression/exclusion workflows.
 
+## Third-party data: WhatsMyName
+
+The site manifest is being migrated to the WhatsMyName (WMN) dataset, which is
+**separately licensed** from this repository's code.
+
+| | |
+| - | - |
+| Project | WhatsMyName |
+| Source | <https://github.com/WebBreacher/WhatsMyName> |
+| License | [CC BY-SA 4.0](http://creativecommons.org/licenses/by-sa/4.0/) |
+| Copyright | © Micah Hoffman |
+| Contributors | 3xp0rt, AlexisPradoOficial, funnyzak, mbiesiad, Micah Hoffman, mtedholm |
+| Vendored at | `sherlock_project/resources/wmn-data.json` |
+
+The dataset is vendored **unmodified**, with its embedded license block intact,
+and is kept as a standalone file rather than merged into any other manifest.
+ShareAlike applies to the data and works derived from it; it does not reach this
+repository's MIT-licensed code, which merely reads the file. Adaptation to the
+internal site-record shape happens at load time in `wmn_adapter.py` and is not
+written back to disk, so the distributed copy stays byte-identical to upstream's.
+
+Refreshing the dataset is a straight download from the source above — no
+re-derivation step — which keeps that property easy to verify.
+
 ## Added in this repository
 
 None of the following exists upstream:
