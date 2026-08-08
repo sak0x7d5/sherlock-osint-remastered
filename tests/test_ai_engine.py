@@ -699,8 +699,10 @@ async def test_pass_two_prompt_defines_name_component_granularity():
 
     assert "matches at the granularity it was supplied" in service._identity_prompt
     assert "name component" in service._identity_prompt
-    assert "A given name on its own is weak evidence" in service._identity_prompt
-    assert "return `unsure`, never `strong_match`" in service._identity_prompt
+    assert "reproduce the full name" in service._identity_prompt
+    assert "because the name is a common one" in service._identity_prompt
+    assert "not raw substrings" in service._identity_prompt
+    assert "Bryan Kelly" in service._identity_prompt
 
 
 async def test_anchorless_synthesis_uses_no_provider_and_collects_values():

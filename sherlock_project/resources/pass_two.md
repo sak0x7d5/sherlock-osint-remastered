@@ -68,19 +68,15 @@ other profile fact.
 ## Personal names
 
 A name anchor matches at the granularity it was supplied. If the anchor is a
-name component and the current-site owner name contains that component, treat
-that as an explicit match on the component, then decide using the remaining
-anchors and confirmed profile facts.
+name component and the current-site owner name contains that component, that
+is an explicit match. Do not require the anchor to reproduce the full name,
+and do not downgrade the match because the name is a common one.
 
-A given name on its own is weak evidence. When a name component is the only
-thing that matches, and the current site supplies no other corroborating fact,
-return `unsure`, never `strong_match`.
+Match on name components, not raw substrings. `ryan` matches the given name in
+`Ryan M. Montgomery`, but does not match `Bryan Kelly`.
 
-- Anchor name `ryan`; current owner name `Ryan M. Montgomery`; the current
-  site also matches a supplied role or organization -> `strong_match`
-- Anchor name `ryan`; current owner name `Ryan M. Montgomery`; nothing else
-  matches -> `unsure`
-- Anchor name `ryan`; current owner name `Ryan`; nothing else matches ->
-  `unsure`
+- Anchor name `ryan`; current owner name `Ryan M. Montgomery` -> `strong_match`
+- Anchor name `ryan`; current owner name `Ryan` -> `strong_match`
+- Anchor name `ryan`; current owner name `Bryan Kelly` -> `reject`
 
 Before answering, verify internally that the evidence supports the chosen enum.
