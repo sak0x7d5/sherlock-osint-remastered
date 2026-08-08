@@ -16,9 +16,16 @@ Two modes:
   Lookup (`--username`) -- probe each site once for a real username, the way a
   scan would.
 
+Probes run concurrently, bounded by the engine's semaphore, so grading the whole
+dataset costs about what one scan costs. --sample exists to shorten a run, not
+because a full one is impractical.
+
 Examples:
 
-    # accuracy over a random 60-site sample, both transports compared
+    # grade every site in the dataset
+    python devel/wmn_probe.py
+
+    # shorter run, both transports compared
     python devel/wmn_probe.py --sample 60 --compare
 
     # look one username up across the social category
@@ -120,74 +127,134 @@ def select_sites(sites: dict, args) -> list[tuple[str, dict]]:
     return items
 
 
+async def _grade_one(engine, name, record, transport, primary):
+    """Probe one site on one transport with a real and a random username."""
+    known = record["known"][0]
+    ghost = secrets.token_hex(8)
+
+    try:
+        # The two probes are independent, and the engine's own semaphore is what
+        # bounds real concurrency, so there is no reason to serialize them.
+        (hit, hcode, hlen), (miss, mcode, mlen) = await asyncio.gather(
+            verdict_for(engine, record, known, transport),
+            verdict_for(engine, record, ghost, transport),
+        )
+    except Exception as error:
+        return {"name": name, "transport": transport, "primary": primary, "error": error}
+
+    return {
+        "name": name,
+        "transport": transport,
+        "primary": primary,
+        "known": known,
+        "hit": hit, "hcode": hcode, "hlen": hlen,
+        "miss": miss, "mcode": mcode, "mlen": mlen,
+    }
+
+
 async def run_accuracy(engine, items, compare: bool) -> Counter:
+    """Grade every selected site concurrently.
+
+    Grading used to walk the list one site at a time, which made a full-dataset
+    run take hours for no reason -- the scan itself has always been concurrent.
+    Every probe is now a task, bounded by the engine's existing semaphore, so
+    grading all 719 sites costs about what a scan costs.
+    """
+    jobs = []
+    for name, record in items:
+        primary = transport_for(record)
+        transports = [primary]
+        if compare:
+            transports = [primary, "api" if primary == "browser" else "browser"]
+        for transport in transports:
+            jobs.append(_grade_one(engine, name, record, transport, primary))
+
     tally: Counter = Counter()
     print(f"{'site':26} {'transport':9} {'known':26} {'random':26}")
     print("-" * 92)
 
-    for name, record in items:
-        primary = transport_for(record)
-        known = record["known"][0]
-        ghost = secrets.token_hex(8)
+    for completed in asyncio.as_completed(jobs):
+        outcome = await completed
+        name = outcome["name"]
+        transport = outcome["transport"]
+        is_primary = transport == outcome["primary"]
 
-        transports = [primary]
-        if compare:
-            transports = ["api", "browser"] if primary == "browser" else ["browser", "api"]
-            transports = sorted(set(transports), key=lambda t: t != primary)
-
-        for transport in transports:
-            try:
-                hit, hcode, hlen = await verdict_for(engine, record, known, transport)
-                miss, mcode, mlen = await verdict_for(engine, record, ghost, transport)
-            except Exception as error:
+        if "error" in outcome:
+            if is_primary:
                 tally["transport failure"] += 1
-                print(f"{name:26} {transport:9} FAIL {type(error).__name__}: {str(error)[:40]}")
-                continue
+            error = outcome["error"]
+            print(f"{name:26} {transport:9} FAIL {type(error).__name__}: {str(error)[:40]}")
+            continue
 
-            correct = hit.exists is True and miss.exists is False
-            # A confident wrong answer is the worst outcome -- worse than an
-            # honest refusal -- so it is counted separately.
-            confident_wrong = (hit.exists is False) or (miss.exists is True)
+        hit, miss = outcome["hit"], outcome["miss"]
+        correct = hit.exists is True and miss.exists is False
 
-            if transport == primary:
-                if correct:
-                    tally["correct"] += 1
-                elif confident_wrong:
-                    tally["CONFIDENT WRONG"] += 1
-                else:
-                    tally["undecided"] += 1
+        # The two ways of being confidently wrong are not equally bad, and
+        # lumping them together hides which one a change traded for the other.
+        # A fabricated account puts a real person in an investigation they have
+        # nothing to do with; a missed one loses a lead. Counted apart so the
+        # severe failure can never be averaged away by the mild one.
+        false_positive = miss.exists is True
+        false_negative = hit.exists is False
 
-            flag = "OK " if correct else ("!!!" if confident_wrong else " ? ")
-            print(
-                f"{name:26} {transport:9} "
-                f"{flag} {hit.exists!s:5} {hit.confidence.value:9} {hcode!s:4} "
-                f"| {miss.exists!s:5} {miss.confidence.value:9} {mcode!s:4}"
-            )
-            if not correct:
-                if hit.exists is not True:
-                    print(f"{'':36}known={known!r}: {hit.reason} ({hlen}b)")
-                if miss.exists is not False:
-                    print(f"{'':36}random: {miss.reason} ({mlen}b)")
+        if is_primary:
+            if correct:
+                tally["correct"] += 1
+            elif false_positive:
+                tally["FALSE POSITIVE"] += 1
+            elif false_negative:
+                tally["false negative"] += 1
+            else:
+                tally["undecided"] += 1
+
+        flag = "OK " if correct else ("!!!" if false_positive else ("-fn" if false_negative else " ? "))
+        print(
+            f"{name:26} {transport:9} "
+            f"{flag} {hit.exists!s:5} {hit.confidence.value:9} {outcome['hcode']!s:4} "
+            f"| {miss.exists!s:5} {miss.confidence.value:9} {outcome['mcode']!s:4}"
+        )
+        if not correct:
+            if hit.exists is not True:
+                print(f"{'':36}known={outcome['known']!r}: {hit.reason} ({outcome['hlen']}b)")
+            if miss.exists is not False:
+                print(f"{'':36}random: {miss.reason} ({outcome['mlen']}b)")
 
     return tally
 
 
+async def _look_up_one(engine, name, record, username):
+    try:
+        verdict, code, length = await verdict_for(
+            engine, record, username, transport_for(record)
+        )
+    except Exception as error:
+        return {"name": name, "error": error}
+    return {"name": name, "record": record, "verdict": verdict, "code": code, "length": length}
+
+
 async def run_lookup(engine, items, username: str) -> Counter:
+    jobs = [_look_up_one(engine, name, record, username) for name, record in items]
+
     tally: Counter = Counter()
-    for name, record in items:
-        transport = transport_for(record)
-        try:
-            verdict, code, length = await verdict_for(engine, record, username, transport)
-        except Exception as error:
+    for completed in asyncio.as_completed(jobs):
+        outcome = await completed
+        name = outcome["name"]
+
+        if "error" in outcome:
             tally["error"] += 1
+            error = outcome["error"]
             print(f"[err ] {name:26} {type(error).__name__}: {str(error)[:45]}")
             continue
 
+        verdict = outcome["verdict"]
         label = {True: "FOUND", False: "  -  ", None: " ??? "}[verdict.exists]
         tally[label.strip() or "?"] += 1
         if verdict.exists is not False:
-            url = record["urlProfile"].replace("{}", username)
-            print(f"[{label}] {name:26} {verdict.confidence.value:9} {code} {length:>8}b  {url}")
+            url = outcome["record"]["urlProfile"].replace("{}", username)
+            print(
+                f"[{label}] {name:26} {verdict.confidence.value:9} "
+                f"{outcome['code']} {outcome['length']:>8}b  {url}"
+            )
     return tally
 
 
@@ -198,7 +265,7 @@ async def main() -> int:
     parser.add_argument("--category", action="append", help="Restrict to a category (repeatable).")
     parser.add_argument("--sample", type=int, help="Probe a random subset of this size.")
     parser.add_argument("--seed", type=int, default=0, help="Sample seed, for reproducibility.")
-    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--concurrency", type=int, default=30, help="Matches the scan's default.")
     parser.add_argument("--nsfw", action="store_true", help="Include NSFW targets.")
     parser.add_argument("--compare", action="store_true", help="Probe both transports, to measure the routing split.")
     args = parser.parse_args()
