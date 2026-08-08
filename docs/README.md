@@ -1,39 +1,59 @@
 <p align="center">
   <br>
-  <a href="https://sherlock-project.github.io/" target="_blank"><img src="images/sherlock-logo.png" alt="sherlock"/></a>
+  <img src="images/sherlock-logo.png" alt="sherlock"/>
   <br>
-  <span>Hunt down social media accounts by username across <a href="https://sherlockproject.xyz/sites">400+ social networks</a></span>
+  <span>Hunt down social media accounts by username across 400+ social networks</span>
   <br>
 </p>
 
 <p align="center">
-  <a href="https://sherlockproject.xyz/installation">Installation</a>
+  <a href="#installation">Installation</a>
   &nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;
-  <a href="https://sherlockproject.xyz/usage">Usage</a>
+  <a href="#general-usage">Usage</a>
   &nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;
-  <a href="https://sherlockproject.xyz/contribute">Contributing</a>
+  <a href="../NOTICE.md">Provenance</a>
 </p>
 
 <p align="center">
 <img width="70%" height="70%" src="images/demo.png" alt="demo"/>
 </p>
 
+> [!IMPORTANT]
+> This is an **independent derivative** of the [Sherlock Project](https://github.com/sherlock-project/sherlock),
+> not affiliated with or endorsed by it. It is not the upstream project and is
+> not the `sherlock-project` package on PyPI. See [NOTICE.md](../NOTICE.md) for
+> what is inherited, what is new, and which upstream services it still calls.
+
+## What this adds
+
+On top of upstream's username enumeration, this derivative fetches profiles
+with a stealth browser, persists every result to SQLite, and runs an optional
+two-pass analysis against a **local** language model: per-site structured
+extraction, then cross-site profile synthesis with per-field provenance. No
+profile content leaves the machine except to the sites being checked and to
+the local model endpoint you configure.
 
 ## Installation
 
-> [!WARNING]  
-> Packages for ParrotOS and Ubuntu 24.04, maintained by a third party, appear to be __broken__.  
-> Users of these systems should defer to [`uv`](https://docs.astral.sh/uv/)/`pipx`/`pip` or Docker.
+Install from this source tree. There is no published package for this
+derivative — `pipx install sherlock-project` installs *upstream's* release,
+not this one.
 
-| Method | Notes |
-| - | - |
-| `pipx install sherlock-project` | `pip` or [`uv`](https://docs.astral.sh/uv/) may be used in place of `pipx` |
-| `docker run -it --rm sherlock/sherlock` |
-| `dnf install sherlock-project` | |
+```bash
+git clone https://github.com/sak0x7d5/sherlock-osint-remastered
+cd sherlock-osint-remastered
+poetry install
+poetry run sherlock --help
+```
 
-Community-maintained packages are available for Debian (>= 13), Ubuntu (>= 22.10), Homebrew, Kali, and BlackArch. These packages are not directly supported or maintained by the Sherlock Project.
+Requires Python 3.13 or newer. The first browser-backed run downloads a
+stealth Chromium binary.
 
-See all alternative installation methods [here](https://sherlockproject.xyz/installation).
+To use the AI passes, configure a local model endpoint once:
+
+```bash
+poetry run sherlock setup ai
+```
 
 ## General usage
 
@@ -90,26 +110,19 @@ options:
 
 ## Credits
 
-Thank you to everyone who has contributed to Sherlock! ❤️
+This work stands on the [Sherlock Project](https://github.com/sherlock-project/sherlock)
+and everyone who has [contributed to it](https://github.com/sherlock-project/sherlock/graphs/contributors). ❤️
 
 <a href="https://github.com/sherlock-project/sherlock/graphs/contributors">
-  <img src="https://contrib.rocks/image?&columns=25&max=10000&&repo=sherlock-project/sherlock" alt="contributors"/>
+  <img src="https://contrib.rocks/image?&columns=25&max=10000&&repo=sherlock-project/sherlock" alt="upstream contributors"/>
 </a>
-
-## Star History
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=sherlock-project/sherlock&type=Date&theme=dark" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=sherlock-project/sherlock&type=Date" />
-  <img alt="Sherlock Project Star History Chart" src="https://api.star-history.com/svg?repos=sherlock-project/sherlock&type=Date" />
-</picture>
 
 ## License
 
-MIT © Sherlock Project<br/>
-Creator - [Siddharth Dushantha](https://github.com/sdushantha)
+MIT.
 
-<!-- Reference Links -->
+- © 2019 Sherlock Project — upstream work this derivative is built on.
+- © 2026 sherlock-osint-remastered contributors — changes made here.
 
-[ext_pypi]: https://pypi.org/project/sherlock-project/
-[ext_brew]: https://formulae.brew.sh/formula/sherlock
+See [LICENSE](../LICENSE) for the full text and [NOTICE.md](../NOTICE.md) for
+provenance.

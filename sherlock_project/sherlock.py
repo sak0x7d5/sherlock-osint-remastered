@@ -13,7 +13,7 @@ try:
     from sherlock_project.__init__ import import_error_test_var # noqa: F401
 except ImportError:
     print("Did you run Sherlock with `python3 sherlock/sherlock.py ...`?")
-    print("This is an outdated method. Please see https://sherlockproject.xyz/installation for up to date instructions.")
+    print("This is an outdated method. Please see https://github.com/sak0x7d5/sherlock-osint-remastered for up to date instructions.")
     sys.exit(1)
 
 import csv

@@ -1,15 +1,15 @@
 ### REPOSITORY
-/.github/CODEOWNERS @sdushantha @ppfeister
-/.github/FUNDING.yml @sdushantha
-/LICENSE @sdushantha
+# Ownership here is for this derivative only. Upstream maintainers are not
+# code owners of this repository and must not be auto-requested on its pull
+# requests. See NOTICE.md.
+*                                   @sak0x7d5
 
 ### PACKAGING
-# Changes made to these items without code owner approval may negatively
-# impact packaging pipelines.
-/pyproject.toml @ppfeister @sdushantha
+# Changes made to these items may negatively impact packaging pipelines.
+/pyproject.toml                     @sak0x7d5
 
 ### REGRESSION
-/.github/workflows/regression.yml @ppfeister
-/tox.ini @ppfeister
-/pytest.ini @ppfeister
-/tests/ @ppfeister
+/.github/workflows/                 @sak0x7d5
+/tox.ini                            @sak0x7d5
+/pytest.ini                         @sak0x7d5
+/tests/                             @sak0x7d5

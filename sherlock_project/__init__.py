@@ -27,4 +27,6 @@ __shortname__   = "Sherlock"
 __longname__    = "Sherlock: Find Usernames Across Social Networks"
 __version__     = get_version()
 
-forge_api_latest_release = "https://api.github.com/repos/sherlock-project/sherlock/releases/latest"
+# Update checks must resolve against this derivative's own releases. Pointing
+# at upstream would compare our version to theirs and advertise their download.
+forge_api_latest_release = "https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest"
