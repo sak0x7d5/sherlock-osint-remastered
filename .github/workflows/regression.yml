@@ -34,7 +34,10 @@ jobs:
       - name: Set up linting environment
         uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          # Pinned rather than '3.x' so the lint job does not silently move to
+          # a new interpreter. Ruff's results do not depend on it, but a
+          # floating runtime is one more thing that can change underfoot.
+          python-version: '3.13'
       - name: Install tox and related dependencies
         run: |
           python -m pip install --upgrade pip
