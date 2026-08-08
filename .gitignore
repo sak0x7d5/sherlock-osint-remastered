@@ -3,12 +3,16 @@ venv/
 bin/
 lib/
 pyvenv.cfg
-poetry.lock
+
+# poetry.lock is deliberately tracked. This is an application people run, not
+# a library others resolve against, so every checkout must install the same
+# dependency set. See the commit that added it.
 
 # Regression Testing
 .coverage
 .tox/
 .pytest_cache/
+.ruff_cache/
 
 # Editor Configurations
 .vscode/
