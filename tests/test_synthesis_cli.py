@@ -1066,15 +1066,21 @@ async def test_sherlock_cancellation_gathers_done_and_unfinished_site_tasks(
             site_data={
                 "Done": {
                     "urlMain": "https://example.test",
-                    "url": "https://example.test/done/{}",
-                    "errorType": "status_code",
-                    "errorCode": 404,
+                    "url": "https://example.test/api/done/{}",
+                    "urlProfile": "https://example.test/done/{}",
+                    "detection": {
+                        "exists": {"code": 200, "string": "profile"},
+                        "missing": {"code": 404, "string": ""},
+                    },
                 },
                 "Blocked": {
                     "urlMain": "https://example.test",
-                    "url": "https://example.test/blocked/{}",
-                    "errorType": "status_code",
-                    "errorCode": 404,
+                    "url": "https://example.test/api/blocked/{}",
+                    "urlProfile": "https://example.test/blocked/{}",
+                    "detection": {
+                        "exists": {"code": 200, "string": "profile"},
+                        "missing": {"code": 404, "string": ""},
+                    },
                 },
             },
             query_notify=QueryNotify(),
@@ -1107,18 +1113,24 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
                     name="Fast",
                     information={
                         "urlMain": "https://example.test",
-                        "url": "https://example.test/fast/{}",
-                        "errorType": "status_code",
-                        "errorCode": 404,
+                        "url": "https://example.test/api/fast/{}",
+                        "urlProfile": "https://example.test/fast/{}",
+                        "detection": {
+                            "exists": {"code": 200, "string": "profile"},
+                            "missing": {"code": 404, "string": ""},
+                        },
                     },
                 ),
                 SimpleNamespace(
                     name="Slow",
                     information={
                         "urlMain": "https://example.test",
-                        "url": "https://example.test/slow/{}",
-                        "errorType": "status_code",
-                        "errorCode": 404,
+                        "url": "https://example.test/api/slow/{}",
+                        "urlProfile": "https://example.test/slow/{}",
+                        "detection": {
+                            "exists": {"code": 200, "string": "profile"},
+                            "missing": {"code": 404, "string": ""},
+                        },
                     },
                 ),
             ]

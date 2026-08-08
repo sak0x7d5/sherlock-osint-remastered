@@ -44,6 +44,7 @@ from sherlock_project.ai_engine import (
 from sherlock_project.ai_setup import run_ai_setup
 from sherlock_project.content_extraction import extract_profile_content
 from sherlock_project.database import SherlockDB, default_database_path
+from sherlock_project.detection import evaluate
 from sherlock_project.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
@@ -60,6 +61,12 @@ from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.sites import SitesInformation
 from sherlock_project.synthesis_pipeline import synthesize_username_profile
+from sherlock_project.wmn_adapter import normalize_username, preferred_transport
+
+# Markers live in the initial HTML, and waiting for full 'load' costs sites that
+# never quiesce -- Telegram times out at 45s on 'load' but resolves immediately
+# on 'domcontentloaded'.
+PAGE_WAIT_UNTIL = "domcontentloaded"
 
 
 async def await_response(completed_task: asyncio.Task) -> tuple[APIResponse | Response | None, str, str | None]:
@@ -104,6 +111,65 @@ def interpolate_string(input_object, username):
     elif isinstance(input_object, list):
         return [interpolate_string(i, username) for i in input_object]
     return input_object
+
+
+async def _retry_on_profile_page(engine, net_info, site_username, timeout):
+    """Re-probe an undecided API result against the human-facing profile page.
+
+    An API endpoint that matched neither side of its rule is often answerable
+    from the page a person would open: the profile carries markup the API never
+    returns. It is also the content the AI pass wants, so a hit found this way
+    arrives with a body attached rather than an empty API envelope.
+
+    Returns ``(response, verdict)``, or None if the retry could not be made.
+    Failure is swallowed on purpose -- this is a bonus attempt on a result that
+    is already undecided, and it must never cost the caller the scan.
+    """
+    try:
+        profile_url = interpolate_string(
+            net_info["urlProfile"], site_username.replace(' ', '%20')
+        )
+        response = await engine.fetch_with_page(
+            url=profile_url,
+            headers=net_info.get("headers") or {},
+            timeout=timeout * 1000,
+            wait_until=PAGE_WAIT_UNTIL,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
+
+    if response is None:
+        return None
+
+    return response, evaluate(net_info["detection"], response.status, response.text)
+
+
+async def _fetch_profile_content(engine, net_info, site_username, timeout) -> str | None:
+    """Fetch the human-facing profile page for AI extraction.
+
+    Separate from detection on purpose: the check endpoint may be an API whose
+    response contains nothing worth extracting. Returns None on any failure --
+    the account has already been confirmed, and losing the richer content must
+    never downgrade a correct result.
+    """
+    try:
+        profile_url = interpolate_string(
+            net_info["urlProfile"], site_username.replace(' ', '%20')
+        )
+        response = await engine.fetch_with_page(
+            url=profile_url,
+            headers=net_info.get("headers") or {},
+            timeout=timeout * 1000,
+            wait_until=PAGE_WAIT_UNTIL,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
+
+    return getattr(response, "text", None) if response is not None else None
 
 
 def check_for_parameter(username):
@@ -497,8 +563,18 @@ async def sherlock(
             # Override/append any extra headers required by a given site.
             headers.update(net_info["headers"])
 
-        # URL of user on site (if it exists)
-        url = interpolate_string(net_info["url"], username.replace(' ', '%20'))
+        # Some sites silently discard characters ('john.doe' and 'johndoe' are
+        # the same account there), so probing the literal string false-negatives.
+        site_username = normalize_username(username, net_info.get("strip_bad_char"))
+
+        # The URL a person would open. For the 216 sites whose check endpoint is
+        # an API, that is not the URL being probed -- reporting the probe URL
+        # would hand the user 'keybase.io/_/api/1.0/user/lookup.json?...'
+        # instead of their profile.
+        url = interpolate_string(
+            net_info.get("urlProfile") or net_info["url"],
+            site_username.replace(' ', '%20'),
+        )
 
         # Don't make request if username is invalid for the site
         regex_check = net_info.get("regexCheck")
@@ -525,15 +601,17 @@ async def sherlock(
                 request = engine.get_request_fn(request_method)
 
             if request_payload is not None:
-                request_payload = interpolate_string(request_payload, username)
+                request_payload = interpolate_string(request_payload, site_username)
 
             if url_probe is None:
-                # Probe URL is normal one seen by people out on the web.
-                url_probe = url
+                # What actually gets fetched to decide existence.
+                url_probe = interpolate_string(
+                    net_info["url"], site_username.replace(' ', '%20')
+                )
             else:
                 # There is a special URL for probing existence separate
                 # from where the user profile normally can be found.
-                url_probe = interpolate_string(url_probe, username)
+                url_probe = interpolate_string(url_probe, site_username)
 
             # shared params
             base_kwargs = {
@@ -545,25 +623,38 @@ async def sherlock(
             if proxy is not None:
                 base_kwargs['proxy'] = {"http": proxy, "https": proxy}
 
-            if request is None:
-                if net_info["errorType"] == "status_code":
-                    request = engine.get_request_fn('HEAD')
-                    task = asyncio.create_task(engine.fetch_with_api(
-                        request_fn=request,
-                        request_payload=request_payload,
-                        **base_kwargs
-                    ))
-                else:
-                    task = asyncio.create_task(engine.fetch_with_page(**base_kwargs))
+            # Every rule needs a response body -- a two-sided rule is decided by
+            # its markers, and a marker cannot be matched against a HEAD. The
+            # legacy manifest's status-only rules were fetched with HEAD, which
+            # is why 54% of confirmed hits reached the AI pipeline with nothing
+            # in them.
+            transport = preferred_transport(net_info)
+
+            if transport == "browser" and request_method is None:
+                task = asyncio.create_task(engine.fetch_with_page(
+                    wait_until=PAGE_WAIT_UNTIL,
+                    **base_kwargs
+                ))
             else:
+                # page.goto cannot issue anything but a GET, so a rule with an
+                # explicit method stays on the API transport regardless.
+                if request is None:
+                    request = engine.get_request_fn('GET')
                 task = asyncio.create_task(engine.fetch_with_api(
                     request_fn=request,
                     request_payload=request_payload,
                     **base_kwargs
                 ))
-                
+                transport = "api"
+
             # store in tasks as key to retrieve later using as_completed
-            tasks[task] = {'social_network': social_network, 'net_info': net_info, 'results_site': results_site}
+            tasks[task] = {
+                'social_network': social_network,
+                'net_info': net_info,
+                'results_site': results_site,
+                'transport': transport,
+                'site_username': site_username,
+            }
            
     # receive tasks as soon as they are completed
     # use tasks dict retrieve social_network, net_info, results_site
@@ -580,10 +671,9 @@ async def sherlock(
                 # We have already determined the user doesn't exist here
                 continue
 
-            # Get the expected error type
-            error_type = net_info["errorType"]
-            if isinstance(error_type, str):
-                error_type: list[str] = [error_type]
+            transport = tasks[completed_task]['transport']
+            site_username = tasks[completed_task]['site_username']
+            detection_rule = net_info.get("detection")
 
             r, error_text, _exception_text = await await_response(completed_task=completed_task)
 
@@ -604,6 +694,7 @@ async def sherlock(
                 response_text = ""
 
             query_status = QueryStatus.UNKNOWN
+            query_confidence = None
             error_context = None
 
             # As WAFs advance and evolve, they will occasionally block Sherlock and
@@ -624,73 +715,72 @@ async def sherlock(
             elif any(hitMsg in r.text for hitMsg in WAFHitMsgs):
                 query_status = QueryStatus.WAF
 
+            elif not detection_rule:
+                error_context = f"No detection rule for {social_network}"
+                query_status = QueryStatus.UNKNOWN
+
             else:
-                if any(errtype not in ["message", "status_code", "response_url"] for errtype in error_type):
-                    error_context = f"Unknown error type '{error_type}' for {social_network}"
-                    query_status = QueryStatus.UNKNOWN
+                verdict = evaluate(detection_rule, r.status, r.text)
+
+                # An API endpoint that could not decide is worth one retry
+                # against the human-facing page: the profile carries markup the
+                # API never returns, and it is also what the AI pass wants to
+                # read. Only undecided results pay for this, so it stays rare.
+                if (
+                    not verdict.is_decided
+                    and transport == "api"
+                    and net_info.get("request_method", "GET") == "GET"
+                    and net_info.get("urlProfile")
+                ):
+                    retry = await _retry_on_profile_page(
+                        engine=engine,
+                        net_info=net_info,
+                        site_username=site_username,
+                        timeout=timeout,
+                    )
+                    if retry is not None:
+                        retried_response, retried_verdict = retry
+                        if retried_verdict.is_decided:
+                            r = retried_response
+                            verdict = retried_verdict
+                            http_status = r.status
+                            response_text = r.text
+
+                query_confidence = verdict.confidence
+                if verdict.exists is True:
+                    query_status = QueryStatus.CLAIMED
+                elif verdict.exists is False:
+                    query_status = QueryStatus.AVAILABLE
                 else:
-                    if "message" in error_type:
-                        # error_flag True denotes no error found in the HTML
-                        # error_flag False denotes error found in the HTML
-                        error_flag = True
-                        errors = net_info.get("errorMsg")
-                        # errors will hold the error message
-                        # it can be string or list
-                        # by isinstance method we can detect that
-                        # and handle the case for strings as normal procedure
-                        # and if its list we can iterate the errors
-                        if isinstance(errors, str):
-                            # Checks if the error message is in the HTML
-                            # if error is present we will set flag to False
-                            if errors in r.text:
-                                error_flag = False
-                        else:
-                            # If it's list, it will iterate all the error message
-                            for error in errors:
-                                if error in r.text:
-                                    error_flag = False
-                                    break
-                        if error_flag:
-                            query_status = QueryStatus.CLAIMED
-                        else:
-                            query_status = QueryStatus.AVAILABLE
-
-                    if "status_code" in error_type and query_status is not QueryStatus.AVAILABLE:
-                        error_codes = net_info.get("errorCode")
-                        query_status = QueryStatus.CLAIMED
-
-                        # Type consistency, allowing for both singlets and lists in manifest
-                        if isinstance(error_codes, int):
-                            error_codes = [error_codes]
-
-                        if error_codes is not None and r.status in error_codes or r.status >= 300 or r.status < 200:
-                            query_status = QueryStatus.AVAILABLE
-
-                    if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
-                        if r.url.rstrip('/') == net_info['errorUrl'].rstrip('/'):
-                            query_status = QueryStatus.AVAILABLE
-                        else:
-                            query_status = QueryStatus.CLAIMED
+                    # Neither side of the rule matched. Reporting this rather
+                    # than defaulting to CLAIMED is the point of the two-sided
+                    # data: a stale rule and a real account no longer look alike.
+                    query_status = QueryStatus.UNKNOWN
+                    error_context = verdict.reason
 
             if dump_response:
                 dump_lines = [
                     "+++++++++++++++++++++",
                     f"TARGET NAME   : {social_network}",
-                    f"USERNAME      : {username}",
+                    f"USERNAME      : {site_username}",
                     f"TARGET URL    : {url}",
-                    f"TEST METHOD   : {error_type}",
+                    f"TRANSPORT     : {transport}",
                 ]
-                if "errorCode" in net_info:
-                    dump_lines.append(f"STATUS CODES  : {net_info['errorCode']}")
+                if detection_rule:
+                    dump_lines.extend(
+                        [
+                            f"EXPECT HIT    : {detection_rule['exists']}",
+                            f"EXPECT MISS   : {detection_rule['missing']}",
+                        ]
+                    )
                 dump_lines.extend(["Results...", f"RESPONSE CODE : {http_status}"])
-                if "errorMsg" in net_info:
-                    dump_lines.append(f"ERROR TEXT    : {net_info['errorMsg']}")
                 dump_lines.extend(
                     [
                         ">>>>> BEGIN RESPONSE TEXT",
                         str(response_text),
                         "<<<<< END RESPONSE TEXT",
-                        f"VERDICT       : {query_status}",
+                        f"VERDICT       : {query_status} ({query_confidence})",
+                        f"REASON        : {error_context}",
                         "+++++++++++++++++++++",
                     ]
                 )
@@ -704,8 +794,31 @@ async def sherlock(
                 status=query_status,
                 query_time=response_time,
                 context=error_context,
+                confidence=query_confidence,
             )
             query_notify.update(result)
+
+            # Detection and extraction want different things. An API endpoint
+            # decides existence cheaply but returns a JSON envelope with nothing
+            # in it worth reading; the profile page is what the AI pass needs.
+            # Only confirmed hits pay for the second fetch, so the expensive
+            # render happens on accounts known to exist rather than
+            # speculatively on every site.
+            if (
+                enqueue_ai is not None
+                and query_status is QueryStatus.CLAIMED
+                and transport == "api"
+                and net_info.get("urlProfile")
+                and net_info.get("urlProfile") != net_info.get("url")
+            ):
+                profile_text = await _fetch_profile_content(
+                    engine=engine,
+                    net_info=net_info,
+                    site_username=site_username,
+                    timeout=timeout,
+                )
+                if profile_text:
+                    response_text = profile_text
 
             should_run_ai = (
                 enqueue_ai is not None
@@ -1095,10 +1208,9 @@ async def main() -> int:
     # Create object with all information about sites we are aware of.
     try:
         if args.local:
-            sites = SitesInformation(
-                os.path.join(os.path.dirname(__file__), "resources/data.json"),
-                honor_exclusions=False,
-            )
+            # The bundled manifest is already the default; --local now only
+            # guarantees it, rather than switching away from a remote fetch.
+            sites = SitesInformation(honor_exclusions=False)
         else:
             json_file_location = args.json_file
             # If --json parameter is a number, interpret it as a pull request number

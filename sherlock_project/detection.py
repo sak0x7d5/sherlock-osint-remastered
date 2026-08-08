@@ -77,12 +77,21 @@ class Verdict:
         return f"Verdict({state}, {self.confidence.value}, {self.reason!r})"
 
 
+# A response carrying one of these did not deliver the resource, so nothing in
+# its body describes the account -- a block page, challenge, or auth wall can
+# still contain a string the rule treats as a hit marker. Never read a hit out
+# of one unless the rule explicitly expects that code.
+NON_CONTENT_CODES = frozenset({401, 403, 407, 429, 451, 500, 502, 503, 504})
+
+
 def _signature_matches(marker: str, body: str | None) -> bool | None:
     """Whether a marker is present in a body.
 
-    Returns None when the question does not apply -- an empty marker (the rule
+    Returns None when the check could not be run -- an empty marker (the rule
     is code-only) or a body that could not be read. Callers must distinguish
-    "marker absent" from "could not look", because only the first is evidence.
+    "marker absent" from "could not look", because only the first is evidence,
+    and must further distinguish "rule has no marker" from "marker unchecked":
+    trusting a status code is right in the first case and wrong in the second.
     """
     if not marker:
         return None
@@ -111,6 +120,22 @@ def evaluate(
 
     code_says_exists = status_code is not None and status_code == exists_code
     code_says_missing = status_code is not None and status_code == missing_code
+
+    # Checked before any marker, because the point is that the body is not
+    # evidence at all: a response that did not deliver the resource is a block
+    # page, challenge or auth wall, and those can contain the very string the
+    # rule treats as a hit marker. A rule that expects the code is honoured --
+    # some APIs genuinely answer 403 or 400 for a name that is taken.
+    if (
+        status_code in NON_CONTENT_CODES
+        and status_code != exists_code
+        and status_code != missing_code
+    ):
+        return Verdict(
+            None,
+            QueryConfidence.AMBIGUOUS,
+            f"status {status_code} did not deliver the resource; body is not evidence",
+        )
 
     marker_says_exists = _signature_matches(exists_rule.get("string", ""), body)
     marker_says_missing = _signature_matches(missing_rule.get("string", ""), body)
@@ -168,6 +193,11 @@ def evaluate(
     hit_marker_checked = marker_says_exists is not None
     miss_marker_checked = marker_says_missing is not None
 
+    # "The rule defines a marker" is not the same as "the marker was checked".
+    # When a rule has a hit marker but the body never arrived, the discriminating
+    # test did not run, and the status code alone must not stand in for it.
+    rule_defines_hit_marker = bool(exists_rule.get("string"))
+
     if code_says_exists and code_says_missing:
         # The rule's own author recorded that the status code carries no
         # information here (176 dataset entries look like this). The hit marker
@@ -194,9 +224,23 @@ def evaluate(
                 QueryConfidence.AMBIGUOUS,
                 f"status {status_code} matched but the hit marker was absent",
             )
+        if rule_defines_hit_marker:
+            # The rule has a discriminator and it never got to run. Reddit
+            # returns 200 with an empty body for names that do not exist, so
+            # trusting the code here manufactures a hit out of nothing.
+            return Verdict(
+                None,
+                QueryConfidence.AMBIGUOUS,
+                f"status {status_code} matched but the body was empty, "
+                "so the hit marker could not be checked",
+            )
         return Verdict(True, QueryConfidence.PROBABLE, "status code matched; rule has no marker to confirm")
 
     if code_says_missing:
+        # Deliberately more permissive than the hit side. A miss code is almost
+        # always a 404 or a redirect, which is strong evidence on its own, and
+        # the two errors are not equally costly: a fabricated account in an
+        # investigation is far worse than a missed one.
         if miss_marker_checked:
             return Verdict(
                 False,

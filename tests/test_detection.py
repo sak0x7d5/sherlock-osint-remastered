@@ -40,10 +40,11 @@ class TestAgreement:
 
 class TestMarkerOutranksCode:
     def test_marker_wins_when_code_disagrees(self):
-        verdict = evaluate(rule(), 500, f"<div>{HIT}</div>")
+        """A benign code, not an error one -- a 5xx is handled as a block."""
+        verdict = evaluate(rule(), 302, f"<div>{HIT}</div>")
         assert verdict.exists is True
         assert verdict.confidence is QueryConfidence.PROBABLE
-        assert "500" in verdict.reason
+        assert "302" in verdict.reason
 
     def test_miss_marker_wins_when_code_disagrees(self):
         verdict = evaluate(rule(), 200, f"<p>{MISS}</p>")
@@ -159,23 +160,59 @@ class TestCodeOnlyRules:
 
 
 class TestUnreadableBody:
-    """An absent marker is evidence; an unread body is not."""
+    """An absent marker is evidence; an unread body is not.
+
+    "The rule has no marker" and "the marker was never checked" both leave the
+    status code as the only signal, but only the first makes trusting it right.
+    Reddit returns 200 with an empty body for names that do not exist, so
+    conflating them manufactures a hit out of nothing.
+    """
 
     @pytest.mark.parametrize("body", [None, ""])
-    def test_empty_body_does_not_count_as_marker_absent(self, body):
+    def test_empty_body_cannot_confirm_a_hit(self, body):
         verdict = evaluate(rule(), 200, body)
-        # Cannot confirm, but must not be reported as a confident miss either.
+        assert verdict.exists is None
+        assert verdict.confidence is QueryConfidence.AMBIGUOUS
+        assert "could not be checked" in verdict.reason
+
+    def test_empty_body_still_trusts_a_code_only_rule(self):
+        """No marker defined means the code was always the whole rule."""
+        code_only = rule(e_string="", e_code=302, m_code=404, m_string="")
+        verdict = evaluate(code_only, 302, "")
         assert verdict.exists is True
-        assert verdict.confidence is QueryConfidence.PROBABLE
-        assert "no marker to confirm" in verdict.reason
 
     def test_empty_body_with_missing_code(self):
+        """The miss side stays permissive: a 404 is strong on its own."""
         verdict = evaluate(rule(), 404, None)
         assert verdict.exists is False
         assert verdict.confidence is QueryConfidence.PROBABLE
 
     def test_empty_body_with_unrelated_code_stays_undecided(self):
-        assert evaluate(rule(), 500, None).exists is None
+        assert evaluate(rule(), 418, None).exists is None
+
+
+class TestNonContentResponses:
+    """A blocked or errored response did not deliver the resource.
+
+    Its body is a block page, challenge or auth wall -- it can still contain a
+    string the rule treats as a hit marker, which is how a WAF turns into a
+    confident false positive.
+    """
+
+    @pytest.mark.parametrize("code", [401, 403, 429, 503])
+    def test_block_codes_never_evidence_a_hit(self, code):
+        verdict = evaluate(rule(), code, f"<html>{HIT}</html>")
+        assert verdict.exists is None
+        assert "did not deliver the resource" in verdict.reason
+
+    def test_rule_expecting_the_code_is_honoured(self):
+        """Some APIs legitimately answer 403 for a taken name."""
+        expects_403 = rule(e_code=403, m_code=200)
+        assert evaluate(expects_403, 403, f"<html>{HIT}</html>").exists is True
+
+    def test_miss_side_expecting_the_code_is_honoured(self):
+        expects_503_miss = rule(e_code=200, m_code=503, m_string="")
+        assert evaluate(expects_503_miss, 503, "<html>down</html>").exists is False
 
 
 class TestEdgeCases:

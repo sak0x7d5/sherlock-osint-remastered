@@ -1147,9 +1147,12 @@ async def test_sherlock_forces_ai_refresh_for_fresh_targeted_result():
         site_data={
             "Example": {
                 "urlMain": "https://example.com",
-                "url": "https://example.com/{}",
-                "errorType": "status_code",
-                "errorCode": 404,
+                "url": "https://example.com/api/{}",
+                "urlProfile": "https://example.com/{}",
+                "detection": {
+                    "exists": {"code": 200, "string": "profile content"},
+                    "missing": {"code": 404, "string": ""},
+                },
             }
         },
         query_notify=QueryNotify(),
