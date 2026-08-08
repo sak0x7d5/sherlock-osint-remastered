@@ -206,8 +206,8 @@ CASES = (
             ),
         ),
         forbidden_fragments=(
-            "1M",
-            "1,049",
+            "48.2K",
+            "806",
             "91 Posts",
             "instagram.com/7ghost",
         ),
@@ -250,7 +250,7 @@ CASES = (
                 critical=True,
             ),
         ),
-        forbidden_fragments=("1M", "1,049", "91 Posts"),
+        forbidden_fragments=("48.2K", "806", "91 Posts"),
         known_profile_keys=(
             "full_name",
             "organizations",

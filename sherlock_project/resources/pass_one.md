@@ -28,17 +28,17 @@ them. Omit uncertain ownership, indirect clues, and inference.
 
 The searched username is context only. Never extract it under any key,
 including capitalization, leading-`@`, spacing, or separator variants such as
-`7ghost`, `@7Ghost`, `7 Ghost`, and `7-ghost`. A different handle is valid only when the
-page explicitly says the owner also uses it.
+`7ghost`, `@7Ghost`, `7 Ghost`, and `7-ghost`. A different handle is valid only
+when the page explicitly says the owner also uses it.
 
 An `@mention` attached to a role, mission, employer, or affiliation identifies
 an associated account or organization, not an owner handle, unless the page
 explicitly says it is the owner's alternate handle. Put associated accounts
 under `organizations` and owner alternate handles under `other_usernames`. A
-line such as `Wildlife Rescue Volunteer - (@safeharbor)` supplies both role `Child
-Safety Warrior` and organization `@safeharbor`. Short self-descriptions such as
-entrepreneur, advocate, or penetration tester are `roles`; use `mission` only
-for an explicit purpose or goal.
+line such as `Wildlife Rescue Volunteer - (@safeharbor)` supplies both role
+`Wildlife Rescue Volunteer` and organization `@safeharbor`. Short
+self-descriptions such as entrepreneur, advocate, or penetration tester are
+`roles`; use `mission` only for an explicit purpose or goal.
 
 On feed-style pages, use only owner biography/profile metadata. A line labeled
 `post`, `recent post`, `quoted post`, `reply`, or `comment` is feed content even

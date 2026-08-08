@@ -389,9 +389,9 @@ async def test_pass_one_semantic_gate_recovers_owner_name_and_drops_metrics():
                             "Penetration Tester",
                         ],
                         "state": ["Wildlife Rescue Volunteer"],
-                        "total_followers": ["1M"],
-                        "total_following": ["1,049"],
-                        "total_posts": ["205"],
+                        "total_followers": ["48.2K"],
+                        "total_following": ["806"],
+                        "total_posts": ["91"],
                     }
                 }
             )
@@ -449,7 +449,7 @@ async def test_pass_one_semantic_gate_rejects_feed_posts_and_current_url():
                             "threads.com",
                         ],
                         "followers": ["29.4K"],
-                        "total_threads": ["13"],
+                        "total_threads": ["24"],
                     }
                 }
             )
@@ -458,7 +458,7 @@ async def test_pass_one_semantic_gate_rejects_feed_posts_and_current_url():
     site_content = """## Page metadata
 - Title: Erik T. Halvorsen (@7ghost) • Threads, Say more
 - Open Graph description:
-  29.4K Followers • 13 Threads • Serial Entrepreneur
+  29.4K Followers • 24 Threads • Serial Entrepreneur
   Wildlife Rescue Volunteer - (@harborlightfund)
   Penetration Tester
 - Open Graph URL: https://www.threads.com/@7ghost
