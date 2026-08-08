@@ -3,7 +3,7 @@ name: Regression Testing
 on:
   pull_request:
     branches:
-      - master
+      - main
       - release/**
     paths:
       - '.github/workflows/regression.yml'
@@ -14,7 +14,7 @@ on:
       - 'Dockerfile'
   push:
     branches:
-      - master
+      - main
       - release/**
     paths:
       - '.github/workflows/regression.yml'
@@ -52,13 +52,12 @@ jobs:
           windows-latest,
           macos-latest,
         ]
+        # Must satisfy pyproject's `python = ">=3.13,<4.0"`. The previous
+        # 3.10-3.12 entries could not install the package, and 3.14/3.14t are
+        # exercised as advisory checks in release-checks.yml instead of
+        # blocking every push here.
         python-version: [
-          '3.10',
-          '3.11',
-          '3.12',
           '3.13',
-          '3.14',
-          '3.14t',
         ]
     steps:
       - uses: actions/checkout@v6
