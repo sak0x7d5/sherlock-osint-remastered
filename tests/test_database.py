@@ -90,6 +90,7 @@ async def test_schema_is_created(db: SherlockDB):
         "response_text",
         "ai_extraction",
         "ai_extraction_contract_hash",
+        "confidence",
         "scanned_at",
     }
 
@@ -290,6 +291,40 @@ async def test_save_result_persists_row(db: SherlockDB, user_data: dict[str, Any
     assert row["error_context"] == user_data["error_context"]
     assert row["response_text"] == user_data["response_text"]
     assert row["ai_extraction"] is None
+    assert row["confidence"] is None
+
+
+async def test_save_result_persists_confidence(db: SherlockDB, user_data: dict[str, Any]):
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        confidence="Confirmed",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row["confidence"] == "Confirmed"
+
+
+async def test_save_result_updates_confidence_on_rescan(
+    db: SherlockDB, user_data: dict[str, Any]
+):
+    """A rescan that downgrades the evidence must not leave the old grade behind."""
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        confidence="Confirmed",
+    )
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        confidence="Probable",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row["confidence"] == "Probable"
 
 
 async def test_save_result_upserts_same_username_site(db: SherlockDB, user_data: dict[str, Any]):

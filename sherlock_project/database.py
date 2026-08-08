@@ -169,6 +169,15 @@ class SherlockDB:
             column_name="ai_extraction_contract_hash",
             definition="TEXT",
         )
+        # How much of the site rule actually matched. Orthogonal to status:
+        # status is what was decided, confidence is how much agreed. Persisted
+        # so cross-site synthesis can weight a confirmed hit above a probable
+        # one instead of treating every claimed result as equally true.
+        await self._ensure_column(
+            table_name="results",
+            column_name="confidence",
+            definition="TEXT",
+        )
 
         await db.commit()
 
@@ -245,6 +254,7 @@ class SherlockDB:
         ai_extraction: str | None = None,
         ai_extraction_contract_hash: str | None = None,
         force_ai_extraction: bool = False,
+        confidence: str | None = None,
     ) -> int:
         db = self._require_db()
 
@@ -264,9 +274,10 @@ class SherlockDB:
                         error_context,
                         response_text,
                         ai_extraction,
-                        ai_extraction_contract_hash
+                        ai_extraction_contract_hash,
+                        confidence
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(username_id, site_name) DO UPDATE SET
                         site_url = excluded.site_url,
                         status = excluded.status,
@@ -274,6 +285,7 @@ class SherlockDB:
                         query_time_ms = excluded.query_time_ms,
                         error_context = excluded.error_context,
                         response_text = excluded.response_text,
+                        confidence = excluded.confidence,
                         ai_extraction = CASE
                             WHEN excluded.ai_extraction IS NOT NULL
                                 THEN excluded.ai_extraction
@@ -312,6 +324,7 @@ class SherlockDB:
                             if ai_extraction is not None
                             else None
                         ),
+                        confidence,
                         force_ai_extraction,
                         force_ai_extraction,
                     ),

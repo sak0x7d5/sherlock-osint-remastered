@@ -835,6 +835,7 @@ async def sherlock(
                 site_name=social_network,
                 query_time_ms=response_time,
                 error_context=error_context,
+                confidence=str(query_confidence) if query_confidence else None,
                 force_ai_extraction=(
                     force_ai_extraction and should_run_ai
                 ),
