@@ -1,0 +1,6 @@
+# Vendored data files must stay byte-identical to their upstream source on
+# every platform. Without this, a checkout on Windows (core.autocrlf=true)
+# rewrites LF to CRLF in the working copy, and any wheel built there ships a
+# modified copy -- which for the CC BY-SA licensed WhatsMyName dataset is a
+# claim NOTICE.md would no longer be able to make. Upstream publishes LF.
+sherlock_project/resources/*.json text eol=lf
