@@ -113,6 +113,77 @@ def interpolate_string(input_object, username):
     return input_object
 
 
+async def _probe_site(
+    *,
+    engine,
+    net_info,
+    site_username,
+    transport,
+    timeout,
+    wants_profile_body,
+    fetch,
+    fetch_kwargs,
+):
+    """Run one site's entire fetch sequence as a single task.
+
+    A site may need a second request: an API result that decided nothing is
+    worth re-asking against the profile page, and a confirmed hit found over an
+    API needs that page's markup for the AI pass. Both used to be awaited inside
+    the consumer loop, which meant one slow page load stalled the reporting of
+    every other site that had already finished -- 680 sites would sit at zero
+    results while the loop blocked on a single 60-second timeout.
+
+    Owning the sequence here keeps the second request concurrent and under the
+    engine's semaphore like every other fetch, so the consumer only ever does
+    cheap work and results appear as they land.
+
+    The richer body is attached to the response as ``profile_text`` rather than
+    replacing ``text``: detection must keep reading the endpoint its markers
+    were written against, while storage and extraction want the profile page.
+    """
+    response = await fetch(**fetch_kwargs)
+
+    detection_rule = net_info.get("detection")
+    if response is None or not detection_rule:
+        return response
+
+    can_reach_profile = (
+        transport == "api"
+        and net_info.get("request_method", "GET") == "GET"
+        and net_info.get("urlProfile")
+        and net_info.get("urlProfile") != net_info.get("url")
+    )
+    if not can_reach_profile:
+        return response
+
+    verdict = evaluate(detection_rule, response.status, response.text)
+
+    if not verdict.is_decided:
+        retry = await _retry_on_profile_page(
+            engine=engine,
+            net_info=net_info,
+            site_username=site_username,
+            timeout=timeout,
+        )
+        if retry is not None:
+            retried_response, retried_verdict = retry
+            if retried_verdict.is_decided:
+                return retried_response
+        return response
+
+    if wants_profile_body and verdict.exists is True:
+        profile_text = await _fetch_profile_content(
+            engine=engine,
+            net_info=net_info,
+            site_username=site_username,
+            timeout=timeout,
+        )
+        if profile_text:
+            response.profile_text = profile_text
+
+    return response
+
+
 async def _retry_on_profile_page(engine, net_info, site_username, timeout):
     """Re-probe an undecided API result against the human-facing profile page.
 
@@ -631,21 +702,36 @@ async def sherlock(
             transport = preferred_transport(net_info)
 
             if transport == "browser" and request_method is None:
-                task = asyncio.create_task(engine.fetch_with_page(
-                    wait_until=PAGE_WAIT_UNTIL,
-                    **base_kwargs
+                task = asyncio.create_task(_probe_site(
+                    engine=engine,
+                    net_info=net_info,
+                    site_username=site_username,
+                    transport="browser",
+                    timeout=timeout,
+                    wants_profile_body=enqueue_ai is not None,
+                    fetch=engine.fetch_with_page,
+                    fetch_kwargs={"wait_until": PAGE_WAIT_UNTIL, **base_kwargs},
                 ))
             else:
                 # page.goto cannot issue anything but a GET, so a rule with an
                 # explicit method stays on the API transport regardless.
                 if request is None:
                     request = engine.get_request_fn('GET')
-                task = asyncio.create_task(engine.fetch_with_api(
-                    request_fn=request,
-                    request_payload=request_payload,
-                    **base_kwargs
-                ))
                 transport = "api"
+                task = asyncio.create_task(_probe_site(
+                    engine=engine,
+                    net_info=net_info,
+                    site_username=site_username,
+                    transport=transport,
+                    timeout=timeout,
+                    wants_profile_body=enqueue_ai is not None,
+                    fetch=engine.fetch_with_api,
+                    fetch_kwargs={
+                        "request_fn": request,
+                        "request_payload": request_payload,
+                        **base_kwargs,
+                    },
+                ))
 
             # store in tasks as key to retrieve later using as_completed
             tasks[task] = {
@@ -720,31 +806,10 @@ async def sherlock(
                 query_status = QueryStatus.UNKNOWN
 
             else:
+                # Any second request this site needed already happened inside
+                # its own task, so the consumer stays cheap and results are
+                # reported the moment they land.
                 verdict = evaluate(detection_rule, r.status, r.text)
-
-                # An API endpoint that could not decide is worth one retry
-                # against the human-facing page: the profile carries markup the
-                # API never returns, and it is also what the AI pass wants to
-                # read. Only undecided results pay for this, so it stays rare.
-                if (
-                    not verdict.is_decided
-                    and transport == "api"
-                    and net_info.get("request_method", "GET") == "GET"
-                    and net_info.get("urlProfile")
-                ):
-                    retry = await _retry_on_profile_page(
-                        engine=engine,
-                        net_info=net_info,
-                        site_username=site_username,
-                        timeout=timeout,
-                    )
-                    if retry is not None:
-                        retried_response, retried_verdict = retry
-                        if retried_verdict.is_decided:
-                            r = retried_response
-                            verdict = retried_verdict
-                            http_status = r.status
-                            response_text = r.text
 
                 query_confidence = verdict.confidence
                 if verdict.exists is True:
@@ -800,25 +865,13 @@ async def sherlock(
 
             # Detection and extraction want different things. An API endpoint
             # decides existence cheaply but returns a JSON envelope with nothing
-            # in it worth reading; the profile page is what the AI pass needs.
-            # Only confirmed hits pay for the second fetch, so the expensive
-            # render happens on accounts known to exist rather than
-            # speculatively on every site.
-            if (
-                enqueue_ai is not None
-                and query_status is QueryStatus.CLAIMED
-                and transport == "api"
-                and net_info.get("urlProfile")
-                and net_info.get("urlProfile") != net_info.get("url")
-            ):
-                profile_text = await _fetch_profile_content(
-                    engine=engine,
-                    net_info=net_info,
-                    site_username=site_username,
-                    timeout=timeout,
-                )
-                if profile_text:
-                    response_text = profile_text
+            # in it worth reading, so a confirmed hit found that way carries the
+            # profile page's markup alongside it. Detection has already read the
+            # endpoint its markers were written against; what gets stored and
+            # extracted should be the richer body.
+            profile_text = getattr(r, "profile_text", None)
+            if profile_text:
+                response_text = profile_text
 
             should_run_ai = (
                 enqueue_ai is not None
