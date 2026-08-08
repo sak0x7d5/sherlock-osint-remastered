@@ -6,7 +6,6 @@ from sherlock_project.content_extraction import (
     inspect_profile_content,
 )
 
-
 INSTAGRAM_HTML = """
 <html>
   <head>

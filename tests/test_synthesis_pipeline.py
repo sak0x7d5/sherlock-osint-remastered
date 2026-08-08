@@ -12,7 +12,6 @@ from sherlock_project.profile_synthesis import (
 from sherlock_project.result import QueryStatus
 from sherlock_project.synthesis_pipeline import synthesize_username_profile
 
-
 pytestmark = pytest.mark.asyncio
 
 CURRENT_PASS_ONE_CONTRACT_HASH = "pass-one-contract-v2"

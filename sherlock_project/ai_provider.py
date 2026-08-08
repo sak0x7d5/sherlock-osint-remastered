@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol
 
 import httpx
 
 from sherlock_project.ai_config import AISettings
-
 
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 600.0
@@ -282,7 +281,7 @@ class LMStudioProvider:
     def _number(
         payload: dict[str, Any],
         key: str,
-        expected: type[int] | type[float],
+        expected: type[int | float],
     ) -> int | float | None:
         value = payload.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):

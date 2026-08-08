@@ -1,7 +1,7 @@
-from dataclasses import replace
-from io import StringIO
 import runpy
 import sys
+from dataclasses import replace
+from io import StringIO
 
 import pytest
 from rich.console import Console

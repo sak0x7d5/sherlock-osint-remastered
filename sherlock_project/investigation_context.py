@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from argparse import ArgumentTypeError
-from typing import Sequence, cast
+from collections.abc import Sequence
+from typing import cast
 
 from sherlock_project.profile_synthesis import (
     AnchorTrust,
@@ -10,7 +11,6 @@ from sherlock_project.profile_synthesis import (
     canonical_field,
     normalize_value,
 )
-
 
 _TRUST_ORDER: dict[AnchorTrust, int] = {
     "context": 0,

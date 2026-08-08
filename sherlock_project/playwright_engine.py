@@ -1,16 +1,21 @@
 import asyncio
 import os
+from collections.abc import Callable
 from time import perf_counter
-from typing import Any, Callable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
-from playwright.async_api import Browser, BrowserContext, Page
-from playwright.async_api import APIResponse, APIRequestContext, Response
-from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import (
+    APIRequestContext,
+    APIResponse,
+    Browser,
+    BrowserContext,
+    Page,
+    Response,
+)
 
 os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
-from cloakbrowser import binary_info, ensure_binary, launch_async  # noqa: E402
-
+from cloakbrowser import binary_info, ensure_binary, launch_async
 
 BrowserStatus = Literal["installing", "starting", "ready"]
 BrowserStatusCallback = Callable[[BrowserStatus], None]
@@ -199,12 +204,6 @@ class PlaywrightEngine:
 
                 return resp
 
-        except asyncio.CancelledError:
-            raise
-
-        except PlaywrightError:
-            raise
-
         finally:
             if page and not page.is_closed() and not asyncio.current_task().cancelling():
                 await page.close()
@@ -221,21 +220,14 @@ class PlaywrightEngine:
             ) -> APIResponse | None:
         
         resp: Response | None = None
-        try:
-            async with self.sem:
-                start = perf_counter()
-                resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, data=request_payload)
-                if resp is not None:
-                    resp.elapsed = (perf_counter() - start)
-                    try:
-                        resp.text = await resp.text()
-                    except Exception:
-                        resp.text = ''
-
-        except asyncio.CancelledError:
-            raise
-
-        except PlaywrightError:
-            raise
+        async with self.sem:
+            start = perf_counter()
+            resp: APIResponse | None = await request_fn(url=url, timeout=timeout, headers=headers, data=request_payload)
+            if resp is not None:
+                resp.elapsed = (perf_counter() - start)
+                try:
+                    resp.text = await resp.text()
+                except Exception:
+                    resp.text = ''
 
         return resp

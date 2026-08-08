@@ -1,15 +1,16 @@
 from io import StringIO
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from rich.console import Console
 
+from sherlock_project import ai_setup
 from sherlock_project.ai_config import load_ai_settings
 from sherlock_project.ai_provider import (
     AIModelInfo,
     AIProviderUnavailableError,
 )
-from sherlock_project import ai_setup
 
 
 def _model(
@@ -29,7 +30,9 @@ def _model(
 
 
 class FakeSetupProvider:
-    models: list[AIModelInfo] = []
+    # Set on the class by tests and read through type(self), so class-level is
+    # the intent here rather than an accidental shared instance default.
+    models: ClassVar[list[AIModelInfo]] = []
     error: Exception | None = None
     settings_seen = None
     close_calls = 0

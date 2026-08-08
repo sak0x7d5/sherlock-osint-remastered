@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
-import re
 from urllib.parse import urlsplit, urlunsplit
 
 from trafilatura import extract, extract_metadata, html2txt
-
 
 _HTML_METADATA_LABELS = {
     "description": "Description",

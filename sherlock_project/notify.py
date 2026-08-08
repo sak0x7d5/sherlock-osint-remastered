@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from time import perf_counter
 import webbrowser
-from typing import TYPE_CHECKING, Literal, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
+from time import perf_counter
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -616,7 +617,7 @@ class TerminalReporter(QueryNotify):
         )
 
     @staticmethod
-    def _trace_metrics(trace: "AIRequestTrace") -> str:
+    def _trace_metrics(trace: AIRequestTrace) -> str:
         parts = [f"{trace.elapsed_seconds:.2f}s"]
         if trace.stats.input_tokens is not None:
             parts.append(f"in {trace.stats.input_tokens}")
@@ -630,7 +631,7 @@ class TerminalReporter(QueryNotify):
             parts.append(f"TTFT {trace.stats.time_to_first_token_seconds:.2f}s")
         return " | ".join(parts)
 
-    def ai_trace(self, trace: "AIRequestTrace") -> None:
+    def ai_trace(self, trace: AIRequestTrace) -> None:
         if trace.phase == "pass_one":
             self._ai_calls += 1
             self._ai_input_tokens += trace.stats.input_tokens or 0

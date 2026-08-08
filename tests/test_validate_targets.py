@@ -1,11 +1,12 @@
-import pytest
 import re
+
+import pytest
 import rstr
 
-from sherlock_project.sherlock import sherlock
 from sherlock_project.notify import QueryNotify
-from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.playwright_engine import PlaywrightEngine
+from sherlock_project.result import QueryResult, QueryStatus
+from sherlock_project.sherlock import sherlock
 
 FALSE_POSITIVE_ATTEMPTS: int = 2    # Since the usernames are randomly generated, it's POSSIBLE that a real username can be hit
 FALSE_POSITIVE_QUANTIFIER_UPPER_BOUND: int = 15  # If a pattern uses quantifiers such as `+` `*` or `{n,}`, limit the upper bound (0 to disable)
@@ -17,7 +18,7 @@ def set_pattern_upper_bound(pattern: str, upper_bound: int = FALSE_POSITIVE_QUAN
     def replace_upper_bound(match: re.Match) -> str: # type: ignore
         lower_bound: int = int(match.group(1)) if match.group(1) else 0 # type: ignore
         nonlocal upper_bound
-        upper_bound = upper_bound if lower_bound < upper_bound else lower_bound # type: ignore  # noqa: F823
+        upper_bound = max(lower_bound, upper_bound) # type: ignore
         return f'{{{lower_bound},{upper_bound}}}'
 
     pattern = re.sub(r'(?<!\\)\{(\d+),\}', replace_upper_bound, pattern) # {n,} # type: ignore

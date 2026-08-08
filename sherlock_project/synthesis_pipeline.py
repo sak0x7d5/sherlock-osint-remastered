@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 
 from pydantic import ValidationError
 
@@ -12,8 +12,8 @@ from sherlock_project.ai_engine import (
 )
 from sherlock_project.database import SherlockDB
 from sherlock_project.profile_synthesis import (
-    InvestigationContext,
     InvalidExtraction,
+    InvestigationContext,
     ProfileSynthesis,
     SiteExtraction,
     SynthesisEvidence,

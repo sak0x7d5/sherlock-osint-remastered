@@ -12,7 +12,6 @@ from sherlock_project.ai_provider import (
     LMStudioProvider,
 )
 
-
 pytestmark = pytest.mark.asyncio
 
 

@@ -1,6 +1,6 @@
 import asyncio
-from io import StringIO
 import json
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +12,6 @@ from sherlock_project.database import SherlockDB
 from sherlock_project.notify import QueryNotify, TerminalReporter
 from sherlock_project.result import QueryStatus
 from sherlock_project.sherlock import ai_worker, run_ai_pipeline, sherlock
-
 
 pytestmark = pytest.mark.asyncio
 

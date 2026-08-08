@@ -1,12 +1,14 @@
-import os
 import json
+import os
 import urllib
+
 import pytest
 import pytest_asyncio
 import requests
+
+from sherlock_project.database import SherlockDB
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
-from sherlock_project.database import SherlockDB
 
 
 def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:

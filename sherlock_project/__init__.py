@@ -5,8 +5,10 @@ networks.
 
 """
 
-from importlib.metadata import version as pkg_version, PackageNotFoundError
 import pathlib
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
+
 import tomli
 
 

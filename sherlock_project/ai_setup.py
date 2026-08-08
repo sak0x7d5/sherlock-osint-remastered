@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from argparse import ArgumentParser
-from collections.abc import Mapping, Sequence
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from argparse import ArgumentParser
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from rich.console import Console
 from rich.prompt import IntPrompt
 from rich.table import Table
 
 from sherlock_project.ai_config import (
-    AIConfigError,
-    AISettings,
     DEFAULT_AI_CONTEXT_LENGTH,
     DEFAULT_AI_TEMPERATURE,
     DEFAULT_LM_STUDIO_BASE_URL,
+    AIConfigError,
+    AISettings,
     ai_config_path,
     save_ai_settings,
     try_load_ai_settings,

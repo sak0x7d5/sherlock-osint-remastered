@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from hashlib import sha256
 import json
 import re
+from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 AnchorTrust = Literal["verified", "strong", "context"]
 ProfileMode = Literal["aggregate", "anchored"]

@@ -67,7 +67,7 @@ class SherlockDB:
         self._write_lock = asyncio.Lock()
 
     @classmethod
-    async def create(cls, database_path: str) -> "SherlockDB":
+    async def create(cls, database_path: str) -> SherlockDB:
         self = cls(database_path)
         await self.connect()
         return self

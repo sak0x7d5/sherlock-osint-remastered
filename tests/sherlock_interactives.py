@@ -3,6 +3,7 @@ import platform
 import re
 import subprocess
 
+
 class Interactives:
     def run_cli(args:str = "") -> str:
         """Pass arguments to Sherlock as a normal user on the command line"""

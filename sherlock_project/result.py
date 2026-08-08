@@ -27,7 +27,7 @@ class QueryStatus(Enum):
         """
         return self.value
 
-class QueryResult():
+class QueryResult:
     """Query Result Object.
 
     Describes result of query about a given username.
@@ -69,7 +69,6 @@ class QueryResult():
         self.query_time    = query_time
         self.context       = context
 
-        return
 
     def __str__(self):
         """Convert Object To String.

@@ -10,26 +10,33 @@ networks.
 import sys
 
 try:
-    from sherlock_project.__init__ import import_error_test_var # noqa: F401
+    from sherlock_project.__init__ import import_error_test_var  # noqa: F401
 except ImportError:
     print("Did you run Sherlock with `python3 sherlock/sherlock.py ...`?")
     print("This is an outdated method. Please see https://github.com/sak0x7d5/sherlock-osint-remastered for up to date instructions.")
     sys.exit(1)
 
+import asyncio
 import csv
-import pandas as pd
 import os
 import re
-from argparse import ArgumentParser, RawDescriptionHelpFormatter
-from json import dumps as json_dumps, loads as json_loads
+from argparse import ArgumentParser, ArgumentTypeError, RawDescriptionHelpFormatter
+from collections.abc import Awaitable, Callable, Sequence
+from json import dumps as json_dumps
+from json import loads as json_loads
 from time import perf_counter
-from typing import Awaitable, Callable, Optional, Sequence
-import asyncio
 
+import pandas as pd
 import requests
-from playwright.async_api import APIResponse, Response, TimeoutError, Error as PlaywrightError
-from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.database import SherlockDB, default_database_path
+from playwright.async_api import APIResponse, Response
+from playwright.async_api import Error as PlaywrightError
+
+from sherlock_project.__init__ import (
+    __longname__,
+    __shortname__,
+    __version__,
+    forge_api_latest_release,
+)
 from sherlock_project.ai_config import AIConfigError, AISettings, load_ai_settings
 from sherlock_project.ai_engine import (
     AIService,
@@ -38,30 +45,24 @@ from sherlock_project.ai_engine import (
 )
 from sherlock_project.ai_setup import run_ai_setup
 from sherlock_project.content_extraction import extract_profile_content
+from sherlock_project.database import SherlockDB, default_database_path
 from sherlock_project.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
 )
-from sherlock_project.profile_synthesis import IdentityAnchor
-from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
-from sherlock_project.synthesis_pipeline import synthesize_username_profile
-from sherlock_project.__init__ import (
-    __longname__,
-    __shortname__,
-    __version__,
-    forge_api_latest_release,
-)
-
-from sherlock_project.result import QueryStatus
-from sherlock_project.result import QueryResult
 from sherlock_project.notify import (
     INTERRUPTION_MESSAGE,
     QueryNotify,
     QueryNotifyPrint,
     TerminalReporter,
 )
+from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
+from sherlock_project.playwright_engine import PlaywrightEngine
+from sherlock_project.profile_synthesis import IdentityAnchor
+from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.sites import SitesInformation
-from argparse import ArgumentTypeError
+from sherlock_project.synthesis_pipeline import synthesize_username_profile
+
 
 async def await_response(completed_task: asyncio.Task) -> tuple[APIResponse | Response | None, str, str | None]:
     response = None
@@ -440,7 +441,7 @@ async def sherlock(
     enqueue_ai: AIEnqueue | None = None,
     force_ai_extraction: bool = False,
     dump_response: bool = False,
-    proxy: Optional[str] = None,
+    proxy: str | None = None,
     timeout: int = 60,
     on_cancel: AICancel | None = None,
 ) -> dict[str, dict[str, str | QueryResult]]:
@@ -586,7 +587,7 @@ async def sherlock(
             if isinstance(error_type, str):
                 error_type: list[str] = [error_type]
 
-            r, error_text, exception_text = await await_response(completed_task=completed_task)
+            r, error_text, _exception_text = await await_response(completed_task=completed_task)
 
             # Get response time for response of our request.
             try:
@@ -664,9 +665,7 @@ async def sherlock(
                         if isinstance(error_codes, int):
                             error_codes = [error_codes]
 
-                        if error_codes is not None and r.status in error_codes:
-                            query_status = QueryStatus.AVAILABLE
-                        elif r.status >= 300 or r.status < 200:
+                        if error_codes is not None and r.status in error_codes or r.status >= 300 or r.status < 200:
                             query_status = QueryStatus.AVAILABLE
 
                     if "response_url" in error_type and query_status is not QueryStatus.AVAILABLE:
@@ -1061,7 +1060,12 @@ async def main() -> int:
 
     # Check for newer version of Sherlock. If it exists, let the user know about it
     try:
-        latest_release_raw = requests.get(forge_api_latest_release, timeout=10).text
+        # requests is synchronous; off-thread so a slow forge cannot stall the
+        # event loop for the full timeout before the scan has even started.
+        latest_release_response = await asyncio.to_thread(
+            requests.get, forge_api_latest_release, timeout=10
+        )
+        latest_release_raw = latest_release_response.text
         latest_release_json = json_loads(latest_release_raw)
         latest_remote_tag = latest_release_json["tag_name"]
 
@@ -1099,23 +1103,24 @@ async def main() -> int:
             )
         else:
             json_file_location = args.json_file
-            if args.json_file:
-                # If --json parameter is a number, interpret it as a pull request number
-                if args.json_file.isnumeric():
-                    pull_number = args.json_file
-                    pull_url = f"https://api.github.com/repos/sherlock-project/sherlock/pulls/{pull_number}"
-                    pull_request_raw = requests.get(pull_url, timeout=10).text
-                    pull_request_json = json_loads(pull_request_raw)
+            # If --json parameter is a number, interpret it as a pull request number
+            if args.json_file and args.json_file.isnumeric():
+                pull_number = args.json_file
+                pull_url = f"https://api.github.com/repos/sherlock-project/sherlock/pulls/{pull_number}"
+                pull_request_response = await asyncio.to_thread(
+                    requests.get, pull_url, timeout=10
+                )
+                pull_request_json = json_loads(pull_request_response.text)
 
-                    # Check if it's a valid pull request
-                    if "message" in pull_request_json:
-                        query_notify.fatal(
-                            f"Pull request #{pull_number} was not found"
-                        )
-                        sys.exit(1)
+                # Check if it's a valid pull request
+                if "message" in pull_request_json:
+                    query_notify.fatal(
+                        f"Pull request #{pull_number} was not found"
+                    )
+                    sys.exit(1)
 
-                    head_commit_sha = pull_request_json["head"]["sha"]
-                    json_file_location = f"https://raw.githubusercontent.com/sherlock-project/sherlock/{head_commit_sha}/sherlock_project/resources/data.json"
+                head_commit_sha = pull_request_json["head"]["sha"]
+                json_file_location = f"https://raw.githubusercontent.com/sherlock-project/sherlock/{head_commit_sha}/sherlock_project/resources/data.json"
 
             sites = SitesInformation(
                 data_file_path=json_file_location,
@@ -1146,9 +1151,9 @@ async def main() -> int:
         site_missing = []
         for site in args.site_list:
             counter = 0
-            for existing_site in site_data_all:
+            for existing_site, existing_data in site_data_all.items():
                 if site.lower() == existing_site.lower():
-                    site_data[existing_site] = site_data_all[existing_site]
+                    site_data[existing_site] = existing_data
                     counter += 1
             if counter == 0:
                 # Build up list of sites not supported for future error message.
