@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 import aiosqlite
+from platformdirs import user_data_path
 
 from sherlock_project.result import QueryStatus
+
+DB_FILENAME = "sherlock.db"
+
+MEMORY_DATABASE = ":memory:"
+
+
+def default_database_path(environ: Mapping[str, str] | None = None) -> Path:
+    """Resolve where results are stored.
+
+    The database follows the user, not the working directory. Extractions and
+    synthesised profiles are cached in it and keyed by username, so a relative
+    path would start a fresh, empty database every time the tool was invoked
+    from a different directory -- silently discarding that cache and scattering
+    scan data across the filesystem.
+
+    `SHERLOCK_DB` overrides the location, mirroring `SHERLOCK_CONFIG` in
+    ai_config.
+    """
+    environment = os.environ if environ is None else environ
+    override = environment.get("SHERLOCK_DB")
+    if override:
+        return Path(override).expanduser()
+    return user_data_path("sherlock", appauthor=False) / DB_FILENAME
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +75,11 @@ class SherlockDB:
     async def connect(self) -> None:
         if self.db is not None:
             return
+
+        # A user data directory does not exist until something writes to it,
+        # and sqlite will not create intermediate directories itself.
+        if self.database_path != MEMORY_DATABASE:
+            Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
 
         connection = aiosqlite.connect(self.database_path)
         self.db = connection
