@@ -379,8 +379,14 @@ class TerminalReporter(QueryNotify):
 
         if result.status is QueryStatus.CLAIMED:
             self._scan_found += 1
+            # A hit backed by only one of the rule's two signals is worth
+            # flagging. Silently presenting it alongside a fully confirmed
+            # match is what invites a weak result to be read as a certainty.
+            qualifier = ""
+            if result.confidence is not None and str(result.confidence) != "Confirmed":
+                qualifier = f" [{result.confidence}]"
             self.success(
-                f"{result.site_name}: {result.site_url_user}",
+                f"{result.site_name}: {result.site_url_user}{qualifier}",
                 detail=response_time,
             )
             if self.browse:
