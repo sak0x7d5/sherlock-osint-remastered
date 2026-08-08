@@ -1,0 +1,221 @@
+name: Release Checks
+
+# Proves the built distribution is installable and runnable on the runtimes
+# this project claims to support, before anything is tagged.
+#
+# Regression testing covers the source tree. These checks cover the artifact:
+# what a user actually receives. The install jobs deliberately do not check out
+# the repository, so the smoke tests can only exercise the installed
+# distribution and never a source tree shadowing it.
+
+on:
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+    paths:
+      - '.github/workflows/release-checks.yml'
+      - 'Dockerfile'
+      - 'poetry.lock'
+      - 'pyproject.toml'
+      - 'sherlock_project/**'
+  push:
+    branches:
+      - main
+      - 'release/**'
+    paths:
+      - '.github/workflows/release-checks.yml'
+      - 'Dockerfile'
+      - 'poetry.lock'
+      - 'pyproject.toml'
+      - 'sherlock_project/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v4
+        with:
+          poetry-version: 'latest'
+
+      - name: Validate project metadata
+        run: poetry check
+
+      - name: Build sdist and wheel
+        run: poetry build
+
+      # A wheel that drops the site manifest installs cleanly and then fails at
+      # first use, so assert the package data is present in the artifact.
+      - name: Verify packaged resources
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          required = [
+              "sherlock_project/resources/data.json",
+              "sherlock_project/resources/data.schema.json",
+          ]
+          missing = [name for name in required if name not in names]
+          if missing:
+              raise SystemExit(f"{wheel} is missing package data: {missing}")
+          print(f"{wheel} ships all required resources")
+          PY
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  clean-install:
+    name: Clean install (${{ matrix.os }}, wheel)
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+
+      - name: Console script runs
+        shell: bash
+        run: |
+          sherlock --version
+          sherlock --help
+
+      - name: Packaged manifest is readable
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from importlib.resources import files
+
+          manifest = files("sherlock_project").joinpath("resources/data.json")
+          sites = [k for k in json.loads(manifest.read_text(encoding="utf-8")) if k != "$schema"]
+          if not sites:
+              raise SystemExit("packaged manifest contains no sites")
+          print(f"packaged manifest loaded, {len(sites)} sites")
+          PY
+
+  sdist-install:
+    name: Clean install (ubuntu, sdist)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Building from the sdist exercises a path the wheel skips: the source
+      # archive must carry everything the build backend needs.
+      - name: Install sdist
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.tar.gz
+
+      - name: Console script runs
+        run: sherlock --version
+
+  rejects-unsupported-runtime:
+    name: Refuses install below Python 3.13
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # requires-python is the only thing stopping a 3.12 user from installing
+      # a package that cannot import. If this install succeeds, the metadata
+      # is lying and the failure would surface as a traceback at runtime.
+      - name: Install must fail
+        run: |
+          python -m pip install --upgrade pip
+          if python -m pip install dist/*.whl; then
+            echo "::error::wheel installed on Python 3.12 despite requires-python >=3.13"
+            exit 1
+          fi
+          echo "install correctly refused on Python 3.12"
+
+  advisory-next-runtime:
+    name: Advisory install (Python 3.14)
+    needs: build
+    runs-on: ubuntu-latest
+    # Python 3.14 satisfies pyproject's `<4.0` bound but is not a supported
+    # runtime and no dependency is guaranteed to have wheels for it yet. This
+    # job is early warning, not a gate: it must never block a release.
+    continue-on-error: true
+    steps:
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+
+      - name: Console script runs
+        run: sherlock --version
