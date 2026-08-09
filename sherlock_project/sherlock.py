@@ -59,6 +59,7 @@ from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryResult, QueryStatus
+from sherlock_project.show import run_show
 from sherlock_project.sites import SitesInformation
 from sherlock_project.synthesis_pipeline import synthesize_username_profile
 from sherlock_project.wmn_adapter import normalize_username, preferred_transport
@@ -1014,6 +1015,12 @@ def timeout_check(value):
 async def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1:3] == ["setup", "ai"]:
         return await run_ai_setup(sys.argv[3:])
+    # Same argv-sniffing shape as `setup ai` above: intercepted before the scan
+    # parser is built, so `show` never has to satisfy the scan's arguments.
+    # The cost is that a username literally called "show" cannot be scanned as
+    # a bare argument, the same trade already made for "setup".
+    if len(sys.argv) >= 2 and sys.argv[1] == "show":
+        return await run_show(sys.argv[2:])
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
