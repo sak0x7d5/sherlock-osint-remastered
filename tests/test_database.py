@@ -930,3 +930,27 @@ async def test_connect_creates_missing_parent_directories(tmp_path: Path):
         assert nested.exists()
     finally:
         await database.close()
+
+
+async def test_get_saved_results_returns_full_rows(db: SherlockDB):
+    """The resume path needs the stored row, not just the site name."""
+    await db.save_result(
+        username="blue",
+        site_name="GitHub",
+        site_url="https://github.com/blue",
+        status=str(QueryStatus.CLAIMED),
+        status_code=200,
+        query_time_ms=0.42,
+        confidence="Confirmed",
+    )
+
+    saved = await db.get_saved_results("blue")
+
+    assert set(saved) == {"GitHub"}
+    row = saved["GitHub"]
+    assert row["status"] == "Claimed"
+    assert row["site_url"] == "https://github.com/blue"
+    assert row["status_code"] == 200
+    assert row["confidence"] == "Confirmed"
+    # response_text is deliberately not selected; it holds whole pages.
+    assert "response_text" not in row

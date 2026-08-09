@@ -5,6 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from platformdirs import user_data_path
@@ -637,12 +638,30 @@ class SherlockDB:
 
         return row["username"] if row else None
 
-    async def get_saved_sites(self, username: str) -> set[str]:
+    async def get_saved_results(self, username: str) -> dict[str, dict[str, Any]]:
+        """Return stored results for a username, keyed by site name.
+
+        The scan uses the keys to decide what to skip and the rows to rebuild a
+        report covering the skipped sites, so both come from one query.
+
+        Deliberately does not select response_text. The column holds whole
+        pages, and the only consumers of this data are the terminal report and
+        the exports, neither of which reads it. Loading it would mean pulling
+        several hundred documents off disk to display a list of URLs.
+        """
         db = self._require_db()
 
         async with db.execute(
             """
-            SELECT r.site_name
+            SELECT
+                r.site_name,
+                r.site_url,
+                r.status,
+                r.status_code,
+                r.query_time_ms,
+                r.error_context,
+                r.confidence,
+                r.scanned_at
             FROM results r
             JOIN usernames u
                 ON u.id = r.username_id
@@ -652,4 +671,4 @@ class SherlockDB:
         ) as cur:
             rows = await cur.fetchall()
 
-        return {row["site_name"] for row in rows}
+        return {row["site_name"]: dict(row) for row in rows}

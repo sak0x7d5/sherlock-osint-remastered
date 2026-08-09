@@ -62,6 +62,15 @@ class QueryNotify:
     def finish_scan(self, elapsed_time: float = 0) -> None:
         pass
 
+    def restored_results(
+        self,
+        *,
+        username: str,
+        results: dict,
+        to_scan: int,
+    ) -> None:
+        pass
+
     def raw(self, message: str) -> None:
         print(message)
 
@@ -345,6 +354,51 @@ class TerminalReporter(QueryNotify):
         self.success(
             "Targeted profile extraction complete; profile synthesis skipped"
         )
+
+    def restored_results(
+        self,
+        *,
+        username: str,
+        results: dict,
+        to_scan: int,
+    ) -> None:
+        """Show results carried over from earlier scans of this username.
+
+        Runs before the scan starts, so these land above the live hits and the
+        progress bar still counts only what is actually being checked now.
+        """
+        if not results:
+            return
+
+        claimed = [
+            entry["status"]
+            for entry in results.values()
+            if entry["status"].status is QueryStatus.CLAIMED
+        ]
+
+        site_word = "site" if len(results) == 1 else "sites"
+        if to_scan:
+            self.info(
+                f"{len(results)} {site_word} already checked for {username!r}; "
+                f"{to_scan} left to check"
+            )
+        else:
+            self.info(
+                f"All {len(results)} {site_word} already checked for "
+                f"{username!r}. Showing stored results; re-check them with "
+                f"--fresh"
+            )
+
+        for result in sorted(claimed, key=lambda item: item.site_name.lower()):
+            qualifier = ""
+            if result.confidence is not None and str(result.confidence) != "Confirmed":
+                qualifier = f" [{result.confidence}]"
+            self.success(
+                f"{result.site_name}: {result.site_url_user}{qualifier}",
+                detail="stored",
+            )
+            if self.browse:
+                webbrowser.open(result.site_url_user, 2)
 
     def start(self, message: str | None = None, total: int | None = None) -> None:
         if self._scan_task_id is not None:
