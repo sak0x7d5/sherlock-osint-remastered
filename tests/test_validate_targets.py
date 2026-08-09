@@ -82,7 +82,7 @@ class Test_All_Targets:
 
     @pytest.mark.validate_targets_fp
     @pytest.mark.asyncio
-    async def test_false_pos(self, chunked_sites: dict[str, dict[str, str]], playwright_engine):
+    async def test_false_pos(self, chunked_sites: dict[str, dict[str, str]], playwright_engine, db):
         """Iterate through all sites in the manifest to discover possible false-positive inducting targets."""
         pattern: str
         for site in chunked_sites:
@@ -94,14 +94,18 @@ class Test_All_Targets:
             if FALSE_POSITIVE_QUANTIFIER_UPPER_BOUND > 0:
                 pattern = set_pattern_upper_bound(pattern)
 
-            result: QueryStatus = await false_positive_check(chunked_sites, site, pattern, playwright_engine)
-            assert result is QueryStatus.AVAILABLE, f"{site} produced false positive with pattern {pattern}, result was {result}"
+            result: QueryStatus = await false_positive_check(chunked_sites, site, pattern, playwright_engine, db)
+            # Only a claim is a false positive. Refusing to answer -- a block, or
+            # a response matching neither side of the rule -- is the designed
+            # behaviour and must not fail the sweep, or this becomes a report on
+            # the network rather than on the site rules.
+            assert result is not QueryStatus.CLAIMED, f"{site} produced false positive with pattern {pattern}, result was {result}"
 
     @pytest.mark.validate_targets_fn
     @pytest.mark.asyncio
-    async def test_false_neg(self, chunked_sites: dict[str, dict[str, str]], playwright_engine):
+    async def test_false_neg(self, chunked_sites: dict[str, dict[str, str]], playwright_engine, db):
         """Iterate through all sites in the manifest to discover possible false-negative inducting targets."""
         for site in chunked_sites:
-            result: QueryStatus = await false_negative_check(chunked_sites, site, playwright_engine)
+            result: QueryStatus = await false_negative_check(chunked_sites, site, playwright_engine, db)
             assert result is QueryStatus.CLAIMED, f"{site} produced false negative, result was {result}"
 

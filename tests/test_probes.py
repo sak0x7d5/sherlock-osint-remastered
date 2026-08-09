@@ -1,5 +1,4 @@
 import random
-import re
 import string
 
 import pytest
@@ -9,131 +8,178 @@ from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.result import QueryStatus
 from sherlock_project.sherlock import sherlock
 
-#from sherlock_interactives import Interactives
+# These tests used to be grouped by errorType -- message, status_code,
+# response_url -- because that was how the legacy manifest described a site.
+# A WMN rule has no such split: every rule states both what a hit looks like and
+# what a miss looks like, so there is one code path and the only questions worth
+# asking live are "is a real account found" and "is a made-up one not".
+
+# Sites picked for being stable and unlikely to change shape. The usernames come
+# from the dataset's own `known` list rather than being hard-coded here, so a
+# handle going stale is fixed by refreshing the manifest instead of editing
+# this file.
+TRUSTED_SITES = ["GitLab", "Docker Hub (User)", "Keybase", "devRant"]
 
 
-async def simple_query(sites_info: dict, site: str, username: str, playwright_engine: PlaywrightEngine, db) -> QueryStatus:
+async def simple_query(
+    sites_info: dict, site: str, username: str, playwright_engine: PlaywrightEngine, db
+) -> QueryStatus:
     query_notify = QueryNotify()
-    site_data: dict = {}
-    site_data[site] = sites_info[site]
+    site_data: dict = {site: sites_info[site]}
     results_total = await sherlock(
         username=username,
         site_data=site_data,
         db=db,
         query_notify=query_notify,
-        engine=playwright_engine
+        engine=playwright_engine,
     )
-    return results_total[site]['status'].status    
+    return results_total[site]["status"].status
+
+
+def random_handle(length: int) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(random.choice(alphabet) for _ in range(length))
+
 
 @pytest.mark.online
 class TestLiveTargets:
     """Actively test probes against live and trusted targets"""
-    # Known positives should only use sites trusted to be reliable and unchanging
-    @pytest.mark.parametrize('site,username',[
-        ('GitLab', 'ppfeister'),
-        ('AllMyLinks', 'blue'),
+
+    @pytest.mark.parametrize("site", TRUSTED_SITES)
+    @pytest.mark.asyncio()
+    async def test_known_username_is_found(
+        self, wmn_sites_info, site, playwright_engine, db
+    ):
+        username = wmn_sites_info[site]["known"][0]
+        status = await simple_query(
+            sites_info=wmn_sites_info,
+            site=site,
+            username=username,
+            playwright_engine=playwright_engine,
+            db=db,
+        )
+        assert status is QueryStatus.CLAIMED, (
+            f"{site} did not find {username!r}, which the dataset records as real"
+        )
+
+    @pytest.mark.parametrize("site,random_len", [
+        ("GitLab", 30),
+        ("Docker Hub (User)", 30),
+        ("Keybase", 30),
+        ("Codecademy", 30),
     ])
     @pytest.mark.asyncio()
-    async def test_known_positives_via_message(self, sites_info, site, username, playwright_engine, db):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
+    async def test_invented_username_is_not_found(
+        self, wmn_sites_info, site, random_len, playwright_engine, db
+    ):
+        """A made-up handle must not come back claimed.
 
-
-    # Known positives should only use sites trusted to be reliable and unchanging
-    @pytest.mark.parametrize('site,username',[
-        ('GitHub', 'ppfeister'),
-        ('GitHub', 'sherlock-project'),
-        ('Docker Hub', 'ppfeister'),
-        ('Docker Hub', 'sherlock'),
-    ])
-    @pytest.mark.asyncio()
-    async def test_known_positives_via_status_code(self, sites_info, site, username, playwright_engine, db):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
-
-
-    # Known positives should only use sites trusted to be reliable and unchanging
-    @pytest.mark.parametrize('site,username',[
-        ('Keybase', 'blue'),
-        ('devRant', 'blue'),
-    ])
-    @pytest.mark.asyncio()
-    async def test_known_positives_via_response_url(self, sites_info, site, username, playwright_engine, db):
-        assert await simple_query(sites_info=sites_info, site=site, username=username, playwright_engine=playwright_engine, db=db) is QueryStatus.CLAIMED
-
-
-    # Randomly generate usernames of high length and test for positive availability
-    # Randomly generated usernames should be simple alnum for simplicity and high
-    # compatibility. Several attempts may be made ~just in case~ a real username is
-    # generated.
-    @pytest.mark.parametrize('site,random_len',[
-        ('GitLab', 255),
-        ('Codecademy', 30)
-    ])
-    @pytest.mark.asyncio()
-    async def test_likely_negatives_via_message(self, sites_info, site, random_len, playwright_engine, db):
-        num_attempts: int = 3
-        attempted_usernames: list[str] = []
-        status: QueryStatus = QueryStatus.CLAIMED
-        for i in range(num_attempts):
-            acceptable_types = string.ascii_letters + string.digits
-            random_handle = ''.join(random.choice(acceptable_types) for _ in range (random_len))
-            attempted_usernames.append(random_handle)
-            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine, db=db)
-            if status is QueryStatus.AVAILABLE:
+        Retried because a random string can, very occasionally, be a real
+        account. UNKNOWN is tolerated -- refusing to answer when a site blocks
+        the request is the designed behaviour, and failing the run for it would
+        make this test a network weather report.
+        """
+        num_attempts = 3
+        attempted: list[str] = []
+        status = QueryStatus.CLAIMED
+        for _ in range(num_attempts):
+            handle = random_handle(random_len)
+            attempted.append(handle)
+            status = await simple_query(
+                sites_info=wmn_sites_info,
+                site=site,
+                username=handle,
+                playwright_engine=playwright_engine,
+                db=db,
+            )
+            if status is not QueryStatus.CLAIMED:
                 break
-        assert status is QueryStatus.AVAILABLE, f"Could not validate available username after {num_attempts} attempts with randomly generated usernames {attempted_usernames}."
+        assert status is not QueryStatus.CLAIMED, (
+            f"{site} claimed every invented username tried: {attempted}"
+        )
 
 
-    # Randomly generate usernames of high length and test for positive availability
-    # Randomly generated usernames should be simple alnum for simplicity and high
-    # compatibility. Several attempts may be made ~just in case~ a real username is
-    # generated.
-    @pytest.mark.parametrize('site,random_len',[
-        ('GitHub', 39),
-        ('Docker Hub', 30)
+class TestDetectionAgainstControlledResponses:
+    """Drive the two sides of a rule against httpbin rather than a real site."""
+
+    @pytest.mark.parametrize("path,expected", [
+        ("status/200", QueryStatus.CLAIMED),
+        ("status/404", QueryStatus.AVAILABLE),
     ])
     @pytest.mark.asyncio()
-    async def test_likely_negatives_via_status_code(self, sites_info, site, random_len, playwright_engine, db):
-        num_attempts: int = 3
-        attempted_usernames: list[str] = []
-        status: QueryStatus = QueryStatus.CLAIMED
-        for i in range(num_attempts):
-            acceptable_types = string.ascii_letters + string.digits
-            random_handle = ''.join(random.choice(acceptable_types) for _ in range (random_len))
-            attempted_usernames.append(random_handle)
-            status = await simple_query(sites_info=sites_info, site=site, username=random_handle, playwright_engine=playwright_engine, db=db)
-            if status is QueryStatus.AVAILABLE:
-                break
-        assert status is QueryStatus.AVAILABLE, f"Could not validate available username after {num_attempts} attempts with randomly generated usernames {attempted_usernames}."
-
-    @pytest.mark.parametrize("username,expected", [
-    # redirects to errorUrl -> username not found -> AVAILABLE
-    ("https://httpbin.org/", QueryStatus.AVAILABLE),
-    ("https://httpbin.org", QueryStatus.AVAILABLE),
-    # doesn't redirect to errorUrl -> username found -> CLAIMED  
-    ("https://example.com/", QueryStatus.CLAIMED),])
-    async def test_error_type_response_url(self, username, expected, playwright_engine, db, httpbin_available):
+    async def test_status_only_rule(
+        self, path, expected, playwright_engine, db, httpbin_available
+    ):
         site_data = {
-            'Test': {
-                "url": "https://httpbin.org/redirect-to?url={}",
-                "errorType": "response_url",
-                "errorUrl": "https://httpbin.org/",
+            "Test": {
+                "url": "https://httpbin.org/{}",
+                "urlProfile": "https://httpbin.org/{}",
                 "urlMain": "https://httpbin.org",
+                "detection": {
+                    "exists": {"code": 200, "string": ""},
+                    "missing": {"code": 404, "string": ""},
+                },
             }
         }
-        assert await simple_query(
+        status = await simple_query(
             sites_info=site_data,
             db=db,
-            site='Test',
-            username=username,
-            playwright_engine=playwright_engine
-        ) == expected
-        
-@pytest.mark.asyncio()
-async def test_username_illegal_regex(sites_info, playwright_engine, db):
-    site: str = 'Bitwarden Forum'
-    invalid_handle: str = '*#$Y&*JRE'
-    pattern = re.compile(sites_info[site]['regexCheck'])
-    # Ensure that the username actually fails regex before testing sherlock
-    assert pattern.match(invalid_handle) is None
-    assert await simple_query(sites_info=sites_info, site=site, username=invalid_handle, playwright_engine=playwright_engine, db=db) is QueryStatus.ILLEGAL
+            site="Test",
+            username=path,
+            playwright_engine=playwright_engine,
+        )
+        assert status == expected
 
+    @pytest.mark.asyncio()
+    async def test_marker_absent_on_expected_code_is_undecided(
+        self, playwright_engine, db, httpbin_available
+    ):
+        """The soft-404 guard: a 200 alone must not stand in for the marker."""
+        site_data = {
+            "Test": {
+                "url": "https://httpbin.org/{}",
+                "urlProfile": "https://httpbin.org/{}",
+                "urlMain": "https://httpbin.org",
+                "detection": {
+                    "exists": {"code": 200, "string": "a-marker-that-is-not-there"},
+                    "missing": {"code": 404, "string": ""},
+                },
+            }
+        }
+        status = await simple_query(
+            sites_info=site_data,
+            db=db,
+            site="Test",
+            username="status/200",
+            playwright_engine=playwright_engine,
+        )
+        assert status is QueryStatus.UNKNOWN
+
+
+@pytest.mark.asyncio()
+async def test_username_illegal_regex(playwright_engine, db):
+    """regexCheck still short-circuits a probe when a rule carries one.
+
+    No WMN rule does today -- the dataset has no equivalent field -- so this
+    guards the code path rather than any live target, and makes no request.
+    """
+    site_data = {
+        "Test": {
+            "url": "https://example.com/{}",
+            "urlProfile": "https://example.com/{}",
+            "urlMain": "https://example.com",
+            "regexCheck": "^[a-zA-Z0-9]+$",
+            "detection": {
+                "exists": {"code": 200, "string": "profile"},
+                "missing": {"code": 404, "string": ""},
+            },
+        }
+    }
+    status = await simple_query(
+        sites_info=site_data,
+        site="Test",
+        username="*#$Y&*JRE",
+        playwright_engine=playwright_engine,
+        db=db,
+    )
+    assert status is QueryStatus.ILLEGAL
