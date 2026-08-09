@@ -871,3 +871,56 @@ def test_anchorless_profile_values_remain_uncolored() -> None:
 
 def test_query_notify_print_remains_the_terminal_reporter_compatibility_name() -> None:
     assert issubclass(QueryNotifyPrint, TerminalReporter)
+
+
+def test_anchored_profile_shows_the_anchors_it_was_built_from() -> None:
+    """An anchored profile is unreadable without the anchors.
+
+    The renderer already reported how each site scored ("strong match"), but
+    never what it matched against, so a stored profile could not be
+    interpreted after the fact.
+    """
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "anchored",
+            "resolution_status": "resolved",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "anchors": [
+                {"field": "name", "value": "Avery Stone"},
+                {"field": "roles", "value": "Hacker", "trust": "context"},
+                {"field": "city", "value": "Oslo", "source": "case notes"},
+            ],
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue()
+    assert "anchors" in rendered
+    assert "name=Avery Stone" in rendered
+    # Trust is shown only when it is not the default.
+    assert "roles=Hacker [context]" in rendered
+    assert "name=Avery Stone [strong]" not in rendered
+    assert "city=Oslo (from case notes)" in rendered
+
+
+def test_anchorless_profile_shows_no_anchor_row() -> None:
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "partial",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    assert "anchors" not in output.getvalue()

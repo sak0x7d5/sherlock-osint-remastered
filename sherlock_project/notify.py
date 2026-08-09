@@ -26,7 +26,7 @@ from sherlock_project.result import QueryResult, QueryStatus
 
 if TYPE_CHECKING:
     from sherlock_project.ai_engine import AIRequestTrace, StructuredResponseError
-    from sherlock_project.profile_synthesis import ProfileSynthesis
+    from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
 
 
 AIOutcome = Literal["with_facts", "no_facts", "pending", "skipped"]
@@ -35,6 +35,20 @@ INTERRUPTION_MESSAGE = (
     "Processing interrupted; committed results were saved and pending AI "
     "work can resume on the next --ai run."
 )
+
+
+def _format_anchor(anchor: IdentityAnchor) -> str:
+    """Render one anchor as the user typed it, plus what qualifies it.
+
+    Trust is only shown when it is not the default, so the common case stays
+    as short as the `--anchor field=value` the user actually wrote.
+    """
+    rendered = f"{anchor.field}={anchor.value}"
+    if anchor.trust != "strong":
+        rendered += f" [{anchor.trust}]"
+    if anchor.source:
+        rendered += f" (from {anchor.source})"
+    return rendered
 
 
 @dataclass(frozen=True, slots=True)
@@ -1072,6 +1086,20 @@ class TerminalReporter(QueryNotify):
                     )
             table.add_row(field_name, rendered_values)
 
+        # What the run was anchored ON, not just how sites scored against it.
+        # Without this an anchored profile cannot be read back: "strong match"
+        # is meaningless once you no longer remember what you anchored to.
+        if profile.anchors:
+            # Text(), not a bare string: Rich parses markup in table cells and
+            # would silently swallow the "[context]" trust marker as a style
+            # tag. Anchor values are user data and may contain brackets too.
+            table.add_row(
+                "anchors",
+                Text(
+                    ", ".join(_format_anchor(anchor) for anchor in profile.anchors)
+                ),
+            )
+
         if profile.mode == "anchored":
             source_groups = (
                 (
@@ -1100,7 +1128,7 @@ class TerminalReporter(QueryNotify):
                 if sites:
                     table.add_row(label, ", ".join(sites))
 
-        if display_data or profile.mode == "anchored":
+        if display_data or profile.mode == "anchored" or profile.anchors:
             if has_colored_value:
                 legend = Text("Match key: ", style="bold")
                 legend.append("strong identity match", style="green")
