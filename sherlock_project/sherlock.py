@@ -44,7 +44,7 @@ from sherlock_project.ai_engine import (
 from sherlock_project.ai_setup import run_ai_setup
 from sherlock_project.content_extraction import extract_profile_content
 from sherlock_project.database import SherlockDB, default_database_path
-from sherlock_project.detection import evaluate
+from sherlock_project.detection import QueryConfidence, evaluate
 from sherlock_project.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
@@ -282,6 +282,59 @@ def expand_usernames(usernames: list[str]) -> list[str]:
             seen.add(candidate)
             expanded.append(candidate)
     return expanded
+
+
+def restore_saved_results(
+    username: str,
+    saved_rows: dict[str, dict],
+    site_data_all: dict,
+) -> dict:
+    """Rebuild scan-shaped results from rows already in the database.
+
+    A scan only returns the sites it actually checked, so without this a repeat
+    run reports nothing and writes empty exports while every hit sits in
+    SQLite. Restored entries carry the same shape as live ones so the report
+    and the exporters cannot tell the difference.
+
+    Rows that cannot be reconstructed are skipped rather than raised: a single
+    unparseable status must not cost the user the rest of their stored results.
+    """
+    restored: dict = {}
+
+    for site_name, row in saved_rows.items():
+        try:
+            status = QueryStatus(row["status"])
+        except ValueError:
+            continue
+
+        confidence = None
+        stored_confidence = row.get("confidence")
+        if stored_confidence:
+            try:
+                confidence = QueryConfidence(stored_confidence)
+            except ValueError:
+                confidence = None
+
+        site_url = row.get("site_url") or ""
+        net_info = site_data_all.get(site_name, {})
+
+        restored[site_name] = {
+            "url_main": net_info.get("urlMain"),
+            "url_user": site_url,
+            "status": QueryResult(
+                username,
+                site_name,
+                site_url,
+                status,
+                query_time=row.get("query_time_ms"),
+                context=row.get("error_context"),
+                confidence=confidence,
+            ),
+            "http_status": row.get("status_code") or "",
+            "response_text": "",
+        }
+
+    return restored
 
 
 async def synthesize_profiles(
@@ -1432,31 +1485,56 @@ async def main() -> int:
                 # If no site list was provided, skip sites already in the
                 # database. --fresh opts out of that resume behaviour and
                 # re-checks everything.
+                restored_results: dict = {}
                 if not args.site_list and not args.fresh:
-                    saved_sites = await db.get_saved_sites(username=username)
+                    saved_rows = await db.get_saved_results(username=username)
                     site_data = {
                         site_name: site_data_all[site_name]
                         for site_name in site_data_all
-                        if site_name not in saved_sites
+                        if site_name not in saved_rows
                     }
+                    # Everything skipped above still belongs in the report.
+                    # Without this the run describes itself rather than the
+                    # username, and a second scan looks like it found nothing.
+                    restored_results = restore_saved_results(
+                        username=username,
+                        saved_rows=saved_rows,
+                        site_data_all=site_data_all,
+                    )
+                    query_notify.restored_results(
+                        username=username,
+                        results=restored_results,
+                        to_scan=len(site_data),
+                    )
 
-                scan_started_at = perf_counter()
-                results = await sherlock(
-                    username=username,
-                    engine=engine,
-                    db=db,
-                    site_data=site_data,
-                    query_notify=query_notify,
-                    dump_response=args.dump_response,
-                    proxy=args.proxy,
-                    timeout=args.timeout,
-                    enqueue_ai=enqueue_ai_callback,
-                    force_ai_extraction=targeted_ai_scan,
-                    on_cancel=cancel_ai_pipeline if args.ai else None,
-                )
-                query_notify.finish_scan(
-                    elapsed_time=perf_counter() - scan_started_at
-                )
+                # An empty site_data here means every site was already stored;
+                # an unmatched --site exits fatally further up, so this cannot
+                # be a bad selection. Running the scan anyway would announce
+                # "checking 0 sites" and "0 found" directly beneath the stored
+                # results we just reported.
+                results: dict = {}
+                if site_data:
+                    scan_started_at = perf_counter()
+                    results = await sherlock(
+                        username=username,
+                        engine=engine,
+                        db=db,
+                        site_data=site_data,
+                        query_notify=query_notify,
+                        dump_response=args.dump_response,
+                        proxy=args.proxy,
+                        timeout=args.timeout,
+                        enqueue_ai=enqueue_ai_callback,
+                        force_ai_extraction=targeted_ai_scan,
+                        on_cancel=cancel_ai_pipeline if args.ai else None,
+                    )
+                    query_notify.finish_scan(
+                        elapsed_time=perf_counter() - scan_started_at
+                    )
+                # Restored first so freshly-scanned sites win on any overlap.
+                # There should be none by construction, but the scan is the
+                # newer evidence either way.
+                results = {**restored_results, **results}
 
                 if enqueue_ai_callback is not None and not targeted_ai_scan:
                     if current_pass_one_contract_hash is None:

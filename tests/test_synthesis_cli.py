@@ -163,8 +163,18 @@ async def test_fresh_disables_the_saved_site_resume_filter(
     class FakeDB:
         closed = False
 
-        async def get_saved_sites(self, **_kwargs: object) -> set[str]:
-            return {"Saved"}
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {
+                "Saved": {
+                    "site_name": "Saved",
+                    "site_url": "https://saved.example/blue",
+                    "status": "Claimed",
+                    "status_code": 200,
+                    "query_time_ms": 1.0,
+                    "error_context": None,
+                    "confidence": "Confirmed",
+                }
+            }
 
         async def close(self) -> None:
             self.closed = True
@@ -205,6 +215,86 @@ async def test_fresh_disables_the_saved_site_resume_filter(
     await sherlock_module.main()
 
     assert sorted(scanned_sites) == expected_sites
+    assert database.closed is True
+
+
+async def test_fully_cached_username_reports_without_scanning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Every site stored: report from the database, do not start a scan.
+
+    Running the scan anyway would print "checking 0 sites" and "0 found"
+    directly beneath the stored results, which is what made a repeat run look
+    like it had failed.
+    """
+
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [SimpleNamespace(name="Saved", information={})]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeDB:
+        closed = False
+
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {
+                "Saved": {
+                    "site_name": "Saved",
+                    "site_url": "https://saved.example/blue",
+                    "status": "Claimed",
+                    "status_code": 200,
+                    "query_time_ms": 1.0,
+                    "error_context": None,
+                    "confidence": "Confirmed",
+                }
+            }
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeEngine:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+    database = FakeDB()
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_scan(**_kwargs: object) -> dict:
+        raise AssertionError("no scan may run when every site is already stored")
+
+    monkeypatch.setattr(sys, "argv", ["sherlock", "--local", "--no-color", "blue"])
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+
+    await sherlock_module.main()
+
+    out = capsys.readouterr().out
+    # The stored hit is reported even though nothing was scanned.
+    assert "https://saved.example/blue" in out
+    assert "--fresh" in out
     assert database.closed is True
 
 
@@ -256,7 +346,7 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
             self.pending_calls = 0
             self.closed = False
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
             raise AssertionError("targeted sites must always be fetched again")
 
         async def get_pending_ai_extraction_ids(
@@ -379,8 +469,8 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
     class FakeDB:
         closed = False
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def get_pending_ai_extraction_ids(
             self,
@@ -493,8 +583,8 @@ async def test_model_load_failure_finishes_scan_and_skips_synthesis(
     class FakeDB:
         closed = False
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def get_pending_ai_extraction_ids(
             self,
@@ -819,8 +909,8 @@ async def test_main_scan_cancellation_returns_130_and_skips_exports(
     class FakeDB:
         close_calls = 0
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def close(self) -> None:
             self.close_calls += 1
@@ -922,8 +1012,8 @@ async def test_main_ai_generation_cancellation_closes_once_and_skips_synthesis(
     class FakeDB:
         close_calls = 0
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def get_pending_ai_extraction_ids(
             self,
@@ -1255,8 +1345,8 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
     class FakeDB:
         close_calls = 0
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def save_result(self, **_kwargs: object) -> int:
             return 41
@@ -1372,8 +1462,8 @@ async def test_main_interruption_survives_ai_and_database_close_failures(
     class FakeDB:
         close_calls = 0
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
-            return []
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
 
         async def get_pending_ai_extraction_ids(
             self,
@@ -1547,7 +1637,7 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
     class FakeDB:
         close_calls = 0
 
-        async def get_saved_sites(self, **_kwargs: object) -> list[str]:
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
             saved_sites_started.set()
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
