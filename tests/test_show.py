@@ -11,7 +11,7 @@ import json
 import pytest
 
 from sherlock_project.database import SherlockDB
-from sherlock_project.profile_synthesis import ProfileSynthesis
+from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
 from sherlock_project.result import QueryStatus
 from sherlock_project.show import _claimed_accounts, _load_profile, run_show
 
@@ -208,3 +208,43 @@ async def test_username_overview_counts_only_that_username(tmp_path):
     assert blue.claimed_sites == 1
     assert green.total_sites == 1
     assert missing is None
+
+
+async def test_show_displays_the_anchors_a_profile_was_built_from(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Reading back an anchored profile must include what it was anchored to."""
+    profile = ProfileSynthesis(
+        username="blue",
+        input_hash="hash-1",
+        mode="anchored",
+        resolution_status="resolved",
+        completeness="complete",
+        strong_profile={"full_name": ["Avery Stone"]},
+        anchors=[
+            IdentityAnchor(field="name", value="Avery Stone"),
+            IdentityAnchor(field="roles", value="Hacker", trust="context"),
+        ],
+    )
+
+    database = tmp_path / "sherlock.db"
+    await _seed(str(database), with_profile=False)
+    db = await SherlockDB.create(str(database))
+    try:
+        await db.update_username_profile_summary(
+            username="blue",
+            profile_summary=json.dumps(profile.model_dump(mode="json"), sort_keys=True),
+            input_hash="hash-1",
+        )
+    finally:
+        await db.close()
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["blue", "--profile", "--no-color"])
+
+    out = capsys.readouterr().out
+    assert "anchors" in out
+    assert "name=Avery Stone" in out
+    assert "roles=Hacker [context]" in out
