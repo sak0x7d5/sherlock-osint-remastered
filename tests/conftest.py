@@ -38,6 +38,18 @@ def sites_obj():
 def sites_info():
     yield fetch_local_manifest()
 
+
+@pytest.fixture(scope="session")
+def wmn_sites_info() -> dict[str, dict]:
+    """The manifest the scanner actually runs on.
+
+    sites_info still loads the legacy data.json, which the scan path no longer
+    reads: those records carry errorType and no detection block, so probing
+    them now yields UNKNOWN for every site.
+    """
+    sites_obj = SitesInformation()
+    return {site.name: site.information for site in sites_obj}
+
 @pytest.fixture(scope="session")
 def remote_schema():
     schema_url: str = 'https://raw.githubusercontent.com/sherlock-project/sherlock/master/sherlock_project/resources/data.schema.json'
@@ -55,7 +67,10 @@ def pytest_addoption(parser):
 
 def pytest_generate_tests(metafunc):
     if "chunked_sites" in metafunc.fixturenames:
-        sites_info = fetch_local_manifest(honor_exclusions=False)
+        # The manifest the scanner runs on. Parametrizing over the legacy
+        # data.json gave every case a record with no detection block, so the
+        # whole sweep could only ever report UNKNOWN.
+        sites_info = {site.name: site.information for site in SitesInformation()}
 
         # Ingest and apply site selections
         site_filter: str | None = metafunc.config.getoption("--chunked-sites")
