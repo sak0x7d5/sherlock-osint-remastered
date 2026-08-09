@@ -1,5 +1,14 @@
 name: Modified Target Validation
 
+# Inherited from upstream, and now dormant: it triggers only on data.json,
+# which is no longer the default manifest, so ordinary PRs never fire it.
+#
+# Two things to settle before this repository accepts outside PRs. It uses
+# `pull_request_target`, which hands a write-scoped token to a workflow
+# triggered by fork PRs. And it has no WMN equivalent, so changes to
+# wmn-data.json get schema validation from regression.yml but no live probing
+# of the rules that actually changed. Keep, repoint, or delete -- see TODO.md.
+
 on:
   pull_request_target:
     branches:
