@@ -218,6 +218,92 @@ async def test_fresh_disables_the_saved_site_resume_filter(
     assert database.closed is True
 
 
+async def test_concurrency_option_reaches_the_fetch_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The flag is the easy half; the plumbing is what this guards.
+
+    PlaywrightEngine has accepted a concurrency argument all along -- main()
+    simply never passed one, so every run was pinned to the built-in default no
+    matter what the user asked for.
+    """
+
+    engine_kwargs: dict = {}
+
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [SimpleNamespace(name="Example", information={})]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeDB:
+        closed = False
+
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeEngine:
+        def __init__(self, **kwargs: object) -> None:
+            engine_kwargs.update(kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+    database = FakeDB()
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_scan(**_kwargs: object) -> dict:
+        return {}
+
+    monkeypatch.setattr(sys, "argv", ["sherlock", "--local", "-c", "7", "blue"])
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+
+    await sherlock_module.main()
+
+    assert engine_kwargs["concurrency"] == 7
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+async def test_concurrency_option_rejects_values_below_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+):
+    """Zero is the one that has to fail loudly.
+
+    asyncio.Semaphore(0) does not raise -- it blocks every acquire forever, so
+    without this check the scan would hang silently instead of erroring.
+    """
+    monkeypatch.setattr(sys, "argv", ["sherlock", "--concurrency", value, "blue"])
+
+    with pytest.raises(SystemExit):
+        await sherlock_module.main()
+
+    assert "Concurrency must be at least 1" in capsys.readouterr().err
+
+
 async def test_fully_cached_username_reports_without_scanning(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

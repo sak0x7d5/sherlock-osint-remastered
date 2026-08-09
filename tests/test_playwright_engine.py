@@ -20,6 +20,17 @@ def test_get_request_fn_returns_callable(valid_method: str, playwright_engine: P
     assert callable(method_fn)
 
 
+@pytest.mark.asyncio
+async def test_semaphore_size_follows_requested_concurrency() -> None:
+    """The number the CLI asks for must be the number the fetch layer enforces."""
+    engine = PlaywrightEngine(concurrency=2)
+
+    await engine.sem.acquire()
+    assert not engine.sem.locked()
+    await engine.sem.acquire()
+    assert engine.sem.locked()
+
+
 def test_missing_browser_binary_reports_installation_without_printing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

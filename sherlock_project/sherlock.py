@@ -1012,6 +1012,34 @@ def timeout_check(value):
 
     return float_value
 
+
+def concurrency_check(value):
+    """Check Concurrency Argument.
+
+    Checks the requested number of simultaneous site checks for validity.
+
+    Keyword Arguments:
+    value                  -- Number of sites to check at the same time.
+
+    Return Value:
+    Integer used to size the fetch engine's semaphore.
+
+    NOTE:  Will raise an exception if the concurrency is invalid. Zero is the
+    case that makes this validation mandatory rather than cosmetic:
+    asyncio.Semaphore(0) does not raise, it blocks every acquire forever, so an
+    unchecked "--concurrency 0" hangs the scan with no output and no error.
+    """
+
+    int_value = int(value)
+
+    if int_value < 1:
+        raise ArgumentTypeError(
+            f"Invalid concurrency value: {value}. Concurrency must be at least 1."
+        )
+
+    return int_value
+
+
 async def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1:3] == ["setup", "ai"]:
         return await run_ai_setup(sys.argv[3:])
@@ -1107,6 +1135,20 @@ async def main() -> int:
         type=timeout_check,
         default=60,
         help="Time (in seconds) to wait for response to requests (Default: 60)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        "-c",
+        action="store",
+        metavar="COUNT",
+        dest="concurrency",
+        type=concurrency_check,
+        default=30,
+        help=(
+            "Number of sites to check at the same time (Default: 30). Raising "
+            "this does not add parallelism -- the scan is one event loop, and "
+            "the browser and the remote sites are the real ceiling."
+        ),
     )
     parser.add_argument(
         "--print-all",
@@ -1484,6 +1526,7 @@ async def main() -> int:
             enqueue_ai_callback = enqueue_ai_result
 
         async with PlaywrightEngine(
+            concurrency=args.concurrency,
             headless=True,
             status_callback=query_notify.browser_status,
             cancellation_callback=cancel_ai_pipeline if args.ai else None,
