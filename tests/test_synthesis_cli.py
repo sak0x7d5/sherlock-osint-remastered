@@ -104,6 +104,7 @@ async def test_setup_ai_dispatches_before_scan_parser(
     [
         ["--site", "Plurk"],
         ["--local"],
+        ["--fresh"],
         ["--site", "Plurk", "--local"],
     ],
 )
@@ -132,6 +133,79 @@ async def test_synthesis_only_rejects_scan_only_options(
     assert "cannot be used with --ai-synthesize-only" in error
     assert "uses all saved extractions" in error
     assert "--ai --site" in error
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_sites"),
+    [
+        ([], ["Unseen"]),
+        (["--fresh"], ["Saved", "Unseen"]),
+    ],
+)
+async def test_fresh_disables_the_saved_site_resume_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    extra_args: list[str],
+    expected_sites: list[str],
+):
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [
+                SimpleNamespace(name="Saved", information={}),
+                SimpleNamespace(name="Unseen", information={}),
+            ]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeDB:
+        closed = False
+
+        async def get_saved_sites(self, **_kwargs: object) -> set[str]:
+            return {"Saved"}
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeEngine:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+    database = FakeDB()
+    scanned_sites: list[str] = []
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_scan(**kwargs: object) -> dict:
+        scanned_sites.extend(kwargs["site_data"])
+        return {}
+
+    monkeypatch.setattr(sys, "argv", ["sherlock", "--local", *extra_args, "blue"])
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+
+    await sherlock_module.main()
+
+    assert sorted(scanned_sites) == expected_sites
+    assert database.closed is True
 
 
 async def test_ai_mode_without_configuration_fails_before_scanning(

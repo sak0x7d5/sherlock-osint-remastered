@@ -1117,6 +1117,17 @@ async def main() -> int:
     )
 
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-scan every site for the username instead of skipping sites "
+            "already saved in the database. Cached AI extractions are kept for "
+            "sites whose content did not change."
+        ),
+    )
+
+    parser.add_argument(
         "--ai",
         action="store_true",
         default=False,
@@ -1165,6 +1176,8 @@ async def main() -> int:
         synthesis_only_scan_options.append("--site")
     if args.ai_synthesize_only and args.local:
         synthesis_only_scan_options.append("--local")
+    if args.ai_synthesize_only and args.fresh:
+        synthesis_only_scan_options.append("--fresh")
     if synthesis_only_scan_options:
         parser.error(
             f"{' and '.join(synthesis_only_scan_options)} cannot be used with "
@@ -1416,8 +1429,10 @@ async def main() -> int:
             cancellation_callback=cancel_ai_pipeline if args.ai else None,
         ) as engine:
             for username in all_usernames:
-                # If no site list was provided, skip sites already in the database.
-                if not args.site_list:
+                # If no site list was provided, skip sites already in the
+                # database. --fresh opts out of that resume behaviour and
+                # re-checks everything.
+                if not args.site_list and not args.fresh:
                     saved_sites = await db.get_saved_sites(username=username)
                     site_data = {
                         site_name: site_data_all[site_name]
