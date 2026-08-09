@@ -344,39 +344,16 @@ class OSINTResponse(StrictResponse):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=1200),
     ] = Field(
         description=(
-            "Before writing extraction, reason concisely through site_content "
-            "evidence by evidence and in source order. Inspect profile metadata "
-            "titles and owner identity/header lines before biography text. State "
-            "how many evidence lines contain fact candidates, then discuss each "
-            "one in a separate sentence, including the final biography line. For "
-            "every candidate, make an "
-            "explicit prose decision using its exact value: either 'include VALUE "
-            "under KEY because REASON' or 'exclude VALUE because REASON'. Decide "
-            "whether it is explicitly attributable to the profile owner and useful "
-            "in a profile, and choose the fitting known or new key. Treat every "
-            "explicit owner name, display or persona name, alias, and alternate "
-            "handle as a candidate; exclude it only when it is the searched "
-            "username or a variant, without requiring proof that it is a legal "
-            "or full name. Treat every "
-            "distinct fact on a multi-fact line separately. "
-            "Distinguish the owner's alternate handles from associated accounts or "
-            "organizations. Identify rejected candidates such as the searched "
-            "username, telemetry, feed or third-party content, placeholders, "
-            "platform text, breach artifacts, and inferences. Do not draft JSON, "
-            "write arrays or objects, or merely summarize candidates as generic "
-            "categories. Before finishing extraction, copy every prose decision "
-            "marked include into the structured extraction. This reasoning is "
-            "transient and is never stored in the profile."
+            "One short clause per owner-evidence line, in page order, each "
+            "either 'include VALUE as KEY' or 'skip: REASON'. Prose only: no "
+            "arrays, objects, or JSON. Transient and never stored."
         )
     )
     extraction: dict[SafeExtractionKey, ProfileFactList] = Field(
         description=(
-            "Explicit, profile-worthy facts from the supplied website content. "
-            "Include explicit owner names and aliases other than the searched "
-            "username or its variants. "
-            "Include every exact value marked include in reasoning under the key "
-            "chosen there; do not omit the final biography line. Keys are safe "
-            "snake_case names and every value is a string array."
+            "Every value marked include in reasoning, under the key named "
+            "there, and nothing else. Keys are snake_case; each value is a "
+            "nonempty array of nonempty strings."
         ),
         json_schema_extra={"additionalProperties": False},
     )
