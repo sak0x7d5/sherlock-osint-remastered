@@ -61,6 +61,15 @@ class ProfileSummaryCache:
     updated_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class StoredUsernameOverview:
+    """What the database already holds for one username."""
+
+    total_sites: int
+    claimed_sites: int
+    last_scanned_at: str | None
+
+
 class SherlockDB:
     def __init__(self, database_path: str) -> None:
         self.database_path = database_path
@@ -637,6 +646,43 @@ class SherlockDB:
             row = await cur.fetchone()
 
         return row["username"] if row else None
+
+    async def get_username_overview(
+        self,
+        username: str,
+    ) -> StoredUsernameOverview | None:
+        """Summarise stored results, or None when the username is unknown.
+
+        `last_scanned_at` comes from the results rather than
+        `usernames.last_scanned_at`, which is written once on insert and never
+        updated — it records when the username was first seen, so reporting it
+        as the scan date would be wrong.
+        """
+        db = self._require_db()
+
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS total_sites,
+                SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS claimed_sites,
+                MAX(r.scanned_at) AS last_scanned_at
+            FROM results r
+            JOIN usernames u
+                ON u.id = r.username_id
+            WHERE u.username = ?
+            """,
+            (str(QueryStatus.CLAIMED), username),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None or not row["total_sites"]:
+            return None
+
+        return StoredUsernameOverview(
+            total_sites=int(row["total_sites"]),
+            claimed_sites=int(row["claimed_sites"] or 0),
+            last_scanned_at=row["last_scanned_at"],
+        )
 
     async def get_saved_results(self, username: str) -> dict[str, dict[str, Any]]:
         """Return stored results for a username, keyed by site name.
