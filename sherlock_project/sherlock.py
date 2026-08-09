@@ -147,10 +147,14 @@ async def _probe_site(
     if response is None or not detection_rule:
         return response
 
-    can_reach_profile = (
-        transport == "api"
-        and net_info.get("request_method", "GET") == "GET"
-        and net_info.get("urlProfile")
+    # A second look is worth it whenever the profile lives somewhere other than
+    # the URL just probed -- that page is a GET regardless of how the check was
+    # made, so even a POST-checked site can be re-read in the browser. Keyed on
+    # the URLs rather than the transport: a site whose check endpoint is an API
+    # still wants the real profile page for extraction, whichever way it was
+    # fetched.
+    can_reach_profile = bool(
+        net_info.get("urlProfile")
         and net_info.get("urlProfile") != net_info.get("url")
     )
     if not can_reach_profile:

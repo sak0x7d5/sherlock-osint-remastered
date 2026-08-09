@@ -85,24 +85,25 @@ def normalize_username(username: str, strip_bad_char: str | None) -> str:
 def preferred_transport(record: dict[str, Any]) -> str:
     """Choose "api" or "browser" for a site record.
 
-    An API endpoint is cheap and safe to trust. An HTML page is not: a login
-    wall or block page renders as an ordinary 200 and can contain the rule's
-    own miss marker. Instagram reports CONFIRMED missing for a real account
-    that way -- a *confident* wrong answer, which no retry-when-undecided
-    fallback would ever catch, because nothing looked uncertain.
+    The browser is the default because it is the thing that actually works. A
+    plain HTTP request runs no JavaScript, so a client-rendered profile arrives
+    without the marker the rule looks for, and a site that answers with a login
+    wall can serve the rule's *miss* marker inside it -- Instagram reports a
+    confident absence for a real account that way, and Threads reports nothing
+    at all.
 
-    ``uri_pretty`` is the dataset's own signal for which is which: present means
-    ``uri_check`` is an API and the profile lives elsewhere; absent means
-    ``uri_check`` is itself the page a human would open. ``protection`` is used
-    as a hint on top, but cannot carry the routing alone -- it covers 58 of 720
-    entries and misses Reddit, Instagram, Issuu and Pinterest, all of which fail
-    over the raw API path.
+    A POST is the one case the browser genuinely cannot cover, because
+    ``page.goto`` only issues GETs. Those 22 entries, and only those, take the
+    API transport.
+
+    An earlier version routed on ``uri_pretty``, treating its presence as proof
+    that ``uri_check`` was a JSON API worth fetching cheaply. That heuristic was
+    wrong often enough to matter: plenty of entries set ``uri_pretty`` on what
+    is still a client-rendered HTML page. Trading the stealth browser -- the
+    whole point of this fetch layer -- for a faster request on 170 sites was
+    buying throughput with accuracy.
     """
-    if record.get("protection"):
-        return "browser"
-    if record.get("urlProfile") and record["urlProfile"] != record.get("url"):
-        return "api"
-    return "browser"
+    return "api" if record.get("request_method") == "POST" else "browser"
 
 
 def _validate(entry: dict[str, Any]) -> str | None:
