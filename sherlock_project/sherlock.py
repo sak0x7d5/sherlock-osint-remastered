@@ -701,7 +701,13 @@ async def sherlock(
             # in them.
             transport = preferred_transport(net_info)
 
-            if transport == "browser" and request_method is None:
+            # page.goto can only issue a GET, so a rule needing another method
+            # stays on the API transport. Test the method, not whether the key
+            # is present: the WMN adapter always records one, so a presence
+            # check silently routed every single site to the API and left the
+            # browser path dead -- which is exactly how client-rendered sites
+            # like Threads and Instagram came back with their markers missing.
+            if transport == "browser" and (request_method or "GET") == "GET":
                 task = asyncio.create_task(_probe_site(
                     engine=engine,
                     net_info=net_info,

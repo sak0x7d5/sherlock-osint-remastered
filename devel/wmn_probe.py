@@ -51,6 +51,7 @@ from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.wmn_adapter import (
     load_wmn_manifest,
     normalize_username,
+    preferred_transport,
 )
 
 MANIFEST_PATH = REPO_ROOT / "sherlock_project" / "resources" / "wmn-data.json"
@@ -60,19 +61,15 @@ PAGE_WAIT_UNTIL = "domcontentloaded"
 
 
 def transport_for(record: dict) -> str:
-    """Pick a transport the way the planned routing will.
+    """Route exactly as the scan does.
 
-    An API endpoint is cheap and safe to trust. An HTML page is not: a login
-    wall or block page renders as a normal 200 and can contain the rule's miss
-    marker, which is how Instagram produced a *confident* wrong answer over the
-    raw API path. uri_pretty is the dataset's own signal for which is which --
-    when it is present, uri_check is an API; when absent, uri_check is the page.
+    This used to be a second copy of the rule, which is how it came to disagree
+    with the scan without anyone noticing: the harness reported Instagram
+    working over the browser while the scan was quietly sending every site to
+    the API. A validation harness that does not share the code it validates is
+    measuring something else.
     """
-    if record.get("protection"):
-        return "browser"
-    if record["urlProfile"] != record["url"]:
-        return "api"
-    return "browser"
+    return preferred_transport(record)
 
 
 async def fetch(engine, record, username, transport):
