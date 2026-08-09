@@ -1,6 +1,16 @@
 name: Site Rules
 
-# Validates the site manifest and keeps the generated site listing honest.
+# Validates the LEGACY site manifest and keeps the generated site listing
+# honest. data.json is no longer the default manifest -- it is reachable only
+# through `--json` -- so this workflow guards a compatibility path, not the
+# scanner's normal input.
+#
+# The bundled WMN manifest is NOT covered here, and deliberately so:
+# devel/site-list.py reads data.json unconditionally, so widening the path
+# filter would make this pass vacuously on WMN-only changes. wmn-data.json is
+# schema-checked by tests/test_wmn_adapter.py, which regression.yml already
+# runs on any '**/*.json' change. Normalization and a generated listing for the
+# WMN manifest have no equivalent yet -- see TODO.md.
 #
 # This derivative owns its own site data. Upstream's variant of this workflow
 # pushed generated output into the Sherlock Project's website repository using
