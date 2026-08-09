@@ -11,6 +11,7 @@ from sherlock_project.wmn_adapter import (
     adapt_wmn_site,
     load_wmn_manifest,
     normalize_username,
+    preferred_transport,
 )
 
 WMN_DATA_RELATIVE = "../sherlock_project/resources/wmn-data.json"
@@ -222,6 +223,41 @@ class TestRejection:
     def test_manifest_without_sites_array(self):
         with pytest.raises(ValueError, match="no 'sites' array"):
             adapt_wmn_manifest({"license": []})
+
+
+class TestPreferredTransport:
+    """Only a POST may skip the browser.
+
+    A plain HTTP request runs no JavaScript, so a client-rendered profile comes
+    back without its marker and a login wall can supply the rule's miss marker
+    instead. Threads and Instagram both failed that way while every site was
+    being routed to the API.
+    """
+
+    def test_get_site_uses_the_browser(self, entry):
+        assert preferred_transport(adapt_wmn_site(entry)) == "browser"
+
+    def test_post_site_uses_the_api(self, entry):
+        entry["uri_check"] = "https://example.com/api/check"
+        entry["post_body"] = '{"username":"{account}"}'
+        entry["headers"] = {"Content-Type": "application/json"}
+        assert preferred_transport(adapt_wmn_site(entry)) == "api"
+
+    def test_api_style_check_url_still_uses_the_browser(self, entry):
+        """uri_pretty no longer routes: it was wrong too often to trade for."""
+        entry["uri_check"] = "https://example.com/api/exists?u={account}"
+        entry["uri_pretty"] = "https://example.com/@{account}"
+        assert preferred_transport(adapt_wmn_site(entry)) == "browser"
+
+    def test_protection_flag_does_not_force_a_transport(self, entry):
+        entry["protection"] = ["cloudflare"]
+        assert preferred_transport(adapt_wmn_site(entry)) == "browser"
+
+    def test_only_post_sites_leave_the_browser_across_the_dataset(self, wmn_adapted):
+        sites, _ = wmn_adapted
+        on_api = [n for n, r in sites.items() if preferred_transport(r) == "api"]
+        non_post = [n for n in on_api if sites[n]["request_method"] != "POST"]
+        assert not non_post, f"non-POST sites bypassing the browser: {non_post}"
 
 
 class TestNormalizeUsername:

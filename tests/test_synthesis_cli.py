@@ -1034,6 +1034,10 @@ async def test_sherlock_cancellation_gathers_done_and_unfinished_site_tasks(
                 self.blocked_cancelled.set()
             raise AssertionError("unreachable")
 
+        # GET sites take the browser transport; only POST rules use the API.
+        async def fetch_with_page(self, *, url: str, **kwargs: object):
+            return await self.fetch_with_api(url=url, **kwargs)
+
     class BlockingDB:
         save_started = asyncio.Event()
 
@@ -1163,6 +1167,10 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
                 scan_cleanup_started.set()
                 await release_scan_cleanup.wait()
                 raise
+
+        # GET sites take the browser transport; only POST rules use the API.
+        async def fetch_with_page(self, *, url: str, **kwargs: object):
+            return await self.fetch_with_api(url=url, **kwargs)
 
         async def __aenter__(self) -> Self:
             return self

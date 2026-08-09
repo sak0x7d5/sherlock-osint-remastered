@@ -1126,6 +1126,10 @@ async def test_sherlock_forces_ai_refresh_for_fresh_targeted_result():
         async def fetch_with_api(self, **_kwargs: object) -> FakeResponse:
             return FakeResponse()
 
+        # GET sites take the browser transport; only POST rules use the API.
+        async def fetch_with_page(self, **kwargs: object) -> FakeResponse:
+            return await self.fetch_with_api(**kwargs)
+
     class CapturingDB:
         def __init__(self) -> None:
             self.saved: list[dict[str, object]] = []
