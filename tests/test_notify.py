@@ -734,20 +734,16 @@ def test_synthesis_output_formats_exact_profile_keys_sources_and_warnings() -> N
 
     rendered = output.getvalue()
     assert "AI profile updated for 'sample-user'" in rendered
-    assert (
-        "Sample Person [Instagram — https://instagram.com/sample-user]"
-        in rendered
-    )
+    # Sources are summarised by count and name; the URLs live behind --sources
+    # and in the JSON export, so a value no longer drags its address inline.
+    assert "Sample Person" in rendered
+    assert "1 site: Instagram" in rendered
+    assert "https://instagram.com/sample-user" not in rendered
     assert "conference_talks" in rendered
-    assert (
-        "BlueHat 2026 [Instagram — https://instagram.com/sample-user]"
-        in rendered
-    )
+    assert "BlueHat 2026" in rendered
     assert "employer" in rendered
-    assert (
-        "Example Labs [Mastodon — https://mastodon.social/@sample-user]"
-        in rendered
-    )
+    assert "Example Labs" in rendered
+    assert "1 site: Mastodon" in rendered
     assert "strong matches" in rendered and "Instagram" in rendered
     assert "unsure matches" in rendered and "Mastodon" in rendered
     assert "included" not in rendered
@@ -823,11 +819,16 @@ def test_anchored_profile_colors_values_and_places_match_key_above_table() -> No
     assert rendered.index("Match key") < rendered.index("full_name")
     assert "strong identity match" in rendered
     assert "unsure identity match" in rendered
-    assert "\x1b[32mAvery Stone\x1b[0m" in rendered
-    assert "\x1b[33mSecurity researcher\x1b[0m" in rendered
-    assert "\x1b[32mHacker\x1b[0m" in rendered
-    assert "[DirectMatch]" in rendered
-    assert "[RoleMatch]" in rendered
+    assert "\x1b[32mAvery Stone" in rendered
+    assert "\x1b[33mSecurity researcher" in rendered
+    # No closing sequence asserted: values now sit in their own table column,
+    # so a short value carries its cell padding inside the styled span.
+    assert "\x1b[32mHacker" in rendered
+    # Confident and unsure are now separated by heading, not colour alone.
+    assert rendered.index("CONFIDENT") < rendered.index("Avery Stone")
+    assert rendered.index("UNSURE") < rendered.index("Security researcher")
+    assert "1 site: DirectMatch" in rendered
+    assert "1 site: RoleMatch" in rendered
 
 
 def test_anchorless_profile_values_remain_uncolored() -> None:
@@ -864,7 +865,7 @@ def test_anchorless_profile_values_remain_uncolored() -> None:
     rendered = output.getvalue()
     assert "Match key" not in rendered
     assert "Avery Stone" in rendered
-    assert "[AggregateSource]" in rendered
+    assert "1 site: AggregateSource" in rendered
     assert "\x1b[32mAvery Stone" not in rendered
     assert "\x1b[33mAvery Stone" not in rendered
 
@@ -900,7 +901,7 @@ def test_anchored_profile_shows_the_anchors_it_was_built_from() -> None:
     reporter.render_profile(profile)
 
     rendered = output.getvalue()
-    assert "anchors" in rendered
+    assert "anchored to" in rendered
     assert "name=Avery Stone" in rendered
     # Trust is shown only when it is not the default.
     assert "roles=Hacker [context]" in rendered
@@ -923,4 +924,97 @@ def test_anchorless_profile_shows_no_anchor_row() -> None:
 
     reporter.render_profile(profile)
 
-    assert "anchors" not in output.getvalue()
+    assert "anchored to" not in output.getvalue()
+
+
+def test_format_sources_summarises_by_count_and_name() -> None:
+    from sherlock_project.notify import _format_sources
+
+    assert _format_sources([]) == ""
+    assert _format_sources(["GitLab"]) == "1 site: GitLab"
+    assert _format_sources(["A", "B"]) == "2 sites: A, B"
+    # Beyond the limit the rest become a count, not a longer line.
+    assert _format_sources(["A", "B", "C"]) == "3 sites: A, B +1"
+    assert _format_sources(["A", "B", "C", "D"]) == "4 sites: A, B +2"
+
+
+def test_profile_header_reports_mode_and_counts() -> None:
+    """Mode is load-bearing: a rebuild without --anchor silently downgrades
+    an anchored profile to an aggregate one, and nothing used to say so."""
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "partial",
+            "strong_profile": {"full_name": ["Avery Stone"], "city": ["Oslo"]},
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue()
+    assert "Profile: fixture_handle" in rendered
+    assert "aggregate | aggregated | partial | 2 fields, 2 values" in rendered
+
+
+def test_profile_keeps_value_order_and_hides_nothing() -> None:
+    """Presentation only: no reordering, no capping."""
+    reporter, output, _ = _reporter()
+    names = [f"name-{index:02d}" for index in range(30)]
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"display_name": names},
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue()
+    for name in names:
+        assert name in rendered
+    positions = [rendered.index(name) for name in names]
+    assert positions == sorted(positions)
+    assert "more" not in rendered
+
+
+def test_show_sources_restores_the_full_urls() -> None:
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "provenance": [
+                {
+                    "field": "full_name",
+                    "value": "Avery Stone",
+                    "source_site_ids": [1],
+                    "origins": ["extraction"],
+                }
+            ],
+            "source_decisions": [
+                {
+                    "site_id": 1,
+                    "site_name": "Mastodon",
+                    "site_url": "https://mastodon.social/@avery",
+                    "disposition": "aggregated",
+                }
+            ],
+        }
+    )
+
+    reporter.render_profile(profile, show_sources=True)
+
+    rendered = output.getvalue().replace("\n", "")
+    assert "https://mastodon.social/@avery" in rendered
