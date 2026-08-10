@@ -245,6 +245,62 @@ async def test_show_displays_the_anchors_a_profile_was_built_from(
     await run_show(["blue", "--profile", "--no-color"])
 
     out = capsys.readouterr().out
-    assert "anchors" in out
+    assert "anchored to" in out
     assert "name=Avery Stone" in out
     assert "roles=Hacker [context]" in out
+
+
+async def test_show_sources_flag_switches_to_full_urls(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Compact by default; the URLs are one flag away, never lost."""
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "blue",
+            "input_hash": "hash-1",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "provenance": [
+                {
+                    "field": "full_name",
+                    "value": "Avery Stone",
+                    "source_site_ids": [1],
+                    "origins": ["extraction"],
+                }
+            ],
+            "source_decisions": [
+                {
+                    "site_id": 1,
+                    "site_name": "Mastodon",
+                    "site_url": "https://mastodon.social/@avery",
+                    "disposition": "aggregated",
+                }
+            ],
+        }
+    )
+
+    database = tmp_path / "sherlock.db"
+    await _seed(str(database), with_profile=False)
+    db = await SherlockDB.create(str(database))
+    try:
+        await db.update_username_profile_summary(
+            username="blue",
+            profile_summary=json.dumps(profile.model_dump(mode="json"), sort_keys=True),
+            input_hash="hash-1",
+        )
+    finally:
+        await db.close()
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["blue", "--profile", "--no-color"])
+    compact = capsys.readouterr().out
+    assert "1 site: Mastodon" in compact
+    assert "mastodon.social" not in compact
+
+    await run_show(["blue", "--profile", "--sources", "--no-color"])
+    verbose = capsys.readouterr().out.replace("\n", "")
+    assert "https://mastodon.social/@avery" in verbose

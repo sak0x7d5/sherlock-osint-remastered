@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import webbrowser
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -35,6 +36,60 @@ INTERRUPTION_MESSAGE = (
     "Processing interrupted; committed results were saved and pending AI "
     "work can resume on the next --ai run."
 )
+
+
+def _make_encoding_safe(stream: object) -> None:
+    """Stop unencodable characters from truncating or mangling output.
+
+    Redirected stdout on Windows encodes as cp1252 and profiles routinely
+    carry names outside it, so writing one raised UnicodeEncodeError partway
+    through the report: `show --profile > report.txt` died mid-file.
+
+    Two different situations, two answers:
+
+    - Redirected to a file or pipe, there is no console to please, so switch to
+      UTF-8 and keep every character. Falling back to '?' here would quietly
+      destroy exactly the non-Latin names an investigator wants to keep.
+    - On a real terminal, leave the encoding alone -- it is chosen to match
+      what the console can draw -- and only stop it from raising.
+
+    Deliberately forgiving: injected test streams and anything without
+    reconfigure() are left untouched.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+
+    isatty = getattr(stream, "isatty", None)
+    try:
+        redirected = not (isatty is not None and isatty())
+    except (ValueError, OSError):
+        redirected = False
+
+    try:
+        if redirected:
+            reconfigure(encoding="utf-8")
+        else:
+            reconfigure(errors="replace")
+    except (ValueError, OSError, AttributeError):
+        pass
+
+
+def _format_sources(names: list[str], *, limit: int = 2) -> str:
+    """Summarise which sites backed a value.
+
+    The old form inlined every site's full URL per value, so one value with
+    three sources wrapped across three lines and buried the value itself.
+    """
+    if not names:
+        return ""
+    noun = "site" if len(names) == 1 else "sites"
+    shown = names[:limit]
+    remainder = len(names) - len(shown)
+    listed = ", ".join(shown)
+    if remainder > 0:
+        listed += f" +{remainder}"
+    return f"{len(names)} {noun}: {listed}"
 
 
 def _format_anchor(anchor: IdentityAnchor) -> str:
@@ -126,6 +181,10 @@ class TerminalReporter(QueryNotify):
             "no_color": no_color,
             "color_system": None if no_color else "auto",
         }
+        if console is None:
+            _make_encoding_safe(sys.stdout)
+        if error_console is None:
+            _make_encoding_safe(sys.stderr)
         self.console = console or Console(**console_options)
         self.error_console = error_console or Console(stderr=True, **console_options)
         self.interactive = bool(self.console.is_terminal and not no_color)
@@ -1008,10 +1067,25 @@ class TerminalReporter(QueryNotify):
             self._remove_progress_task(self._synthesis_task_id)
             self._synthesis_task_id = None
 
-    def render_profile(self, profile: ProfileSynthesis) -> None:
-        source_labels = {
+    def render_profile(
+        self,
+        profile: ProfileSynthesis,
+        *,
+        show_sources: bool = False,
+    ) -> None:
+        """Render a synthesised profile.
+
+        Presentation only: values keep the order synthesis produced and nothing
+        is dropped. `show_sources` swaps the compact "3 sites: A, B +1" summary
+        for the full site URLs.
+        """
+        site_names = {
+            decision.site_id: decision.site_name
+            for decision in profile.source_decisions
+        }
+        site_urls = {
             decision.site_id: (
-                f"{decision.site_name} — {decision.site_url}"
+                f"{decision.site_name} - {decision.site_url}"
                 if decision.site_url
                 else decision.site_name
             )
@@ -1023,20 +1097,18 @@ class TerminalReporter(QueryNotify):
         }
         color_matches = profile.mode == "anchored" and not self.no_color
 
-        table = Table.grid(padding=(0, 2))
-        table.add_column(style="bold cyan", no_wrap=True)
-        table.add_column()
+        sections: list[tuple[str, dict[str, object], str | None]] = [
+            ("CONFIDENT", profile.strong_profile, "green" if color_matches else None),
+            ("UNSURE", profile.unsure_profile, "yellow" if color_matches else None),
+        ]
 
-        display_data: dict[
-            str,
-            list[tuple[str, str | None, list[str]]],
-        ] = {}
         seen: set[tuple[str, str]] = set()
+        rendered_sections: list[tuple[str, Table]] = []
+        total_values = 0
+        total_fields = 0
 
-        def add_profile_values(
-            values_by_field: dict[str, object],
-            style: str | None,
-        ) -> None:
+        for heading, values_by_field, style in sections:
+            display_data: dict[str, list[tuple[str, list[str]]]] = {}
             for field_name, raw_values in values_by_field.items():
                 values = raw_values if isinstance(raw_values, list) else [raw_values]
                 for raw_value in values:
@@ -1044,102 +1116,143 @@ class TerminalReporter(QueryNotify):
                         continue
                     value = raw_value.strip()
                     key = (field_name, value)
-                    if value and key not in seen:
-                        seen.add(key)
-                        item = (
-                            provenance.get((field_name, raw_value))
-                            or provenance.get(key)
-                        )
-                        labels = (
-                            [
-                                source_labels.get(site_id, f"site {site_id}")
-                                for site_id in item.source_site_ids
-                            ]
-                            if item is not None
-                            else []
-                        )
-                        display_data.setdefault(field_name, []).append(
-                            (value, style, list(dict.fromkeys(labels)))
-                        )
-
-        add_profile_values(
-            profile.strong_profile,
-            "green" if color_matches else None,
-        )
-        add_profile_values(
-            profile.unsure_profile,
-            "yellow" if color_matches else None,
-        )
-
-        has_colored_value = bool(display_data) and color_matches
-
-        for field_name in sorted(display_data):
-            rendered_values = Text()
-            for index, (value, style, labels) in enumerate(display_data[field_name]):
-                if index:
-                    rendered_values.append("\n")
-                rendered_values.append(value, style=style)
-                if labels:
-                    rendered_values.append(
-                        f" [{', '.join(labels)}]",
-                        style="dim",
+                    if not value or key in seen:
+                        continue
+                    seen.add(key)
+                    item = (
+                        provenance.get((field_name, raw_value))
+                        or provenance.get(key)
                     )
-            table.add_row(field_name, rendered_values)
+                    lookup = site_urls if show_sources else site_names
+                    labels = (
+                        [
+                            lookup.get(site_id, f"site {site_id}")
+                            for site_id in item.source_site_ids
+                        ]
+                        if item is not None
+                        else []
+                    )
+                    display_data.setdefault(field_name, []).append(
+                        (value, list(dict.fromkeys(labels)))
+                    )
 
-        # What the run was anchored ON, not just how sites scored against it.
-        # Without this an anchored profile cannot be read back: "strong match"
-        # is meaningless once you no longer remember what you anchored to.
+            if not display_data:
+                continue
+
+            table = self._profile_table()
+            for field_name in sorted(display_data):
+                entries = display_data[field_name]
+                total_fields += 1
+                total_values += len(entries)
+                for index, (value, labels) in enumerate(entries):
+                    # The field name is printed once per group so the eye has a
+                    # single column to follow instead of a repeated label.
+                    table.add_row(
+                        Text(field_name if index == 0 else ""),
+                        Text(value, style=style),
+                        Text(
+                            ", ".join(labels)
+                            if show_sources
+                            else _format_sources(labels)
+                        ),
+                    )
+                table.add_section()
+            rendered_sections.append((heading, table))
+
+        blocks: list[RenderableType] = []
+
         if profile.anchors:
             # Text(), not a bare string: Rich parses markup in table cells and
             # would silently swallow the "[context]" trust marker as a style
             # tag. Anchor values are user data and may contain brackets too.
-            table.add_row(
-                "anchors",
-                Text(
-                    ", ".join(_format_anchor(anchor) for anchor in profile.anchors)
-                ),
+            anchors = self._profile_table()
+            anchors.add_row(
+                Text("anchored to"),
+                Text(", ".join(_format_anchor(a) for a in profile.anchors)),
+                Text(""),
             )
+            blocks.append(anchors)
 
-        if profile.mode == "anchored":
-            source_groups = (
-                (
-                    "strong matches",
-                    lambda decision: decision.identity_status == "strong_match",
-                ),
-                (
-                    "unsure matches",
-                    lambda decision: decision.identity_status == "unsure",
-                ),
-                (
-                    "excluded",
-                    lambda decision: decision.disposition == "excluded",
-                ),
-                (
-                    "failed",
-                    lambda decision: decision.disposition == "failed",
-                ),
-            )
-            for label, predicate in source_groups:
-                sites = [
-                    decision.site_name
-                    for decision in profile.source_decisions
-                    if predicate(decision)
-                ]
-                if sites:
-                    table.add_row(label, ", ".join(sites))
+        for heading, table in rendered_sections:
+            if blocks:
+                blocks.append(Text(""))
+            blocks.append(Text(heading, style="bold"))
+            blocks.append(table)
 
-        if display_data or profile.mode == "anchored" or profile.anchors:
-            if has_colored_value:
-                legend = Text("Match key: ", style="bold")
-                legend.append("strong identity match", style="green")
-                legend.append("  ")
-                legend.append("unsure identity match", style="yellow")
-                self._write(legend)
-            self._write(table)
-        else:
+        matching = self._matching_table(profile)
+        if matching is not None:
+            if blocks:
+                blocks.append(Text(""))
+            blocks.append(Text("MATCHING", style="bold"))
+            blocks.append(matching)
+
+        if not blocks:
             self.info("No profile facts were available")
+            for warning in profile.warnings:
+                self.warning(warning)
+            return
+
+        summary = Text(
+            f"{profile.mode} | {profile.resolution_status} | "
+            f"{profile.completeness} | {total_fields} fields, "
+            f"{total_values} values",
+            style="dim",
+        )
+        if color_matches and rendered_sections:
+            summary.append("\nMatch key: ", style="bold")
+            summary.append("strong identity match", style="green")
+            summary.append("  ")
+            summary.append("unsure identity match", style="yellow")
+
+        self._write(
+            Panel(
+                Group(summary, Text(""), *blocks),
+                title=f"Profile: {profile.username}",
+                title_align="left",
+                border_style="cyan" if not self.no_color else "none",
+                padding=(0, 1),
+            )
+        )
         for warning in profile.warnings:
             self.warning(warning)
+
+    @staticmethod
+    def _profile_table() -> Table:
+        """Three aligned columns: field, value, where it came from."""
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold cyan", no_wrap=True, min_width=14)
+        table.add_column(overflow="fold")
+        table.add_column(style="dim", overflow="fold")
+        return table
+
+    @staticmethod
+    def _matching_table(profile: ProfileSynthesis) -> Table | None:
+        """How each site scored against the anchors, for anchored runs."""
+        if profile.mode != "anchored":
+            return None
+
+        source_groups = (
+            ("strong matches", lambda d: d.identity_status == "strong_match"),
+            ("unsure matches", lambda d: d.identity_status == "unsure"),
+            ("excluded", lambda d: d.disposition == "excluded"),
+            ("failed", lambda d: d.disposition == "failed"),
+        )
+        table = TerminalReporter._profile_table()
+        populated = False
+        for label, predicate in source_groups:
+            sites = [
+                decision.site_name
+                for decision in profile.source_decisions
+                if predicate(decision)
+            ]
+            if sites:
+                populated = True
+                table.add_row(
+                    Text(label),
+                    Text(", ".join(sites)),
+                    Text(f"{len(sites)}"),
+                )
+        return table if populated else None
 
     def finish(
         self,

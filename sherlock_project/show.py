@@ -52,6 +52,15 @@ def build_show_parser() -> ArgumentParser:
         help="Show only the AI profile, not the accounts found.",
     )
     parser.add_argument(
+        "--sources",
+        action="store_true",
+        default=False,
+        help=(
+            "Show the full URL of every site backing each profile value "
+            "instead of a count and the first few names."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -125,6 +134,7 @@ def _report(
     *,
     want_accounts: bool,
     want_profile: bool,
+    show_sources: bool = False,
 ) -> None:
     username = record["username"]
 
@@ -173,7 +183,7 @@ def _report(
                 f"AI profile for {username!r}",
                 detail=f"built {record['profile_updated_at']}",
             )
-            reporter.render_profile(record["profile"])
+            reporter.render_profile(record["profile"], show_sources=show_sources)
 
 
 def _as_json(records: list[dict[str, Any]]) -> str:
@@ -225,6 +235,7 @@ async def run_show(argv: Sequence[str]) -> int:
             record,
             want_accounts=want_accounts,
             want_profile=want_profile,
+            show_sources=args.sources,
         )
 
     # Exit 1 when nothing at all was found, so scripts can branch on it.
