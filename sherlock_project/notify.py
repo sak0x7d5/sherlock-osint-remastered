@@ -75,6 +75,43 @@ def _make_encoding_safe(stream: object) -> None:
         pass
 
 
+def _describe_profile(
+    profile: ProfileSynthesis,
+    *,
+    fields: int,
+    values: int,
+) -> str:
+    """Say in plain words what kind of profile this is.
+
+    The model's own vocabulary ("anchored | resolved | partial") is four enum
+    values with no explanation, and the most consequential of them is the least
+    obvious: `aggregate` does not mean "no anchors were given", it means facts
+    from every account sharing the username were merged WITHOUT deciding
+    whether they describe the same person. A reader needs to be told that.
+    """
+    if profile.mode == "anchored":
+        count = len(profile.anchors)
+        noun = "anchor" if count == 1 else "anchors"
+        headline = (
+            f"Matched against the {count} {noun} you supplied"
+            if profile.resolution_status == "resolved"
+            else f"Nothing matched the {count} {noun} you supplied"
+        )
+    elif profile.resolution_status == "no_evidence":
+        headline = "Nothing was found"
+    else:
+        # Deliberately stops short of "may describe different people": the
+        # synthesis already emits that as a warning, and warnings render
+        # directly beneath this line. Saying it twice reads as noise.
+        headline = "Merged from every account using this username, unfiltered"
+
+    noun = "fact" if values == 1 else "facts"
+    detail = f"{values} {noun} across {fields} fields"
+    if profile.completeness == "partial":
+        detail += ", and some sites were not analysed"
+    return f"{headline}. {detail}."
+
+
 def _format_sources(names: list[str], *, limit: int = 2) -> str:
     """Summarise which sites backed a value.
 
@@ -1193,11 +1230,18 @@ class TerminalReporter(QueryNotify):
             return
 
         summary = Text(
-            f"{profile.mode} | {profile.resolution_status} | "
-            f"{profile.completeness} | {total_fields} fields, "
-            f"{total_values} values",
+            _describe_profile(
+                profile,
+                fields=total_fields,
+                values=total_values,
+            ),
             style="dim",
         )
+        # Warnings belong beside the summary, not after the table. The
+        # aggregate caveat is the one a reader most needs and would otherwise
+        # arrive a hundred lines below the values it qualifies.
+        for warning in profile.warnings:
+            summary.append(f"\n[!] {warning}", style="yellow")
         if color_matches and rendered_sections:
             summary.append("\nMatch key: ", style="bold")
             summary.append("strong identity match", style="green")
@@ -1213,8 +1257,6 @@ class TerminalReporter(QueryNotify):
                 padding=(0, 1),
             )
         )
-        for warning in profile.warnings:
-            self.warning(warning)
 
     @staticmethod
     def _profile_table() -> Table:
