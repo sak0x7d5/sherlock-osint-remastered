@@ -938,9 +938,13 @@ def test_format_sources_summarises_by_count_and_name() -> None:
     assert _format_sources(["A", "B", "C", "D"]) == "4 sites: A, B +2"
 
 
-def test_profile_header_reports_mode_and_counts() -> None:
-    """Mode is load-bearing: a rebuild without --anchor silently downgrades
-    an anchored profile to an aggregate one, and nothing used to say so."""
+def test_profile_header_explains_itself_in_plain_words() -> None:
+    """The header used to print four raw enum values.
+
+    `aggregate` in particular does not mean "no anchors were given" -- it means
+    facts from every account sharing the username were merged without deciding
+    whether they describe the same person, which a reader has to be told.
+    """
     reporter, output, _ = _reporter()
     profile = ProfileSynthesis.model_validate(
         {
@@ -955,9 +959,57 @@ def test_profile_header_reports_mode_and_counts() -> None:
 
     reporter.render_profile(profile)
 
-    rendered = output.getvalue()
+    rendered = output.getvalue().replace("\n", " ")
     assert "Profile: fixture_handle" in rendered
-    assert "aggregate | aggregated | partial | 2 fields, 2 values" in rendered
+    assert "Merged from every account using this username" in rendered
+    assert "2 facts across 2 fields" in rendered
+    assert "some sites were not analysed" in rendered
+    # The enum vocabulary must not leak into the header.
+    assert "aggregate |" not in rendered
+
+
+def test_anchored_header_names_the_anchor_count() -> None:
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "anchored",
+            "resolution_status": "resolved",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "anchors": [{"field": "name", "value": "Avery Stone"}],
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue().replace("\n", " ")
+    assert "Matched against the 1 anchor you supplied" in rendered
+    assert "1 fact across 1 fields" in rendered
+
+
+def test_profile_warnings_sit_with_the_header_not_below_the_table() -> None:
+    """A caveat a hundred lines under the values it qualifies is not read."""
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "warnings": ["Values may describe different people"],
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue()
+    assert rendered.index("Values may describe different people") < rendered.index(
+        "Avery Stone"
+    )
 
 
 def test_profile_keeps_value_order_and_hides_nothing() -> None:
