@@ -225,3 +225,46 @@ async def test_the_editor_is_launched_from_inside_the_running_loop(
 
     assert code == 0
     assert launched == ["async"]
+
+
+async def test_ai_settings_can_be_created_when_no_section_exists_yet(
+    tmp_path: Path,
+):
+    """The state of every install that has not run `setup ai`.
+
+    These edits used to be dropped in silence while the save still reported
+    "Saved to ..." -- the worst failure available, because nothing on screen
+    said the AI half had not been written.
+    """
+    path = tmp_path / "config.toml"
+    save_settings(SherlockSettings(scan=ScanSettings(concurrency=20)),
+                  path=path, environ={})
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        app._values["ai.model"] = "vendor/model"
+        await pilot.press("ctrl+s")
+        assert "Cannot save" in app._status
+        assert load_settings(path=path, environ={}).ai is None
+
+        app._values["ai.base_url"] = "http://127.0.0.1:1234"
+        await pilot.press("ctrl+s")
+        assert "Saved" in app._status
+
+    stored = load_settings(path=path, environ={})
+    assert stored.ai is not None
+    assert stored.ai.model == "vendor/model"
+    assert stored.scan.concurrency == 20
+
+
+async def test_a_stale_message_is_cleared_when_the_cursor_moves(tmp_path: Path):
+    """"Saved to ..." lingering under an unsaved marker is a contradiction."""
+    path = tmp_path / "config.toml"
+    _seed(path, concurrency=30)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+s")
+        assert "Saved" in app._status
+        await pilot.press("down")
+        assert app._status == ""

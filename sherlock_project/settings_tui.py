@@ -43,6 +43,7 @@ from sherlock_project.ai_provider import AIProviderError, LMStudioProvider
 from sherlock_project.database import default_database_path
 from sherlock_project.settings import (
     SETTING_FIELDS,
+    IncompleteSettingsError,
     SettingField,
     apply_values,
     field_values,
@@ -50,6 +51,8 @@ from sherlock_project.settings import (
 )
 
 SECTION_TITLES = {"ai": "AI", "scan": "Scan", "output": "Output"}
+LABEL_WIDTH = 18
+VALUE_WIDTH = 26
 
 
 def render_value(field: SettingField, value: Any) -> str:
@@ -178,14 +181,21 @@ class ModelPickerScreen(ModalScreen[str | None]):
 class SettingsApp(App[bool]):
     """The settings screen. Returns True when something was saved."""
 
+    # height: auto on the body, NOT 1fr. With 1fr the rows container ate every
+    # spare line and pushed the paths to the floor of the terminal, leaving a
+    # lake of empty space in the middle. Sized to content, each block sits
+    # under the one above it and the slack collects at the bottom, where
+    # nobody has to look at it.
     CSS = """
     Screen { background: $surface; }
-    #rows { height: 1fr; padding: 1 2; }
-    .section { color: $accent; text-style: bold; padding-top: 1; }
-    .row { padding-left: 2; }
-    .row-selected { background: $accent 20%; }
+    #title { padding: 1 2 0 2; }
+    #rows { height: auto; max-height: 1fr; padding: 0 2; }
+    .section { color: $accent; text-style: bold; padding: 1 0 0 1; height: 2; }
+    .row { padding: 0 1; height: 1; }
+    .row-selected { background: $primary 30%; }
     .dim { color: $text-muted; }
-    .paths { padding: 1 2 0 2; color: $text-muted; }
+    .paths { padding: 1 3 0 3; color: $text-muted; }
+    #status { padding: 1 3 0 3; height: auto; }
     #dialog {
         background: $panel; border: round $accent;
         padding: 1 2; width: 70; height: auto;
@@ -220,10 +230,18 @@ class SettingsApp(App[bool]):
     def compose(self) -> ComposeResult:
         yield Static(id="title")
         with VerticalScroll(id="rows"):
+            # Section headings are their own widgets rather than a newline
+            # inside the first row of each group. Embedded, they made that row
+            # two lines tall while every other row was one, so the cursor
+            # appeared to jump unevenly on the way down the list.
+            section = None
             for index, field in enumerate(SETTING_FIELDS):
+                if field.section != section:
+                    section = field.section
+                    yield Static(SECTION_TITLES[section], classes="section")
                 yield Static(id=f"row-{index}", classes="row")
         yield Static(id="paths", classes="paths")
-        yield Static(id="status", classes="dim")
+        yield Static(id="status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -240,27 +258,30 @@ class SettingsApp(App[bool]):
                 ("● unsaved", "bold yellow") if self.dirty else ("saved", "dim"),
             )
         )
-        section = None
         for index, field in enumerate(SETTING_FIELDS):
             row = self.query_one(f"#row-{index}", Static)
-            heading = ""
-            if field.section != section:
-                section = field.section
-                heading = f"{SECTION_TITLES[field.section]}\n"
-            marker = "▸" if index == self._cursor else " "
+            selected = index == self._cursor
             line = Text()
-            if heading:
-                line.append(heading.rstrip("\n") + "\n", style="bold cyan")
-            line.append(f"{marker} {field.label:<16}", style="none")
-            line.append(render_value(field, self._values[field.key]))
+            line.append("▸ " if selected else "  ", style="bold")
+            # Fixed label column, then a fixed value column, so the brackets
+            # form a straight edge down the screen instead of stepping in and
+            # out with the length of each label.
+            line.append(f"{field.label:<{LABEL_WIDTH}}", style="none")
+            line.append(
+                f"{render_value(field, self._values[field.key]):<{VALUE_WIDTH}}"
+            )
             if field.kind in {"text", "model"}:
-                line.append("   ⏎ change", style="dim")
+                line.append("⏎ change", style="dim")
             row.update(line)
-            row.set_class(index == self._cursor, "row-selected")
+            row.set_class(selected, "row-selected")
         self.query_one("#status", Static).update(self._status)
 
     def action_move(self, delta: int) -> None:
         self._cursor = max(0, min(self._cursor + delta, len(SETTING_FIELDS) - 1))
+        # Clear any leftover message. A "Saved to ..." line still sitting there
+        # while the title says unsaved is a contradiction the reader has to
+        # untangle, and the answer is always "that message is stale".
+        self._status = ""
         self._redraw()
 
     def action_step(self, delta: int) -> None:
@@ -308,6 +329,10 @@ class SettingsApp(App[bool]):
     def action_save(self) -> None:
         try:
             updated = apply_values(self._stored, self._values)
+        except IncompleteSettingsError as error:
+            self._status = f"Cannot save: {error}"
+            self._redraw()
+            return
         except ValidationError as error:
             first = error.errors()[0]
             self._status = f"Cannot save: {'.'.join(map(str, first['loc']))} {first['msg']}"

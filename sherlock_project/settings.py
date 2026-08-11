@@ -19,9 +19,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sherlock_project.ai_config import SherlockSettings
+from sherlock_project.ai_config import AISettings, SherlockSettings
 
 SettingSource = Literal["flag", "config", "default"]
+
+
+class IncompleteSettingsError(ValueError):
+    """Edits that cannot be written yet without losing their meaning."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,8 +263,19 @@ def apply_values(
         and field.key in values
         and values[field.key] is not None
     }
-    if settings.ai is not None and ai_changes:
-        updates["ai"] = settings.ai.model_copy(update=ai_changes)
+    if settings.ai is not None:
+        if ai_changes:
+            updates["ai"] = settings.ai.model_copy(update=ai_changes)
+    elif ai_changes:
+        # No [ai] section yet, which is every install that has not run
+        # `setup ai`. These edits used to be dropped here in silence while the
+        # save still reported success -- the worst possible outcome, because
+        # nothing on screen said the AI half had not been written.
+        if not (ai_changes.get("base_url") and ai_changes.get("model")):
+            raise IncompleteSettingsError(
+                "AI needs both an endpoint and a model before it can be saved"
+            )
+        updates["ai"] = AISettings(**ai_changes)
 
     # model_copy skips validation, so re-validate the whole thing rather than
     # trusting the copy. A screen that can store concurrency 0 would hang the
