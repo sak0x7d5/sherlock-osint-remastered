@@ -13,6 +13,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.prompt import IntPrompt
 from rich.table import Table
+from rich.text import Text
 
 from sherlock_project.ai_config import (
     DEFAULT_AI_CONTEXT_LENGTH,
@@ -168,11 +169,77 @@ def build_setup_parser() -> ArgumentParser:
         help=f"Extraction temperature (default: {DEFAULT_AI_TEMPERATURE}).",
     )
     parser.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Print the stored configuration and its file path, then exit. "
+            "Reads the config file only -- no server required."
+        ),
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable terminal colors.",
     )
     return parser
+
+
+def _report_settings(
+    settings: AISettings | None,
+    *,
+    path: Path,
+    console: Console,
+    environ: Mapping[str, str],
+) -> int:
+    """Print the stored configuration without contacting the provider.
+
+    The wizard is otherwise the only way to see which model is configured, and
+    it needs a live server to get that far -- so reading your own settings used
+    to require running the software those settings point at. The config path is
+    printed because it resolves to a per-user directory that differs by OS and
+    is not otherwise shown anywhere, which is what makes "just open the file"
+    unhelpful advice.
+    """
+    if settings is None:
+        console.print("[yellow][!] AI is not configured.[/yellow]")
+        console.print(
+            Text("Nothing stored at ", style="dim").append(Text(str(path))),
+            soft_wrap=True,
+        )
+        console.print("Configure it with `sherlock setup ai`.")
+        # 1, not 2: nothing is broken, the answer is "nothing is stored". Same
+        # convention as `sherlock show`, so a script can branch on it.
+        return 1
+
+    for label, value in (
+        ("provider", settings.provider),
+        ("model", settings.model),
+        ("endpoint", settings.base_url),
+        ("temperature", str(settings.temperature)),
+        ("context length", str(settings.context_length)),
+    ):
+        # Text(), not an f-string into markup: a model key or URL carrying
+        # square brackets would otherwise be eaten as a Rich style tag.
+        # soft_wrap because Rich otherwise word-wraps to the terminal width and
+        # will break a long model key or URL across lines -- the same defect
+        # that once produced invalid JSON out of `show --json`.
+        console.print(
+            Text(f"{label:>15}: ", style="dim").append(Text(value)),
+            soft_wrap=True,
+        )
+    console.print()
+    console.print(Text("config file: ", style="dim").append(Text(str(path))),
+                  soft_wrap=True)
+
+    # load_ai_settings has already applied the override, so the endpoint above
+    # is the effective one, not necessarily what the file says. Saying so is
+    # the difference between a useful readout and a misleading one.
+    if environ.get("LM_STUDIO_BASE_URL"):
+        console.print(
+            "[yellow][!] Endpoint comes from LM_STUDIO_BASE_URL, which "
+            "overrides the config file.[/yellow]"
+        )
+    return 0
 
 
 async def run_ai_setup(
@@ -188,6 +255,34 @@ async def run_ai_setup(
     environment = os.environ if environ is None else environ
     destination = config_path or ai_config_path(environment)
     existing = try_load_ai_settings(path=destination, environ=environment)
+
+    if args.show:
+        conflicting = [
+            name
+            for name, value in (
+                ("--base-url", args.base_url),
+                ("--model", args.model),
+                ("--temperature", args.temperature),
+            )
+            if value is not None
+        ]
+        if conflicting:
+            parser.error(
+                f"--show reads the stored configuration; "
+                f"{' and '.join(conflicting)} would change it"
+            )
+        return _report_settings(
+            existing,
+            path=destination,
+            console=console
+            or Console(
+                no_color=args.no_color,
+                color_system=None if args.no_color else "auto",
+                highlight=False,
+            ),
+            environ=environment,
+        )
+
     base_url = discover_setup_base_url(
         args.base_url,
         existing=existing,
@@ -267,5 +362,7 @@ async def run_ai_setup(
     output.print(
         f"[green][+] AI configured with {selected.display_name}[/green]"
     )
-    output.print(f"[dim]{saved_to}[/dim]")
+    # soft_wrap: the config path is long and Rich would otherwise break it
+    # across lines, leaving a path nobody can copy.
+    output.print(Text(str(saved_to), style="dim"), soft_wrap=True)
     return 0

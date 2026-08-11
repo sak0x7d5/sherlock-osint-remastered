@@ -6,7 +6,11 @@ import pytest
 from rich.console import Console
 
 from sherlock_project import ai_setup
-from sherlock_project.ai_config import load_ai_settings
+from sherlock_project.ai_config import (
+    AISettings,
+    load_ai_settings,
+    save_ai_settings,
+)
 from sherlock_project.ai_provider import (
     AIModelInfo,
     AIProviderUnavailableError,
@@ -223,3 +227,106 @@ def test_setup_base_url_precedence(monkeypatch: pytest.MonkeyPatch):
         existing=None,
         environ={},
     ) == "http://localhost:9000"
+
+
+@pytest.mark.asyncio
+async def test_show_prints_stored_settings_without_touching_the_provider(
+    tmp_path: Path,
+):
+    """Reading your own settings must not require the server to be running.
+
+    The wizard is otherwise the only way to see which model is configured, and
+    it needs a live model list to get that far.
+    """
+    FakeSetupProvider.error = AIProviderUnavailableError("server is down")
+    path = tmp_path / "config.toml"
+    save_ai_settings(
+        AISettings(
+            base_url="http://localhost:9999",
+            model="vendor/large",
+            temperature=0.3,
+            context_length=32768,
+        ),
+        path=path,
+        environ={},
+    )
+    console, output = _console()
+
+    result = await ai_setup.run_ai_setup(
+        ["--show", "--no-color"],
+        environ={},
+        config_path=path,
+        console=console,
+    )
+    text = output.getvalue()
+
+    assert result == 0
+    assert FakeSetupProvider.settings_seen is None
+    assert FakeSetupProvider.close_calls == 0
+    assert "vendor/large" in text
+    assert "http://localhost:9999" in text
+    assert "0.3" in text
+    assert "32768" in text
+    # The path is the point: it resolves per-OS and is shown nowhere else.
+    assert str(path) in text
+
+
+@pytest.mark.asyncio
+async def test_show_reports_an_unconfigured_install_without_failing_hard(
+    tmp_path: Path,
+):
+    console, output = _console()
+
+    result = await ai_setup.run_ai_setup(
+        ["--show", "--no-color"],
+        environ={},
+        config_path=tmp_path / "missing.toml",
+        console=console,
+    )
+    text = output.getvalue()
+
+    # 1 is "nothing stored", matching `sherlock show`; 2 is reserved for
+    # something being wrong.
+    assert result == 1
+    assert "not configured" in text
+    assert "sherlock setup ai" in text
+    assert FakeSetupProvider.close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_show_flags_an_endpoint_coming_from_the_environment(
+    tmp_path: Path,
+):
+    """The printed endpoint is the effective one, so say when it is overridden."""
+    path = tmp_path / "config.toml"
+    save_ai_settings(
+        AISettings(base_url="http://localhost:1234", model="vendor/large"),
+        path=path,
+        environ={},
+    )
+    console, output = _console()
+
+    result = await ai_setup.run_ai_setup(
+        ["--show", "--no-color"],
+        environ={"LM_STUDIO_BASE_URL": "http://elsewhere:4321"},
+        config_path=path,
+        console=console,
+    )
+    text = output.getvalue()
+
+    assert result == 0
+    assert "http://elsewhere:4321" in text
+    assert "LM_STUDIO_BASE_URL" in text
+
+
+@pytest.mark.asyncio
+async def test_show_rejects_options_that_would_change_the_configuration(
+    tmp_path: Path,
+):
+    with pytest.raises(SystemExit):
+        await ai_setup.run_ai_setup(
+            ["--show", "--model", "vendor/other"],
+            environ={},
+            config_path=tmp_path / "config.toml",
+            console=_console()[0],
+        )
