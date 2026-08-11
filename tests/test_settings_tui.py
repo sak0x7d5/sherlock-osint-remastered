@@ -9,6 +9,7 @@ draw where drawing is wrong.
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from sherlock_project.ai_config import (
@@ -193,3 +194,34 @@ async def test_show_prints_without_opening_the_editor(tmp_path: Path):
     # "on", not "True": the same setting must not read differently per surface.
     assert "on" in printed
     assert str(path) in printed
+
+
+async def test_the_editor_is_launched_from_inside_the_running_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`sherlock settings` is reached from inside main()'s event loop.
+
+    App.run() calls asyncio.run() internally, so the synchronous form dies with
+    "asyncio.run() cannot be called from a running event loop" and leaves an
+    un-awaited coroutine behind. Every other test drove the app through
+    run_test(), which is already async -- so the one line that launches it for
+    real was the only line not covered.
+    """
+    path = tmp_path / "config.toml"
+    _seed(path, concurrency=50)
+    launched: list[str] = []
+
+    async def fake_run_async(self, *_args, **_kwargs):
+        launched.append("async")
+
+    def forbidden_run(self, *_args, **_kwargs):
+        raise AssertionError("App.run() cannot be used inside a running loop")
+
+    monkeypatch.setattr(SettingsApp, "run_async", fake_run_async)
+    monkeypatch.setattr(SettingsApp, "run", forbidden_run)
+
+    code = await run_settings([], config_path=path, interactive=True)
+
+    assert code == 0
+    assert launched == ["async"]
