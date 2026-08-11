@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from sherlock_project.ai_config import (
+    CONFIG_VERSION,
     AIConfigError,
     AISettings,
     ai_config_path,
@@ -31,7 +32,7 @@ def test_config_round_trip_and_environment_url_override(tmp_path: Path):
     assert loaded.base_url == "http://localhost:8000"
     assert loaded.temperature == 0.1
     serialized = path.read_text(encoding="utf-8")
-    assert "version = 1" in serialized
+    assert f"version = {CONFIG_VERSION}" in serialized
     assert "LM_API_TOKEN" not in serialized
 
 
@@ -51,7 +52,8 @@ def test_missing_config_has_actionable_error(tmp_path: Path):
     [
         "not toml",
         'version = 1\n[ai]\nbase_url = "invalid"\nmodel = "x"\n',
-        'version = 2\n[ai]\nbase_url = "http://localhost"\nmodel = "x"\n',
+        # A version this build does not know, i.e. written by a newer Sherlock.
+        'version = 99\n[ai]\nbase_url = "http://localhost"\nmodel = "x"\n',
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, content: str):

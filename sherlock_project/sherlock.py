@@ -33,7 +33,13 @@ from sherlock_project.__init__ import (
     __version__,
     forge_api_latest_release,
 )
-from sherlock_project.ai_config import AIConfigError, AISettings, load_ai_settings
+from sherlock_project.ai_config import (
+    AIConfigError,
+    AISettings,
+    ai_config_path,
+    load_ai_settings,
+    try_load_settings,
+)
 from sherlock_project.ai_engine import (
     AIService,
     PassOneKeyRegistry,
@@ -57,6 +63,7 @@ from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryResult, QueryStatus
+from sherlock_project.settings import resolve_runtime_settings
 from sherlock_project.show import run_show
 from sherlock_project.sites import SitesInformation
 from sherlock_project.synthesis_pipeline import synthesize_username_profile
@@ -1098,7 +1105,7 @@ async def main() -> int:
         "--debug",
         action="store_true",
         dest="verbose",
-        default=False,
+        default=None,
         help="Display extra debugging information and metrics.",
     )
     parser.add_argument(
@@ -1151,7 +1158,7 @@ async def main() -> int:
         metavar="TIMEOUT",
         dest="timeout",
         type=timeout_check,
-        default=60,
+        default=None,
         help="Time (in seconds) to wait for response to requests (Default: 60)",
     )
     parser.add_argument(
@@ -1161,7 +1168,7 @@ async def main() -> int:
         metavar="COUNT",
         dest="concurrency",
         type=concurrency_check,
-        default=30,
+        default=None,
         help=(
             "Number of sites to check at the same time (Default: 30). Raising "
             "this does not add parallelism -- the scan is one event loop, and "
@@ -1186,7 +1193,7 @@ async def main() -> int:
         "--no-color",
         action="store_true",
         dest="no_color",
-        default=False,
+        default=None,
         help="Don't color terminal output",
     )
     parser.add_argument(
@@ -1216,7 +1223,7 @@ async def main() -> int:
     parser.add_argument(
         "--nsfw",
         action="store_true",
-        default=False,
+        default=None,
         help="Include checking of NSFW sites from default list.",
     )
 
@@ -1329,14 +1336,32 @@ async def main() -> int:
         except AIConfigError as error:
             parser.error(str(error))
 
+    # Stored preferences must never stop a scan, so this loader falls back to
+    # defaults when the file is absent or unreadable. The AI settings above use
+    # the strict loader on purpose: there the file is the only source, and a
+    # silent default would quietly point at the wrong endpoint.
+    settings = resolve_runtime_settings(
+        stored=try_load_settings(),
+        concurrency=args.concurrency,
+        timeout=args.timeout,
+        proxy=args.proxy,
+        nsfw=args.nsfw,
+        no_color=args.no_color,
+        verbose=args.verbose,
+    )
+
     query_notify = QueryNotifyPrint(
         result=None,
-        verbose=args.verbose,
+        verbose=settings.verbose.value,
         print_all=args.print_all,
         browse=args.browse,
-        no_color=args.no_color,
+        no_color=not settings.color.value,
     )
     query_notify.debug("Verbose diagnostics enabled")
+    query_notify.settings_from_config(
+        settings.from_config(),
+        config_path=ai_config_path(),
+    )
     if ai_settings is not None:
         query_notify.ai_configuration(
             model=ai_settings.model,
@@ -1390,8 +1415,8 @@ async def main() -> int:
             f"Sherlock update check failed ({type(error).__name__})"
         )
 
-    if args.proxy is not None:
-        query_notify.info(f"Using proxy {args.proxy}")
+    if settings.proxy.value is not None:
+        query_notify.info(f"Using proxy {settings.proxy.value}")
 
     # Check if both output methods are entered as input.
     if args.output is not None and args.folderoutput is not None:
@@ -1442,7 +1467,7 @@ async def main() -> int:
         )
         sys.exit(1)
 
-    if not args.nsfw:
+    if not settings.nsfw.value:
         sites.remove_nsfw_sites(do_not_remove=args.site_list)
 
     # Create original dictionary from SitesInformation() object.
@@ -1545,7 +1570,7 @@ async def main() -> int:
             enqueue_ai_callback = enqueue_ai_result
 
         async with PlaywrightEngine(
-            concurrency=args.concurrency,
+            concurrency=settings.concurrency.value,
             headless=True,
             status_callback=query_notify.browser_status,
             cancellation_callback=cancel_ai_pipeline if args.ai else None,
@@ -1601,8 +1626,8 @@ async def main() -> int:
                         site_data=site_data,
                         query_notify=query_notify,
                         dump_response=args.dump_response,
-                        proxy=args.proxy,
-                        timeout=args.timeout,
+                        proxy=settings.proxy.value,
+                        timeout=settings.timeout.value,
                         enqueue_ai=enqueue_ai_callback,
                         # --fresh means "reuse nothing stored for this
                         # username". It used to re-fetch every page and then

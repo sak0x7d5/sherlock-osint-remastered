@@ -414,7 +414,7 @@ async def test_setup_survives_a_terminal_that_cannot_answer(
     """
     FakeSetupProvider.models = [_model("plain/model")]
     path = tmp_path / "config.toml"
-    console, output = _console()
+    console, _ = _console()
 
     def no_input(*_args, **_kwargs):
         raise EOFError("EOF when reading a line")

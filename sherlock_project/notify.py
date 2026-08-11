@@ -149,6 +149,14 @@ class QueryNotify:
     ) -> None:
         pass
 
+    def settings_from_config(
+        self,
+        settings: Mapping[str, object],
+        *,
+        config_path: object,
+    ) -> None:
+        pass
+
     def raw(self, message: str) -> None:
         print(message)
 
@@ -677,6 +685,33 @@ class TerminalReporter(QueryNotify):
             f"temperature={temperature}, context={context_length}, "
             "native reasoning=pass1 off/pass2 on"
         )
+
+    def settings_from_config(
+        self,
+        settings: Mapping[str, object],
+        *,
+        config_path: object,
+    ) -> None:
+        """Name the settings this run took from the stored config file.
+
+        Silent when there are none, which is the common case. It exists because
+        a flag is visible in the command someone typed and a stored default is
+        not: without this line, two people running the identical command get
+        different scans and neither can see why. For a tool whose output is
+        investigative evidence, that is a reproducibility hole, not a
+        convenience issue.
+
+        Deliberately lists only config-sourced values. Echoing defaults would
+        print on every run and stop being read.
+        """
+        if not settings:
+            return
+
+        rendered = ", ".join(
+            f"{name} {value}" for name, value in settings.items()
+        )
+        self.info(f"Using saved settings: {rendered}")
+        self.hint(f"From {config_path} — a flag overrides them for one run.")
 
     def ai_extractions_from_other_models(
         self,
