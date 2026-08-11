@@ -75,43 +75,6 @@ def _make_encoding_safe(stream: object) -> None:
         pass
 
 
-def _describe_profile(
-    profile: ProfileSynthesis,
-    *,
-    fields: int,
-    values: int,
-) -> str:
-    """Say in plain words what kind of profile this is.
-
-    The model's own vocabulary ("anchored | resolved | partial") is four enum
-    values with no explanation, and the most consequential of them is the least
-    obvious: `aggregate` does not mean "no anchors were given", it means facts
-    from every account sharing the username were merged WITHOUT deciding
-    whether they describe the same person. A reader needs to be told that.
-    """
-    if profile.mode == "anchored":
-        count = len(profile.anchors)
-        noun = "anchor" if count == 1 else "anchors"
-        headline = (
-            f"Matched against the {count} {noun} you supplied"
-            if profile.resolution_status == "resolved"
-            else f"Nothing matched the {count} {noun} you supplied"
-        )
-    elif profile.resolution_status == "no_evidence":
-        headline = "Nothing was found"
-    else:
-        # Deliberately stops short of "may describe different people": the
-        # synthesis already emits that as a warning, and warnings render
-        # directly beneath this line. Saying it twice reads as noise.
-        headline = "Merged from every account using this username, unfiltered"
-
-    noun = "fact" if values == 1 else "facts"
-    detail = f"{values} {noun} across {fields} fields"
-    if profile.completeness == "partial":
-        detail += ", and some sites were not analysed"
-    return f"{headline}. {detail}."
-
-
 def _format_sources(names: list[str], *, limit: int = 2) -> str:
     """Summarise which sites backed a value.
 
@@ -249,6 +212,10 @@ class TerminalReporter(QueryNotify):
         self._scan_total = 0
         self._scan_completed = 0
         self._scan_found = 0
+        self._scan_absent = 0
+        self._scan_unknown = 0
+        self._scan_waf = 0
+        self._scan_illegal = 0
         self._ai_model_task_id: TaskID | None = None
         self._ai_model_started_at: float | None = None
         self._ai_model_finished = False
@@ -388,6 +355,14 @@ class TerminalReporter(QueryNotify):
         if self.verbose:
             self._event("*", "blue", message, message_style="dim")
 
+    def hint(self, message: str) -> None:
+        """Indented dim follow-up to the event line above it.
+
+        Carries the "so what do I do about it" half of a warning without
+        spending a second marker, which would read as a second event.
+        """
+        self._write(Text(f"    {message}", style="dim"))
+
     def raw(self, message: str) -> None:
         self._write(Text(message))
 
@@ -518,6 +493,10 @@ class TerminalReporter(QueryNotify):
         self._scan_total = max(total or 0, 0)
         self._scan_completed = 0
         self._scan_found = 0
+        self._scan_absent = 0
+        self._scan_unknown = 0
+        self._scan_waf = 0
+        self._scan_illegal = 0
         site_word = "site" if self._scan_total == 1 else "sites"
         total_text = (
             f" across {self._scan_total} {site_word}"
@@ -556,18 +535,22 @@ class TerminalReporter(QueryNotify):
             if self.browse:
                 webbrowser.open(result.site_url_user, 2)
         elif result.status is QueryStatus.AVAILABLE:
+            self._scan_absent += 1
             if self.print_all:
                 self.failure(f"{result.site_name}: not found", detail=response_time)
         elif result.status is QueryStatus.UNKNOWN:
+            self._scan_unknown += 1
             if self.print_all:
                 self.failure(
                     f"{result.site_name}: {result.context or 'unknown response'}",
                     detail=response_time,
                 )
         elif result.status is QueryStatus.ILLEGAL:
+            self._scan_illegal += 1
             if self.print_all:
                 self.warning(f"{result.site_name}: illegal username format")
         elif result.status is QueryStatus.WAF:
+            self._scan_waf += 1
             if self.print_all:
                 self.warning(
                     f"{result.site_name}: blocked by bot detection; a proxy may help",
@@ -607,13 +590,54 @@ class TerminalReporter(QueryNotify):
             self._scan_task_id = None
 
         elapsed = f"{elapsed_time:.2f}s" if elapsed_time else None
-        site_word = "site" if self._scan_completed == 1 else "sites"
+        username = self._scan_username
         self.success(
-            f"Scan complete for {self._scan_username!r}: "
-            f"{self._scan_found} found across {self._scan_completed} {site_word}",
+            f"Scan complete for {username!r}: "
+            f"{self._scan_found} found, {self._scan_absent} not found",
             detail=elapsed,
         )
+        self._report_unresolved(username)
         self._scan_username = ""
+
+    def _report_unresolved(self, username: str) -> None:
+        """Warn when sites produced no answer, so silence is not read as absence.
+
+        This is the whole reason the per-status counters exist. Reporting only
+        found-vs-total lets "we could not determine this" reach the user as
+        "they are not there", which is the one wrong conclusion an OSINT tool
+        must not encourage. Sites that time out, answer ambiguously, or sit
+        behind bot protection are unresolved, NOT absent.
+
+        Deliberately a separate warning line rather than more numbers on the
+        success line above: the marker and colour are what stop the count being
+        skimmed as a statistic. Silent when everything resolved, so a clean run
+        costs nothing.
+
+        UNKNOWN and WAF stay separate because they ask for different things --
+        retry or widen the timeout versus route around bot detection -- and
+        collapsing them hides which one the user is facing.
+        """
+        unresolved = self._scan_unknown + self._scan_waf + self._scan_illegal
+        if not unresolved:
+            return
+
+        parts: list[str] = []
+        if self._scan_unknown:
+            parts.append(f"{self._scan_unknown} inconclusive")
+        if self._scan_waf:
+            parts.append(f"{self._scan_waf} blocked by bot protection")
+        if self._scan_illegal:
+            parts.append(f"{self._scan_illegal} rejected the username format")
+
+        site_word = "site" if unresolved == 1 else "sites"
+        self.warning(
+            f"{unresolved} {site_word} of {self._scan_completed} gave no "
+            f"answer: {', '.join(parts)}"
+        )
+        self.hint(
+            f'Not the same as "not found". List them: sherlock show '
+            f"{username} --unresolved"
+        )
 
     def ai_model_starting(self) -> None:
         if self._ai_model_finished or self._ai_model_started_at is not None:
@@ -1229,28 +1253,48 @@ class TerminalReporter(QueryNotify):
                 self.warning(warning)
             return
 
-        summary = Text(
-            _describe_profile(
-                profile,
-                fields=total_fields,
-                values=total_values,
-            ),
-            style="dim",
-        )
-        # Warnings belong beside the summary, not after the table. The
-        # aggregate caveat is the one a reader most needs and would otherwise
-        # arrive a hundred lines below the values it qualifies.
-        for warning in profile.warnings:
-            summary.append(f"\n[!] {warning}", style="yellow")
+        # Only two things earn space above the values: the caveat that changes
+        # how they should be read, and an honest note that some sites are
+        # missing. Everything else the synthesis records is diagnostic -- site
+        # ids, token counts, validation codes -- and belongs behind --verbose.
+        notes: list[Text] = []
+        if profile.mode != "anchored" and rendered_sections:
+            notes.append(
+                Text(
+                    "[!] No anchors used, so these values may describe "
+                    "different people who share this username.",
+                    style="yellow",
+                )
+            )
+        if profile.warnings:
+            if self.verbose:
+                notes.extend(
+                    Text(f"[!] {warning}", style="yellow")
+                    for warning in profile.warnings
+                )
+            else:
+                count = len(profile.warnings)
+                noun = "note" if count == 1 else "notes"
+                notes.append(
+                    Text(
+                        f"[!] {count} {noun} about how this was built; "
+                        f"run with --verbose to read them.",
+                        style="yellow",
+                    )
+                )
         if color_matches and rendered_sections:
-            summary.append("\nMatch key: ", style="bold")
-            summary.append("strong identity match", style="green")
-            summary.append("  ")
-            summary.append("unsure identity match", style="yellow")
+            legend = Text("Match key: ", style="bold")
+            legend.append("strong identity match", style="green")
+            legend.append("  ")
+            legend.append("unsure identity match", style="yellow")
+            notes.append(legend)
+
+        if notes:
+            blocks = [*notes, Text(""), *blocks]
 
         self._write(
             Panel(
-                Group(summary, Text(""), *blocks),
+                Group(*blocks),
                 title=f"Profile: {profile.username}",
                 title_align="left",
                 border_style="cyan" if not self.no_color else "none",

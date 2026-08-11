@@ -52,12 +52,33 @@ def build_show_parser() -> ArgumentParser:
         help="Show only the AI profile, not the accounts found.",
     )
     parser.add_argument(
+        "--unresolved",
+        action="store_true",
+        default=False,
+        help=(
+            "List the sites that gave no answer -- inconclusive, blocked by "
+            "bot protection, or rejecting the username format. These are not "
+            "the same as sites where the username was absent."
+        ),
+    )
+    parser.add_argument(
         "--sources",
         action="store_true",
         default=False,
         help=(
             "Show the full URL of every site backing each profile value "
             "instead of a count and the first few names."
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help=(
+            "Include the diagnostic notes recorded while the profile was "
+            "built. They name internal site ids and model failures, so they "
+            "are summarised as a count by default."
         ),
     )
     parser.add_argument(
@@ -91,6 +112,39 @@ def _claimed_accounts(saved_rows: dict[str, dict[str, Any]]) -> list[dict[str, A
     return sorted(claimed, key=lambda item: item["site_name"].lower())
 
 
+# Stored statuses that mean "no answer", mapped to the reason a reader needs.
+# AVAILABLE is deliberately absent: it is a real answer. CLAIMED likewise.
+_UNRESOLVED_REASONS: dict[str, str] = {
+    str(QueryStatus.UNKNOWN): "inconclusive",
+    str(QueryStatus.WAF): "blocked by bot protection",
+    str(QueryStatus.ILLEGAL): "username format rejected",
+}
+
+
+def _unresolved_sites(
+    saved_rows: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Stored rows where the check produced no usable answer, name-sorted.
+
+    Kept separate from `_claimed_accounts` because the two answer different
+    questions: that one is "what did we find", this one is "what did we fail to
+    determine". Merging them is what let silence read as absence in the first
+    place.
+    """
+    unresolved = [
+        {
+            "site_name": site_name,
+            "url": row.get("site_url") or "",
+            "status": row.get("status"),
+            "reason": _UNRESOLVED_REASONS[str(row.get("status"))],
+            "context": row.get("error_context") or None,
+        }
+        for site_name, row in saved_rows.items()
+        if str(row.get("status")) in _UNRESOLVED_REASONS
+    ]
+    return sorted(unresolved, key=lambda item: item["site_name"].lower())
+
+
 def _load_profile(raw_summary: str | None) -> ProfileSynthesis | None:
     """Parse a stored profile, or None if absent or no longer readable.
 
@@ -122,10 +176,63 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
         "sites_checked": overview.total_sites,
         "accounts_found": overview.claimed_sites,
         "accounts": _claimed_accounts(saved_rows),
+        "unresolved": _unresolved_sites(saved_rows),
         "profile_updated_at": cache.updated_at if cache is not None else None,
         "profile": _load_profile(raw_summary),
         "profile_unreadable": bool(raw_summary) and _load_profile(raw_summary) is None,
     }
+
+
+def _report_unresolved(
+    reporter: TerminalReporter,
+    record: dict[str, Any],
+    *,
+    listing: bool,
+) -> None:
+    """Summarise, and optionally list, the sites that gave no answer.
+
+    Summarised whenever accounts are shown and listed only on request, for the
+    same reason the scan does it that way: the count has to be unmissable
+    because it changes what the account list means, while several hundred site
+    names would bury the accounts the user came to read.
+    """
+    unresolved = record["unresolved"]
+    if not unresolved:
+        return
+
+    username = record["username"]
+    counts: dict[str, int] = {}
+    for entry in unresolved:
+        counts[entry["reason"]] = counts.get(entry["reason"], 0) + 1
+    # Fixed order, not alphabetical: it has to match the scan's summary, and
+    # sorting by name puts a stray "blocked" ahead of a much larger
+    # "inconclusive" for no reason a reader can see.
+    breakdown = ", ".join(
+        f"{counts[reason]} {reason}"
+        for reason in _UNRESOLVED_REASONS.values()
+        if counts.get(reason)
+    )
+
+    site_word = "site" if len(unresolved) == 1 else "sites"
+    reporter.warning(
+        f"{len(unresolved)} {site_word} of {record['sites_checked']} gave no "
+        f"answer: {breakdown}"
+    )
+    if not listing:
+        reporter.hint(
+            f'Not the same as "not found". List them: sherlock show '
+            f"{username} --unresolved"
+        )
+        return
+
+    reporter.hint(
+        'These were never determined. Absence here is not evidence of absence.'
+    )
+    for entry in unresolved:
+        detail = entry["reason"]
+        if entry["context"]:
+            detail = f"{detail}; {entry['context']}"
+        reporter.warning(f"{entry['site_name']}: {entry['url']}", detail=detail)
 
 
 def _report(
@@ -134,6 +241,7 @@ def _report(
     *,
     want_accounts: bool,
     want_profile: bool,
+    want_unresolved: bool = False,
     show_sources: bool = False,
 ) -> None:
     username = record["username"]
@@ -165,6 +273,9 @@ def _report(
             if account["confidence"] and account["confidence"] != "Confirmed":
                 qualifier = f" [{account['confidence']}]"
             reporter.success(f"{account['site_name']}: {account['url']}{qualifier}")
+
+    if want_accounts or want_unresolved:
+        _report_unresolved(reporter, record, listing=want_unresolved)
 
     if want_profile:
         if record["profile_unreadable"]:
@@ -206,11 +317,15 @@ async def run_show(argv: Sequence[str]) -> int:
     parser = build_show_parser()
     args = parser.parse_args(list(argv))
 
-    # Neither narrowing flag means show everything; both means the same thing.
-    want_accounts = args.accounts or not args.profile
-    want_profile = args.profile or not args.accounts
+    # No narrowing flag means show everything; several mean the union of them.
+    # --unresolved only ever LISTS on request: the count still surfaces with the
+    # accounts, because a hit list whose coverage is unstated is the defect this
+    # flag exists to fix.
+    narrowed = args.accounts or args.profile or args.unresolved
+    want_accounts = args.accounts or not narrowed
+    want_profile = args.profile or not narrowed
 
-    reporter = TerminalReporter(no_color=args.no_color)
+    reporter = TerminalReporter(no_color=args.no_color, verbose=args.verbose)
     database_path = default_database_path()
     reporter.debug(f"Using database at {database_path}")
 
@@ -235,6 +350,7 @@ async def run_show(argv: Sequence[str]) -> int:
             record,
             want_accounts=want_accounts,
             want_profile=want_profile,
+            want_unresolved=args.unresolved,
             show_sources=args.sources,
         )
 

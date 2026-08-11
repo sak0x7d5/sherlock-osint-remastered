@@ -13,7 +13,12 @@ import pytest
 from sherlock_project.database import SherlockDB
 from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
 from sherlock_project.result import QueryStatus
-from sherlock_project.show import _claimed_accounts, _load_profile, run_show
+from sherlock_project.show import (
+    _claimed_accounts,
+    _load_profile,
+    _unresolved_sites,
+    run_show,
+)
 
 
 def _profile_json(username: str) -> str:
@@ -184,6 +189,116 @@ async def test_show_points_at_the_rebuild_when_no_profile_is_stored(
     await run_show(["blue", "--profile", "--no-color"])
 
     assert "--ai-synthesize-only" in capsys.readouterr().out
+
+
+async def _seed_unresolved(path: str) -> None:
+    """A username whose scan left real answers and real gaps."""
+    db = await SherlockDB.create(path)
+    try:
+        await db.save_result(
+            username="grey",
+            site_name="Found",
+            site_url="https://found.example/grey",
+            status=str(QueryStatus.CLAIMED),
+            status_code=200,
+        )
+        await db.save_result(
+            username="grey",
+            site_name="Absent",
+            site_url="https://absent.example/grey",
+            status=str(QueryStatus.AVAILABLE),
+            status_code=404,
+        )
+        await db.save_result(
+            username="grey",
+            site_name="Timeouts",
+            site_url="https://timeouts.example/grey",
+            status=str(QueryStatus.UNKNOWN),
+            error_context="Timeout Error",
+        )
+        await db.save_result(
+            username="grey",
+            site_name="Guarded",
+            site_url="https://guarded.example/grey",
+            status=str(QueryStatus.WAF),
+        )
+    finally:
+        await db.close()
+
+
+def test_unresolved_sites_excludes_real_answers():
+    """Only genuine non-answers. Absent IS an answer and must not appear here."""
+    rows = {
+        "Hit": {"status": "Claimed", "site_url": "https://h.example/x"},
+        "Gone": {"status": "Available", "site_url": "https://g.example/x"},
+        "Zed": {"status": "WAF", "site_url": "https://z.example/x"},
+        "Alpha": {"status": "Unknown", "site_url": "https://a.example/x"},
+    }
+
+    unresolved = _unresolved_sites(rows)
+
+    assert [entry["site_name"] for entry in unresolved] == ["Alpha", "Zed"]
+    assert [entry["reason"] for entry in unresolved] == [
+        "inconclusive",
+        "blocked by bot protection",
+    ]
+
+
+async def test_show_warns_about_unresolved_sites_without_listing_them(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """The count rides along with the accounts; the names wait to be asked for."""
+    database = tmp_path / "sherlock.db"
+    await _seed_unresolved(str(database))
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["grey", "--accounts", "--no-color"])
+
+    out = capsys.readouterr().out
+    assert "2 sites of 4 gave no answer" in out
+    assert "1 inconclusive" in out
+    assert "1 blocked by bot protection" in out
+    assert "grey --unresolved" in out
+    # Not listed unless asked: a hit list must not be buried by its own caveat.
+    assert "https://timeouts.example/grey" not in out
+
+
+async def test_show_unresolved_lists_each_site_with_its_reason(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    database = tmp_path / "sherlock.db"
+    await _seed_unresolved(str(database))
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["grey", "--unresolved", "--no-color"])
+
+    out = capsys.readouterr().out
+    assert "https://timeouts.example/grey" in out
+    assert "Timeout Error" in out
+    assert "https://guarded.example/grey" in out
+    assert "blocked by bot protection" in out
+    # Narrowed to the gaps: neither the hits nor the profile come along.
+    assert "https://found.example/grey" not in out
+    assert "AI profile" not in out
+
+
+async def test_show_stays_quiet_when_every_site_resolved(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """No gaps, no caveat -- the warning must mean something when it appears."""
+    database = tmp_path / "sherlock.db"
+    await _seed(str(database))
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["blue", "--accounts", "--no-color"])
+
+    assert "gave no answer" not in capsys.readouterr().out
 
 
 async def test_username_overview_counts_only_that_username(tmp_path):
