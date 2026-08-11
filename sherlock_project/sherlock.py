@@ -15,7 +15,6 @@ except ImportError:
     sys.exit(1)
 
 import asyncio
-import csv
 import os
 import re
 from argparse import ArgumentParser, ArgumentTypeError, RawDescriptionHelpFormatter
@@ -24,7 +23,6 @@ from json import dumps as json_dumps
 from json import loads as json_loads
 from time import perf_counter
 
-import pandas as pd
 import requests
 from playwright.async_api import APIResponse, Response
 from playwright.async_api import Error as PlaywrightError
@@ -1082,20 +1080,6 @@ async def main() -> int:
         help="If using single username, the output of the result will be saved to this file.",
     )
     parser.add_argument(
-        "--csv",
-        action="store_true",
-        dest="csv",
-        default=False,
-        help="Create Comma-Separated Values (CSV) File.",
-    )
-    parser.add_argument(
-        "--xlsx",
-        action="store_true",
-        dest="xlsx",
-        default=False,
-        help="Create the standard file for the modern Microsoft Excel spreadsheet (xlsx).",
-    )
-    parser.add_argument(
         "--site",
         action="append",
         metavar="SITE_NAME",
@@ -1675,90 +1659,6 @@ async def main() -> int:
                     exists_counter += 1
                     file.write(dictionary["url_user"] + "\n")
             file.write(f"Total Websites Username Detected On : {exists_counter}\n")
-
-    if args.csv:
-        result_file = f"{username}.csv"
-        if args.folderoutput:
-            # The usernames results should be stored in a targeted folder.
-            # If the folder doesn't exist, create it first
-            os.makedirs(args.folderoutput, exist_ok=True)
-            result_file = os.path.join(args.folderoutput, result_file)
-
-        with open(result_file, "w", newline="", encoding="utf-8") as csv_report:
-            writer = csv.writer(csv_report)
-            writer.writerow(
-                [
-                    "username",
-                    "name",
-                    "url_main",
-                    "url_user",
-                    "exists",
-                    "http_status",
-                    "response_time_s",
-                ]
-            )
-            for site in results:
-                if (
-                    args.print_found
-                    and not args.print_all
-                    and results[site]["status"].status != QueryStatus.CLAIMED
-                ):
-                    continue
-
-                response_time_s = results[site]["status"].query_time
-                if response_time_s is None:
-                    response_time_s = ""
-                writer.writerow(
-                    [
-                        username,
-                        site,
-                        results[site]["url_main"],
-                        results[site]["url_user"],
-                        str(results[site]["status"].status),
-                        results[site]["http_status"],
-                        response_time_s,
-                    ]
-                )
-    if args.xlsx:
-        usernames = []
-        names = []
-        url_main = []
-        url_user = []
-        exists = []
-        http_status = []
-        response_time_s = []
-
-        for site in results:
-            if (
-                args.print_found
-                and not args.print_all
-                and results[site]["status"].status != QueryStatus.CLAIMED
-            ):
-                continue
-
-            if response_time_s is None:
-                response_time_s.append("")
-            else:
-                response_time_s.append(results[site]["status"].query_time)
-            usernames.append(username)
-            names.append(site)
-            url_main.append(results[site]["url_main"])
-            url_user.append(results[site]["url_user"])
-            exists.append(str(results[site]["status"].status))
-            http_status.append(results[site]["http_status"])
-
-        DataFrame = pd.DataFrame(
-            {
-                "username": usernames,
-                "name": names,
-                "url_main": [f'=HYPERLINK(\"{u}\")' for u in url_main],
-                "url_user": [f'=HYPERLINK(\"{u}\")' for u in url_user],
-                "exists": exists,
-                "http_status": http_status,
-                "response_time_s": response_time_s,
-            }
-        )
-        DataFrame.to_excel(f"{username}.xlsx", sheet_name="sheet1", index=False)
 
     query_notify.finish(elapsed_time=elapsed_time)
     return 0
