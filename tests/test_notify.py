@@ -87,8 +87,80 @@ def test_scan_output_uses_instance_counters_and_keeps_claimed_sites() -> None:
     rendered = output.getvalue()
     assert "[+] ClaimedSite: https://example.test/ClaimedSite" in rendered
     assert "[x] AvailableSite: not found" in rendered
-    assert "Scan complete for 'first': 1 found across 2 sites" in rendered
-    assert "Scan complete for 'second': 1 found across 1 site" in rendered
+    assert "Scan complete for 'first': 1 found, 1 not found" in rendered
+    assert "Scan complete for 'second': 1 found, 0 not found" in rendered
+    # Nothing was unresolved in either scan, so the caveat line stays away.
+    assert "gave no answer" not in rendered
+
+
+def test_scan_summary_reports_unresolved_sites_separately_from_absent() -> None:
+    """The scan must never let "could not determine" reach the user as "absent".
+
+    Reporting only found-vs-total is what allowed a 30% inconclusive rate to be
+    read as confirmed absence, so the counts and the caveat line are the
+    contract here, not cosmetics.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.start("target", total=5)
+    reporter.update(_result("Hit", QueryStatus.CLAIMED))
+    reporter.update(_result("Gone", QueryStatus.AVAILABLE))
+    reporter.update(_result("Flaky", QueryStatus.UNKNOWN))
+    reporter.update(_result("Guarded", QueryStatus.WAF))
+    reporter.update(_result("Rejected", QueryStatus.ILLEGAL))
+    reporter.finish_scan(elapsed_time=3.0)
+
+    rendered = output.getvalue()
+    # Absent is counted on its own and never inflated by the unresolved three.
+    assert "Scan complete for 'target': 1 found, 1 not found" in rendered
+    assert "3 sites of 5 gave no answer" in rendered
+    # Each reason is named, because they need different responses from the user.
+    assert "1 inconclusive" in rendered
+    assert "1 blocked by bot protection" in rendered
+    assert "1 rejected the username format" in rendered
+    assert 'Not the same as "not found"' in rendered
+    assert "sherlock show target --unresolved" in rendered
+
+
+def test_scan_summary_counters_reset_between_usernames() -> None:
+    """A second username must not inherit the first one's unresolved count."""
+    reporter, output, _ = _reporter()
+
+    reporter.start("first", total=1)
+    reporter.update(_result("Flaky", QueryStatus.UNKNOWN))
+    reporter.finish_scan(elapsed_time=1.0)
+
+    reporter.start("second", total=1)
+    reporter.update(_result("Hit", QueryStatus.CLAIMED))
+    reporter.finish_scan(elapsed_time=1.0)
+
+    rendered = output.getvalue()
+    assert "1 site of 1 gave no answer" in rendered
+    assert "sherlock show first --unresolved" in rendered
+    # The clean second scan says nothing about the first scan's failure.
+    assert "sherlock show second --unresolved" not in rendered
+    assert rendered.count("gave no answer") == 1
+
+
+def test_unresolved_summary_stays_ascii_for_redirected_windows_stdout() -> None:
+    """Redirected stdout on Windows encodes as cp1252; the summary must survive.
+
+    Same trap `show --json` already documents. A bar chart or box-drawing glyph
+    here would turn `sherlock user > out.txt` into a UnicodeEncodeError.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.start("target", total=2)
+    reporter.update(_result("Flaky", QueryStatus.UNKNOWN))
+    reporter.update(_result("Guarded", QueryStatus.WAF))
+    reporter.finish_scan(elapsed_time=1.0)
+
+    summary = "".join(
+        line for line in output.getvalue().splitlines(keepends=True)
+        if "gave no answer" in line or "Not the same as" in line
+    )
+    assert summary
+    summary.encode("cp1252")
 
 
 def test_no_color_output_has_no_terminal_escape_sequences() -> None:
@@ -749,7 +821,9 @@ def test_synthesis_output_formats_exact_profile_keys_sources_and_warnings() -> N
     assert "included" not in rendered
     assert "excluded" in rendered and "Unrelated" in rendered
     assert "failed" in rendered and "Failed" in rendered
-    assert "[!] Profile may be incomplete" in rendered
+    # Synthesis warnings are diagnostics; summarised unless --verbose.
+    assert "1 note about how this was built" in rendered
+    assert "Profile may be incomplete" not in rendered
     assert "Match key" not in rendered
     assert "strong identity match" not in rendered
     assert "\x1b[" not in rendered
@@ -938,80 +1012,6 @@ def test_format_sources_summarises_by_count_and_name() -> None:
     assert _format_sources(["A", "B", "C", "D"]) == "4 sites: A, B +2"
 
 
-def test_profile_header_explains_itself_in_plain_words() -> None:
-    """The header used to print four raw enum values.
-
-    `aggregate` in particular does not mean "no anchors were given" -- it means
-    facts from every account sharing the username were merged without deciding
-    whether they describe the same person, which a reader has to be told.
-    """
-    reporter, output, _ = _reporter()
-    profile = ProfileSynthesis.model_validate(
-        {
-            "username": "fixture_handle",
-            "input_hash": "hash",
-            "mode": "aggregate",
-            "resolution_status": "aggregated",
-            "completeness": "partial",
-            "strong_profile": {"full_name": ["Avery Stone"], "city": ["Oslo"]},
-        }
-    )
-
-    reporter.render_profile(profile)
-
-    rendered = output.getvalue().replace("\n", " ")
-    assert "Profile: fixture_handle" in rendered
-    assert "Merged from every account using this username" in rendered
-    assert "2 facts across 2 fields" in rendered
-    assert "some sites were not analysed" in rendered
-    # The enum vocabulary must not leak into the header.
-    assert "aggregate |" not in rendered
-
-
-def test_anchored_header_names_the_anchor_count() -> None:
-    reporter, output, _ = _reporter()
-    profile = ProfileSynthesis.model_validate(
-        {
-            "username": "fixture_handle",
-            "input_hash": "hash",
-            "mode": "anchored",
-            "resolution_status": "resolved",
-            "completeness": "complete",
-            "strong_profile": {"full_name": ["Avery Stone"]},
-            "anchors": [{"field": "name", "value": "Avery Stone"}],
-        }
-    )
-
-    reporter.render_profile(profile)
-
-    rendered = output.getvalue().replace("\n", " ")
-    assert "Matched against the 1 anchor you supplied" in rendered
-    assert "1 fact across 1 fields" in rendered
-
-
-def test_profile_warnings_sit_with_the_header_not_below_the_table() -> None:
-    """A caveat a hundred lines under the values it qualifies is not read."""
-    reporter, output, _ = _reporter()
-    profile = ProfileSynthesis.model_validate(
-        {
-            "username": "fixture_handle",
-            "input_hash": "hash",
-            "mode": "aggregate",
-            "resolution_status": "aggregated",
-            "completeness": "complete",
-            "strong_profile": {"full_name": ["Avery Stone"]},
-            "warnings": ["Values may describe different people"],
-        }
-    )
-
-    reporter.render_profile(profile)
-
-    rendered = output.getvalue()
-    assert rendered.index("Values may describe different people") < rendered.index(
-        "Avery Stone"
-    )
-
-
 def test_profile_keeps_value_order_and_hides_nothing() -> None:
     """Presentation only: no reordering, no capping."""
     reporter, output, _ = _reporter()
@@ -1070,3 +1070,82 @@ def test_show_sources_restores_the_full_urls() -> None:
 
     rendered = output.getvalue().replace("\n", "")
     assert "https://mastodon.social/@avery" in rendered
+
+
+def test_profile_notes_are_summarised_unless_verbose() -> None:
+    """Synthesis warnings are diagnostics, not user-facing text.
+
+    They name internal site ids, model exception types and token counts, so
+    printing them above the values buried the one caveat that matters in noise
+    a reader cannot act on.
+    """
+    payload = {
+        "username": "fixture_handle",
+        "input_hash": "hash",
+        "mode": "anchored",
+        "resolution_status": "resolved",
+        "completeness": "partial",
+        "strong_profile": {"full_name": ["Avery Stone"]},
+        "warnings": [
+            "Pass-one extraction is still pending for site ids: 264, 793",
+            "Pass-two decision failed for site id 466 (StructuredResponseError)",
+        ],
+    }
+
+    quiet, quiet_output, _ = _reporter()
+    quiet.render_profile(ProfileSynthesis.model_validate(payload))
+    rendered = quiet_output.getvalue().replace("\n", " ")
+    assert "2 notes about how this was built" in rendered
+    assert "site ids: 264" not in rendered
+    assert "StructuredResponseError" not in rendered
+
+    loud, loud_output, _ = _reporter(verbose=True)
+    loud.render_profile(ProfileSynthesis.model_validate(payload))
+    detailed = loud_output.getvalue().replace("\n", " ")
+    assert "StructuredResponseError" in detailed
+    assert "2 notes about how this was built" not in detailed
+
+
+def test_aggregate_profile_states_the_different_people_caveat_up_front() -> None:
+    """The one caveat that changes how the values should be read.
+
+    It must not depend on the synthesis warning list, and it must appear above
+    the values rather than a hundred lines below them.
+    """
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    rendered = output.getvalue()
+    flat = rendered.replace("\n", " ")
+    assert "may describe different people who share this username" in flat
+    assert rendered.index("No anchors used") < rendered.index("Avery Stone")
+
+
+def test_anchored_profile_omits_the_aggregate_caveat() -> None:
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "anchored",
+            "resolution_status": "resolved",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "anchors": [{"field": "name", "value": "Avery Stone"}],
+        }
+    )
+
+    reporter.render_profile(profile)
+
+    assert "No anchors used" not in output.getvalue()
