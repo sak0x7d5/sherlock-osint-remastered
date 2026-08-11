@@ -64,6 +64,7 @@ platformdirs = "^4.3.8"
 pydantic = "^2.13.4"
 tomli-w = "^1.2.0"
 trafilatura = "^2.1.0"
+textual = "^8.2.8"
 
 [tool.poetry.group.dev.dependencies]
 jsonschema = "^4.0.0"
