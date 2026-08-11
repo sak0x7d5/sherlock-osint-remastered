@@ -171,11 +171,30 @@ def _select_model(
                 default_index = index
                 break
     while True:
-        selected_index = IntPrompt.ask(
-            "Select a model",
-            default=default_index,
-            console=console,
-        )
+        try:
+            selected_index = IntPrompt.ask(
+                "Select a model",
+                default=default_index,
+                console=console,
+            )
+        except EOFError:
+            # isatty() is not a reliable interactivity test on Windows, so the
+            # guard above can be skipped even when nothing can answer. NUL is a
+            # character device, which means `sherlock setup ai < NUL` --
+            # explicitly "I have no keyboard" -- reports isatty() as True.
+            # Measured: piped stdin gives False, NUL gives True.
+            #
+            # Reaching a prompt with no input is the same situation the guard
+            # exists for, so it gets the same message instead of an unhandled
+            # EOFError traceback out of rich. This hits scheduled tasks, CI
+            # runners, Docker without -i, and service contexts.
+            #
+            # KeyboardInterrupt is deliberately NOT caught: cli() already turns
+            # it into the standard interruption message and exit 130, and
+            # routing it here would downgrade a clean cancel into an error.
+            parser.error(
+                "--model is required when setup input is not interactive"
+            )
         if not 1 <= selected_index <= len(models):
             console.print("[yellow]Choose a number from the table.[/yellow]")
             continue
