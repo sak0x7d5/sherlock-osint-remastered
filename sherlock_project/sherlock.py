@@ -64,6 +64,7 @@ from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.settings import resolve_runtime_settings
+from sherlock_project.settings_tui import run_settings
 from sherlock_project.show import run_show
 from sherlock_project.sites import SitesInformation
 from sherlock_project.synthesis_pipeline import synthesize_username_profile
@@ -1075,6 +1076,13 @@ async def main() -> int:
     # a bare argument, the same trade already made for "setup".
     if len(sys.argv) >= 2 and sys.argv[1] == "show":
         return await run_show(sys.argv[2:])
+    # Third reserved word, and the cost is the same as the two above: a
+    # username literally called "settings" cannot be scanned as a bare
+    # argument. Accepted deliberately -- the settings surface stopped being
+    # AI-specific once [scan] and [output] existed, so reaching it through
+    # `setup ai` would have been the more confusing trade.
+    if len(sys.argv) >= 2 and sys.argv[1] == "settings":
+        return await run_settings(sys.argv[2:])
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
@@ -1090,6 +1098,10 @@ async def main() -> int:
             "  sherlock setup ai         Configure the local AI model "
             "endpoint. See\n"
             "                            `sherlock setup ai --help`.\n"
+            "  sherlock settings         Edit stored defaults for scans, "
+            "output and AI.\n"
+            "                            A flag still wins for one run. See\n"
+            "                            `sherlock settings --help`.\n"
         ),
     )
     parser.add_argument(

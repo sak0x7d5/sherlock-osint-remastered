@@ -15,6 +15,7 @@ config file, and stays silent about the rest.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -131,4 +132,139 @@ def resolve_runtime_settings(
             config=stored.output.verbose,
             default=output_defaults.verbose,
         ),
+    )
+
+
+# --------------------------------------------------------------------------
+# The editable settings surface.
+#
+# Kept here, as data, deliberately: the settings screen renders these and does
+# nothing else, so what a setting IS and what it may hold stays testable
+# without a terminal. Anything the screen decides on its own is a decision
+# nobody can write a test for.
+# --------------------------------------------------------------------------
+
+FieldKind = Literal["spin", "toggle", "text", "model"]
+
+
+@dataclass(frozen=True, slots=True)
+class SettingField:
+    section: str
+    name: str
+    label: str
+    kind: FieldKind
+    # Ordered candidates for a spinner. Values outside the list are still
+    # valid -- a hand-edited config is not wrong just because it picked a
+    # number this list does not offer -- so stepping moves to the nearest
+    # neighbour rather than rejecting what it finds.
+    choices: tuple[Any, ...] = ()
+    note: str = ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.section}.{self.name}"
+
+
+SETTING_FIELDS: tuple[SettingField, ...] = (
+    SettingField("ai", "model", "model", "model"),
+    SettingField("ai", "base_url", "endpoint", "text"),
+    SettingField(
+        "ai", "temperature", "temperature", "spin",
+        tuple(round(step / 10, 1) for step in range(11)),
+    ),
+    SettingField(
+        "ai", "context_length", "context length", "spin",
+        (2048, 4096, 8192, 16384, 32768, 65536, 131072),
+    ),
+    SettingField(
+        "scan", "concurrency", "concurrency", "spin",
+        (1, 5, 10, 20, 30, 50, 75, 100),
+    ),
+    SettingField(
+        "scan", "timeout", "timeout", "spin",
+        (10, 15, 30, 45, 60, 90, 120),
+    ),
+    SettingField("scan", "proxy", "proxy", "text"),
+    SettingField("scan", "nsfw", "NSFW sites", "toggle"),
+    SettingField("output", "color", "colour", "toggle"),
+    SettingField("output", "verbose", "verbose", "toggle"),
+)
+
+
+def field_values(settings: SherlockSettings) -> dict[str, Any]:
+    """Flatten stored settings into {"section.name": value}.
+
+    An absent [ai] section yields None for every AI field rather than being
+    skipped, so the screen can show "not configured" in place instead of
+    silently dropping rows and changing its own shape.
+    """
+    values: dict[str, Any] = {}
+    for field in SETTING_FIELDS:
+        section = getattr(settings, field.section, None)
+        values[field.key] = (
+            None if section is None else getattr(section, field.name, None)
+        )
+    return values
+
+
+def step_value(field: SettingField, current: Any, delta: int) -> Any:
+    """Move one step along a field's candidates.
+
+    Stops at the ends rather than wrapping: arrowing past the maximum and
+    landing on the minimum is the kind of surprise that sets concurrency to 1
+    when someone meant 100.
+    """
+    if field.kind == "toggle":
+        return not bool(current)
+    if field.kind != "spin" or not field.choices:
+        return current
+
+    choices = field.choices
+    if current in choices:
+        index = choices.index(current)
+    else:
+        # A value the list does not offer -- hand-edited, or from a build with
+        # different candidates. Move relative to where it would sit.
+        index = len([item for item in choices if item < current])
+        if delta > 0:
+            return choices[min(index, len(choices) - 1)]
+        return choices[max(index - 1, 0)]
+
+    return choices[max(0, min(index + delta, len(choices) - 1))]
+
+
+def apply_values(
+    settings: SherlockSettings,
+    values: Mapping[str, Any],
+) -> SherlockSettings:
+    """Rebuild settings from edited values, leaving untouched sections alone.
+
+    Raises ValidationError for anything the schema refuses, which is the point:
+    the screen must not be able to write a config the CLI would reject.
+    """
+    updates: dict[str, Any] = {}
+    for section_name in ("scan", "output"):
+        section = getattr(settings, section_name)
+        changes = {
+            field.name: values[field.key]
+            for field in SETTING_FIELDS
+            if field.section == section_name and field.key in values
+        }
+        updates[section_name] = section.model_copy(update=changes)
+
+    ai_changes = {
+        field.name: values[field.key]
+        for field in SETTING_FIELDS
+        if field.section == "ai"
+        and field.key in values
+        and values[field.key] is not None
+    }
+    if settings.ai is not None and ai_changes:
+        updates["ai"] = settings.ai.model_copy(update=ai_changes)
+
+    # model_copy skips validation, so re-validate the whole thing rather than
+    # trusting the copy. A screen that can store concurrency 0 would hang the
+    # next scan forever with no error anywhere.
+    return SherlockSettings.model_validate(
+        settings.model_copy(update=updates).model_dump(mode="python")
     )
