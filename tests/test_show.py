@@ -15,6 +15,7 @@ from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
 from sherlock_project.result import QueryStatus
 from sherlock_project.show import (
     _claimed_accounts,
+    _describe_extraction_models,
     _load_profile,
     _unresolved_sites,
     run_show,
@@ -419,3 +420,103 @@ async def test_show_sources_flag_switches_to_full_urls(
     await run_show(["blue", "--profile", "--sources", "--no-color"])
     verbose = capsys.readouterr().out.replace("\n", "")
     assert "https://mastodon.social/@avery" in verbose
+
+
+def test_describe_extraction_models_names_one_and_counts_several():
+    """One model reads as a name; several have to read as a mixture."""
+    assert _describe_extraction_models([]) is None
+    assert (
+        _describe_extraction_models([{"model": "vendor/small", "count": 12}])
+        == "vendor/small"
+    )
+    assert _describe_extraction_models(
+        [
+            {"model": "vendor/small", "count": 12},
+            {"model": "vendor/large", "count": 3},
+            {"model": None, "count": 1},
+        ]
+    ) == "12 vendor/small, 3 vendor/large, 1 unrecorded model"
+
+
+async def test_show_reports_which_models_produced_the_extractions(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A profile assembled by two models must say so on the profile line."""
+    database = tmp_path / "sherlock.db"
+    await _seed(str(database))
+    db = await SherlockDB.create(str(database))
+    try:
+        rows = await db.get_saved_results("blue")
+        assert "GitHub" in rows
+        site_id = await db.save_result(
+            username="blue",
+            site_name="Keybase",
+            site_url="https://keybase.io/blue",
+            status=str(QueryStatus.CLAIMED),
+            response_text="profile",
+        )
+        await db.update_result_ai_extraction(
+            site_id=site_id,
+            ai_extraction='{"full_name": ["Blue"]}',
+            contract_hash="contract-1",
+            model_key="vendor/large",
+        )
+        other_id = await db.save_result(
+            username="blue",
+            site_name="Mastodon",
+            site_url="https://m.example/@blue",
+            status=str(QueryStatus.CLAIMED),
+            response_text="profile",
+        )
+        await db.update_result_ai_extraction(
+            site_id=other_id,
+            ai_extraction="{}",
+            contract_hash="contract-1",
+            model_key="vendor/small",
+        )
+    finally:
+        await db.close()
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    exit_code = await run_show(["blue", "--profile", "--no-color"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "extracted by" in output
+    assert "vendor/large" in output
+    assert "vendor/small" in output
+
+
+async def test_show_json_carries_model_provenance(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    database = tmp_path / "sherlock.db"
+    await _seed(str(database))
+    db = await SherlockDB.create(str(database))
+    try:
+        site_id = await db.save_result(
+            username="blue",
+            site_name="Keybase",
+            status=str(QueryStatus.CLAIMED),
+            response_text="profile",
+        )
+        await db.update_result_ai_extraction(
+            site_id=site_id,
+            ai_extraction='{"full_name": ["Blue"]}',
+            contract_hash="contract-1",
+            model_key="vendor/large",
+        )
+    finally:
+        await db.close()
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    await run_show(["blue", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload[0]["extraction_models"] == [
+        {"model": "vendor/large", "count": 1}
+    ]

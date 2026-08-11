@@ -1149,3 +1149,53 @@ def test_anchored_profile_omits_the_aggregate_caveat() -> None:
     reporter.render_profile(profile)
 
     assert "No anchors used" not in output.getvalue()
+
+
+def test_other_model_extractions_are_reported_once_and_only_on_mismatch():
+    """Silent when the models agree; loud, with counts, when they do not.
+
+    A line that prints on every run stops being read, and this one only has
+    meaning right after someone changes model.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.ai_extractions_from_other_models(
+        username="blue",
+        configured_model="vendor/large",
+        counts={"vendor/large": 12},
+    )
+    assert output.getvalue() == ""
+
+    reporter.ai_extractions_from_other_models(
+        username="blue",
+        configured_model="vendor/large",
+        counts={},
+    )
+    assert output.getvalue() == ""
+
+    reporter.ai_extractions_from_other_models(
+        username="blue",
+        configured_model="vendor/large",
+        counts={"vendor/large": 2, "vendor/small": 9, None: 3},
+    )
+    text = output.getvalue()
+
+    assert "12 stored extractions" in text
+    assert "'blue'" in text
+    assert "vendor/large" in text
+    assert "9 from vendor/small" in text
+    assert "3 from an unrecorded model" in text
+    # The remedy has to be nameable, or the warning is just bad news.
+    assert "sherlock blue --ai --fresh" in text
+
+
+def test_other_model_extractions_uses_singular_for_one():
+    reporter, output, _ = _reporter()
+
+    reporter.ai_extractions_from_other_models(
+        username="blue",
+        configured_model="vendor/large",
+        counts={"vendor/small": 1},
+    )
+
+    assert "1 stored extraction for" in output.getvalue()

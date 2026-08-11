@@ -523,6 +523,7 @@ async def ai_worker(
                     site_id=site_id,
                     ai_extraction="{}",
                     contract_hash=contract_hash,
+                    model_key=ai_service.model_key,
                 )
                 if reporter is not None:
                     reporter.ai_job_finished("no_facts")
@@ -542,6 +543,7 @@ async def ai_worker(
                     ensure_ascii=False,
                 ),
                 contract_hash=contract_hash,
+                model_key=ai_service.model_key,
             )
             key_registry.add(job.username, response.extraction)
             if reporter is not None:
@@ -1240,8 +1242,9 @@ async def main() -> int:
         default=False,
         help=(
             "Re-scan every site for the username instead of skipping sites "
-            "already saved in the database. Cached AI extractions are kept for "
-            "sites whose content did not change."
+            "already saved in the database. With --ai, also re-runs extraction "
+            "on every hit rather than reusing the stored one -- this is how a "
+            "newly configured model gets applied to results you already have."
         ),
     )
 
@@ -1548,6 +1551,16 @@ async def main() -> int:
             cancellation_callback=cancel_ai_pipeline if args.ai else None,
         ) as engine:
             for username in all_usernames:
+                # Before anything is scanned, because this explains why a scan
+                # that follows a model change produces identical AI output.
+                # Skipped under --fresh, which is about to redo them anyway.
+                if ai_settings is not None and not args.fresh:
+                    query_notify.ai_extractions_from_other_models(
+                        username=username,
+                        configured_model=ai_settings.model,
+                        counts=await db.get_extraction_model_counts(username),
+                    )
+
                 # If no site list was provided, skip sites already in the
                 # database. --fresh opts out of that resume behaviour and
                 # re-checks everything.
@@ -1591,7 +1604,13 @@ async def main() -> int:
                         proxy=args.proxy,
                         timeout=args.timeout,
                         enqueue_ai=enqueue_ai_callback,
-                        force_ai_extraction=targeted_ai_scan,
+                        # --fresh means "reuse nothing stored for this
+                        # username". It used to re-fetch every page and then
+                        # keep the stored extraction whenever the page came
+                        # back identical, which made it the one flag that
+                        # cannot apply a newly configured model: full price,
+                        # byte-identical AI output.
+                        force_ai_extraction=targeted_ai_scan or args.fresh,
                         on_cancel=cancel_ai_pipeline if args.ai else None,
                     )
                     query_notify.finish_scan(

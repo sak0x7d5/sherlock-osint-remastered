@@ -179,6 +179,18 @@ class SherlockDB:
             column_name="ai_extraction_contract_hash",
             definition="TEXT",
         )
+        # Which model produced the stored extraction. Deliberately NOT part of
+        # the contract hash: a different model's extraction is still valid
+        # against the current contract, so it must not be invalidated on sight
+        # -- that would discard every cached extraction on disk the moment
+        # anyone tried a second model, and discard it again on switching back.
+        # Recorded instead so a mixed-model profile is visible rather than
+        # silent. NULL means the row predates this column.
+        await self._ensure_column(
+            table_name="results",
+            column_name="ai_extraction_model",
+            definition="TEXT",
+        )
         # How much of the site rule actually matched. Orthogonal to status:
         # status is what was decided, confidence is how much agreed. Persisted
         # so cross-site synthesis can weight a confirmed hit above a probable
@@ -316,6 +328,16 @@ class SherlockDB:
                                 THEN NULL
                             ELSE results.ai_extraction_contract_hash
                         END,
+                        ai_extraction_model = CASE
+                            WHEN excluded.ai_extraction IS NOT NULL
+                                THEN NULL
+                            WHEN ?
+                                THEN NULL
+                            WHEN excluded.status IS NOT results.status
+                                OR excluded.response_text IS NOT results.response_text
+                                THEN NULL
+                            ELSE results.ai_extraction_model
+                        END,
                         scanned_at = CURRENT_TIMESTAMP
                         RETURNING id, ai_extraction
                     """,
@@ -335,6 +357,7 @@ class SherlockDB:
                             else None
                         ),
                         confidence,
+                        force_ai_extraction,
                         force_ai_extraction,
                         force_ai_extraction,
                     ),
@@ -426,7 +449,8 @@ class SherlockDB:
                         UPDATE results
                         SET
                             ai_extraction = NULL,
-                            ai_extraction_contract_hash = NULL
+                            ai_extraction_contract_hash = NULL,
+                            ai_extraction_model = NULL
                         WHERE id = ?
                         """,
                         (site_id,),
@@ -451,6 +475,7 @@ class SherlockDB:
         ai_extraction: str,
         *,
         contract_hash: str,
+        model_key: str,
     ) -> None:
         db = self._require_db()
 
@@ -461,10 +486,11 @@ class SherlockDB:
                     UPDATE results
                     SET
                         ai_extraction = ?,
-                        ai_extraction_contract_hash = ?
+                        ai_extraction_contract_hash = ?,
+                        ai_extraction_model = ?
                     WHERE id = ?
                     """,
-                    (ai_extraction, contract_hash, site_id),
+                    (ai_extraction, contract_hash, model_key, site_id),
                 ) as cur:
                     if cur.rowcount == 0:
                         raise RuntimeError(f"Failed to update AI extraction for site id {site_id!r}")
@@ -568,6 +594,42 @@ class SherlockDB:
             )
             for row in rows
         ]
+
+    async def get_extraction_model_counts(
+        self,
+        username: str,
+    ) -> dict[str | None, int]:
+        """Count stored extractions per model that produced them.
+
+        The key is the model, or None for rows written before the model was
+        recorded. Rows with no extraction at all are excluded: they have
+        nothing to attribute, and counting them would make every unscanned
+        site look like unrecorded provenance.
+        """
+        db = self._require_db()
+
+        async with db.execute(
+            """
+            SELECT
+                r.ai_extraction_model AS model,
+                COUNT(*) AS extraction_count
+            FROM results r
+            JOIN usernames u
+                ON u.id = r.username_id
+            WHERE u.username = ?
+                AND r.ai_extraction IS NOT NULL
+            GROUP BY r.ai_extraction_model
+            """,
+            (username,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return {
+            (str(row["model"]) if row["model"] is not None else None): int(
+                row["extraction_count"]
+            )
+            for row in rows
+        }
 
     async def get_profile_summary_cache(
         self,

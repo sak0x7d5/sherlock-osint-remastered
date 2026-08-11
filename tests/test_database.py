@@ -12,6 +12,7 @@ from sherlock_project.result import QueryStatus
 pytestmark = pytest.mark.asyncio
 
 CONTRACT_HASH = "pass-one-contract-v2"
+MODEL_KEY = "vendor/test-model"
 
 
 @pytest.fixture()
@@ -393,6 +394,7 @@ async def test_update_result_ai_extraction_updates_field(db: SherlockDB, user_da
         site_id=site_id,
         ai_extraction=ai_extraction,
         contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
     )
 
     row = await _get_result_row(db, user_data["username"], user_data["site_name"])
@@ -424,6 +426,7 @@ async def test_update_result_ai_extraction_preserves_scan_timestamp(
         site_id=site_id,
         ai_extraction='{"name": "Blue"}',
         contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
     )
 
     row = await _get_result_row(db, user_data["username"], user_data["site_name"])
@@ -437,6 +440,7 @@ async def test_update_result_ai_extraction_raises_for_missing_site(db: SherlockD
             site_id=999,
             ai_extraction='{"name": "Missing"}',
             contract_hash=CONTRACT_HASH,
+            model_key=MODEL_KEY,
         )
 
 
@@ -810,6 +814,7 @@ async def test_ai_update_invalidates_hash_but_preserves_last_good_profile(
         site_id=site_id,
         ai_extraction='{"full_name": "Blue"}',
         contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
     )
 
     cache = await db.get_profile_summary_cache(user_data["username"])
@@ -954,3 +959,154 @@ async def test_get_saved_results_returns_full_rows(db: SherlockDB):
     assert row["confidence"] == "Confirmed"
     # response_text is deliberately not selected; it holds whole pages.
     assert "response_text" not in row
+
+
+async def test_update_result_ai_extraction_records_the_model(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """Provenance for the extraction, so a mixed-model profile is not silent."""
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction_model"] == MODEL_KEY
+
+
+async def test_forced_extraction_clears_the_recorded_model(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """--fresh must not leave the old model attached to a redone extraction."""
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+    )
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+        force_ai_extraction=True,
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction"] is None
+    assert row["ai_extraction_contract_hash"] is None
+    assert row["ai_extraction_model"] is None
+
+
+async def test_unforced_save_keeps_the_recorded_model(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """A plain re-save of unchanged content keeps both extraction and model.
+
+    The model is recorded alongside the extraction, so it has to survive
+    exactly as long as the extraction does -- otherwise every ordinary resume
+    would quietly turn a known model into an unrecorded one.
+    """
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+    )
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction"] == '{"full_name": ["Blue"]}'
+    assert row["ai_extraction_model"] == MODEL_KEY
+
+
+async def test_get_extraction_model_counts_groups_by_model(db: SherlockDB):
+    """Counts per model, with rows that predate the column reported as None."""
+    ids = {}
+    for site_name in ("GitHub", "GitLab", "Keybase", "Mastodon"):
+        ids[site_name] = await db.save_result(
+            username="blue",
+            site_name=site_name,
+            status=str(QueryStatus.CLAIMED),
+            response_text=f"{site_name} profile",
+        )
+
+    await db.update_result_ai_extraction(
+        site_id=ids["GitHub"],
+        ai_extraction="{}",
+        contract_hash=CONTRACT_HASH,
+        model_key="vendor/small",
+    )
+    await db.update_result_ai_extraction(
+        site_id=ids["GitLab"],
+        ai_extraction="{}",
+        contract_hash=CONTRACT_HASH,
+        model_key="vendor/small",
+    )
+    await db.update_result_ai_extraction(
+        site_id=ids["Keybase"],
+        ai_extraction="{}",
+        contract_hash=CONTRACT_HASH,
+        model_key="vendor/large",
+    )
+    # A row written before the model was recorded.
+    assert db.db is not None
+    await db.db.execute(
+        "UPDATE results SET ai_extraction = '{}', ai_extraction_model = NULL "
+        "WHERE id = ?",
+        (ids["Mastodon"],),
+    )
+    await db.db.commit()
+
+    counts = await db.get_extraction_model_counts("blue")
+
+    assert counts == {"vendor/small": 2, "vendor/large": 1, None: 1}
+
+
+async def test_get_extraction_model_counts_ignores_sites_without_extractions(
+    db: SherlockDB,
+):
+    """An unextracted site has nothing to attribute and must not read as None."""
+    await db.save_result(
+        username="blue",
+        site_name="GitHub",
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+
+    assert await db.get_extraction_model_counts("blue") == {}
+    assert await db.get_extraction_model_counts("nobody") == {}

@@ -317,6 +317,7 @@ async def test_failed_rebuild_preserves_previous_profile_and_remains_retryable(
         site_id=site_id,
         ai_extraction='{"full_name": ["Bob"]}',
         contract_hash=service.pass_one_contract_hash,
+        model_key=service.model_key,
     )
     service.error = RuntimeError("model unavailable")
 
