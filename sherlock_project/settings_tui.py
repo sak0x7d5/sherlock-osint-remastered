@@ -71,6 +71,31 @@ def render_value(field: SettingField, value: Any) -> str:
     return str(value)
 
 
+def styled_value(field: SettingField, value: Any) -> Text:
+    """`render_value`, with the parts that mean something coloured.
+
+    The brackets are the affordance -- they are what tells you this row answers
+    to left and right -- so they carry the accent colour and the value does
+    not. Uncoloured, they read as decoration and the row looks identical to the
+    ones Enter opens.
+
+    "not set" is dimmed and italic so it reads as an absence rather than as a
+    value someone chose.
+    """
+    plain = render_value(field, value)
+    text = Text()
+    if field.kind in {"spin", "toggle"}:
+        text.append("‹", style="bold cyan")
+        text.append(plain[1:-1], style="bold")
+        text.append("›", style="bold cyan")
+    elif plain == "not set":
+        text.append(plain, style="dim italic")
+    else:
+        text.append(plain, style="bold")
+    text.pad_right(max(0, VALUE_WIDTH - text.cell_len))
+    return text
+
+
 class TextEditScreen(ModalScreen[str | None]):
     """Enter on an open-ended field: a single input, Esc to abandon."""
 
@@ -254,7 +279,8 @@ class SettingsApp(App[bool]):
     def _redraw(self) -> None:
         self.query_one("#title", Static).update(
             Text.assemble(
-                " Sherlock settings ",
+                ("Sherlock settings", "bold cyan"),
+                "   ",
                 ("● unsaved", "bold yellow") if self.dirty else ("saved", "dim"),
             )
         )
@@ -266,10 +292,11 @@ class SettingsApp(App[bool]):
             # Fixed label column, then a fixed value column, so the brackets
             # form a straight edge down the screen instead of stepping in and
             # out with the length of each label.
-            line.append(f"{field.label:<{LABEL_WIDTH}}", style="none")
             line.append(
-                f"{render_value(field, self._values[field.key]):<{VALUE_WIDTH}}"
+                f"{field.label:<{LABEL_WIDTH}}",
+                style="none" if selected else "dim",
             )
+            line.append_text(styled_value(field, self._values[field.key]))
             if field.kind in {"text", "model"}:
                 line.append("⏎ change", style="dim")
             row.update(line)
