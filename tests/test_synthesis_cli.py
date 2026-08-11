@@ -161,6 +161,12 @@ async def test_fresh_disables_the_saved_site_resume_filter(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -241,6 +247,12 @@ async def test_concurrency_option_reaches_the_fetch_engine(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -326,6 +338,12 @@ async def test_fully_cached_username_reports_without_scanning(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -428,6 +446,12 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         def __init__(self) -> None:
             self.pending_calls = 0
             self.closed = False
@@ -553,6 +577,12 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -667,6 +697,12 @@ async def test_model_load_failure_finishes_scan_and_skips_synthesis(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -873,6 +909,12 @@ async def test_anchorless_synthesis_only_does_not_load_model(
     captured: dict = {}
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         closed = False
 
         async def close(self):
@@ -993,6 +1035,12 @@ async def test_main_scan_cancellation_returns_130_and_skips_exports(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -1096,6 +1144,12 @@ async def test_main_ai_generation_cancellation_closes_once_and_skips_synthesis(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -1289,6 +1343,12 @@ async def test_sherlock_cancellation_gathers_done_and_unfinished_site_tasks(
             return await self.fetch_with_api(url=url, **kwargs)
 
     class BlockingDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         save_started = asyncio.Event()
 
         async def save_result(self, **_kwargs: object) -> int:
@@ -1429,6 +1489,12 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
             self.exit_calls += 1
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -1546,6 +1612,12 @@ async def test_main_interruption_survives_ai_and_database_close_failures(
             pass
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -1636,6 +1708,12 @@ async def test_synthesis_only_interruption_survives_cleanup_failures(
     capsys: pytest.CaptureFixture[str],
 ):
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def close(self) -> None:
@@ -1721,6 +1799,12 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
             await release_engine_cleanup.wait()
 
     class FakeDB:
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
         close_calls = 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
@@ -1794,3 +1878,122 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
     output = capsys.readouterr().out
     assert output.count("Processing interrupted") == 1
     assert "Processing complete" not in output
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_force", "expects_warning"),
+    [
+        (["sherlock", "--local", "--ai", "blue"], False, True),
+        (["sherlock", "--local", "--ai", "--fresh", "blue"], True, False),
+    ],
+)
+async def test_fresh_redoes_extraction_and_silences_the_model_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected_force: bool,
+    expects_warning: bool,
+):
+    """--fresh is how a newly configured model reaches results you already have.
+
+    Without it the scan re-fetched every page and then kept the stored
+    extraction whenever the page came back identical, so switching model and
+    re-running produced byte-identical AI output at full price. The warning is
+    the other half: it says so when the extractions are being kept, and stays
+    quiet under --fresh, which is about to redo them anyway.
+    """
+
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [SimpleNamespace(name="Example", information={})]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeDB:
+        closed = False
+
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {"other/model": 7}
+
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
+
+        async def get_pending_ai_extraction_ids(
+            self,
+            _username: str,
+            *,
+            contract_hash: str,
+        ) -> list[int]:
+            return []
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeAIService:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeEngine:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+    database = FakeDB()
+    scan_kwargs: dict[str, object] = {}
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_ai_create(**_kwargs: object) -> FakeAIService:
+        return FakeAIService()
+
+    async def fake_worker(ai_queue: asyncio.Queue[int], **_kwargs: object):
+        while True:
+            try:
+                await ai_queue.get()
+            except asyncio.QueueShutDown:
+                return
+            ai_queue.task_done()
+
+    async def fake_scan(**kwargs: object) -> dict:
+        scan_kwargs.update(kwargs)
+        return {}
+
+    async def fake_synthesis(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
+    monkeypatch.setattr(sherlock_module, "ai_worker", fake_worker)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+    monkeypatch.setattr(sherlock_module, "synthesize_profiles", fake_synthesis)
+
+    await sherlock_module.main()
+    output = capsys.readouterr().out
+
+    assert scan_kwargs["force_ai_extraction"] is expected_force
+    assert ("did not come from example/model" in output) is expects_warning

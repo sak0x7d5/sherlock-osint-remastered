@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import webbrowser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Literal
@@ -137,6 +137,15 @@ class QueryNotify:
         username: str,
         results: dict,
         to_scan: int,
+    ) -> None:
+        pass
+
+    def ai_extractions_from_other_models(
+        self,
+        *,
+        username: str,
+        configured_model: str,
+        counts: Mapping[str | None, int],
     ) -> None:
         pass
 
@@ -667,6 +676,51 @@ class TerminalReporter(QueryNotify):
             f"AI configuration: model={model}, provider={base_url}, "
             f"temperature={temperature}, context={context_length}, "
             "native reasoning=pass1 off/pass2 on"
+        )
+
+    def ai_extractions_from_other_models(
+        self,
+        *,
+        username: str,
+        configured_model: str,
+        counts: Mapping[str | None, int],
+    ) -> None:
+        """Report stored extractions that a different model produced.
+
+        Silent unless there is a real mismatch, for the same reason the
+        unresolved count is: a line that prints on every run stops being read,
+        and this one only has meaning right after someone changes model.
+
+        The alternative to saying this is saying nothing, which is what made
+        switching models look like it did nothing at all -- the extraction
+        cache is keyed on the prompt contract, not the model, so a switch
+        leaves every stored extraction in place and correctly so.
+        """
+        stale = {
+            model: count
+            for model, count in counts.items()
+            if model != configured_model
+        }
+        if not stale:
+            return
+
+        total = sum(stale.values())
+        extraction_word = "extraction" if total == 1 else "extractions"
+        breakdown = ", ".join(
+            f"{count} from {model if model is not None else 'an unrecorded model'}"
+            for model, count in sorted(
+                stale.items(),
+                key=lambda item: (-item[1], item[0] or ""),
+            )
+        )
+        self.warning(
+            f"{total} stored {extraction_word} for {username!r} did not come "
+            f"from {configured_model}",
+            detail=breakdown,
+        )
+        self.hint(
+            "They are kept as they are. Redo them with the configured model: "
+            f"sherlock {username} --ai --fresh"
         )
 
     def ai_cached_evidence(

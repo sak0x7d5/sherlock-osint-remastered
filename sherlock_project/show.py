@@ -160,6 +160,42 @@ def _load_profile(raw_summary: str | None) -> ProfileSynthesis | None:
         return None
 
 
+def _extraction_models(counts: dict[str | None, int]) -> list[dict[str, Any]]:
+    """Which models produced the stored extractions, largest share first.
+
+    A null model is a row written before the model was recorded, and is
+    reported as such rather than dropped: "we do not know" and "there were
+    none" are different answers.
+    """
+    return [
+        {"model": model, "count": count}
+        for model, count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0] or ""),
+        )
+    ]
+
+
+def _describe_extraction_models(entries: list[dict[str, Any]]) -> str | None:
+    """One line naming the models behind a profile, or None when there are none.
+
+    A single model is named plainly. Several are listed with counts, because a
+    profile assembled by more than one model is exactly the case a reader needs
+    to notice -- two claims that disagree may simply be two different models.
+    """
+    if not entries:
+        return None
+
+    def label(model: str | None) -> str:
+        return model if model is not None else "unrecorded model"
+
+    if len(entries) == 1:
+        return label(entries[0]["model"])
+    return ", ".join(
+        f"{entry['count']} {label(entry['model'])}" for entry in entries
+    )
+
+
 async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
     overview = await db.get_username_overview(username)
     if overview is None:
@@ -168,6 +204,7 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
     saved_rows = await db.get_saved_results(username)
     cache = await db.get_profile_summary_cache(username)
     raw_summary = cache.profile_summary if cache is not None else None
+    model_counts = await db.get_extraction_model_counts(username)
 
     return {
         "username": username,
@@ -177,6 +214,7 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
         "accounts_found": overview.claimed_sites,
         "accounts": _claimed_accounts(saved_rows),
         "unresolved": _unresolved_sites(saved_rows),
+        "extraction_models": _extraction_models(model_counts),
         "profile_updated_at": cache.updated_at if cache is not None else None,
         "profile": _load_profile(raw_summary),
         "profile_unreadable": bool(raw_summary) and _load_profile(raw_summary) is None,
@@ -290,10 +328,11 @@ def _report(
                 f"sherlock {username} --ai-synthesize-only"
             )
         else:
-            reporter.info(
-                f"AI profile for {username!r}",
-                detail=f"built {record['profile_updated_at']}",
-            )
+            detail = f"built {record['profile_updated_at']}"
+            models = _describe_extraction_models(record["extraction_models"])
+            if models is not None:
+                detail = f"{detail} · extracted by {models}"
+            reporter.info(f"AI profile for {username!r}", detail=detail)
             reporter.render_profile(record["profile"], show_sources=show_sources)
 
 
