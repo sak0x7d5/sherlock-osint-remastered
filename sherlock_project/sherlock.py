@@ -804,8 +804,27 @@ async def sherlock(
                 'site_username': site_username,
             }
            
-    # receive tasks as soon as they are completed
-    # use tasks dict retrieve social_network, net_info, results_site
+    # Receive tasks as soon as they complete, and use the tasks dict to recover
+    # social_network, net_info and results_site for each one.
+    #
+    # THIS LOOP IS WHAT PINS THE PROJECT TO PYTHON 3.13. It reads like ordinary
+    # async code, so it is worth saying plainly: `async for` over
+    # `asyncio.as_completed` does not exist before 3.13. On 3.11 and 3.12 it
+    # raises `TypeError: 'async for' requires an object with __aiter__ method,
+    # got generator`. That is the real reason for the >=3.13 floor in
+    # pyproject.toml -- not caution about older interpreters.
+    #
+    # Two properties are being bought here, and both are load-bearing:
+    #   - Completion order. ~680 checks are in flight at once and each result is
+    #     handled the moment it lands, which is why hits appear during the scan
+    #     instead of after it. Awaiting them in submission order would let one
+    #     site sitting out its 60s timeout stall every result behind it.
+    #   - Task identity. 3.13 yields back the SAME task objects that went in, so
+    #     `tasks[completed_task]` resolves which site a result belongs to.
+    #     Earlier versions handed back fresh wrapper objects, which would not
+    #     key into this dict at all; carrying the site along would mean wrapping
+    #     every call to return it beside the response.
+    # Verified across 3.11 / 3.12 / 3.13 / 3.14 on 2026-08-10.
     try:
         async for completed_task in asyncio.as_completed(tasks):
             social_network = tasks[completed_task]['social_network']
@@ -1050,6 +1069,19 @@ async def main() -> int:
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
+        # `show` and `setup ai` are intercepted above, before this parser
+        # exists, so argparse cannot list them itself. Without this epilog they
+        # are invisible to anyone reading --help.
+        epilog=(
+            "commands:\n"
+            "  sherlock show USERNAME    Show what is already stored for a "
+            "username. Never scans,\n"
+            "                            never writes. See `sherlock show "
+            "--help`.\n"
+            "  sherlock setup ai         Configure the local AI model "
+            "endpoint. See\n"
+            "                            `sherlock setup ai --help`.\n"
+        ),
     )
     parser.add_argument(
         "--version",
