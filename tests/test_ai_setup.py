@@ -398,3 +398,42 @@ async def test_show_rejects_options_that_would_change_the_configuration(
             config_path=tmp_path / "config.toml",
             console=_console()[0],
         )
+
+
+@pytest.mark.asyncio
+async def test_setup_survives_a_terminal_that_cannot_answer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A prompt with nothing behind it must not raise a traceback.
+
+    isatty() is not a reliable interactivity test on Windows: NUL is a
+    character device, so `sherlock setup ai < NUL` -- explicitly "I have no
+    keyboard" -- reports True and skips the non-interactive guard. Reaching the
+    prompt anyway used to end in an unhandled EOFError out of rich.
+    """
+    FakeSetupProvider.models = [_model("plain/model")]
+    path = tmp_path / "config.toml"
+    console, output = _console()
+
+    def no_input(*_args, **_kwargs):
+        raise EOFError("EOF when reading a line")
+
+    original = ai_setup.IntPrompt.ask
+    ai_setup.IntPrompt.ask = staticmethod(no_input)
+    try:
+        with pytest.raises(SystemExit) as exit_info:
+            await ai_setup.run_ai_setup(
+                ["--base-url", "http://localhost:8000", "--no-color"],
+                environ={},
+                config_path=path,
+                console=console,
+                stdin_isatty=True,  # the lie NUL tells on Windows
+            )
+    finally:
+        ai_setup.IntPrompt.ask = original
+
+    assert exit_info.value.code == 2
+    assert not path.exists()
+    # argparse writes its own errors to stderr, not through the console.
+    assert "--model is required" in capsys.readouterr().err
