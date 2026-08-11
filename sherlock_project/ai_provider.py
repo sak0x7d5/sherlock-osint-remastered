@@ -37,7 +37,12 @@ class AIModelNotFoundError(AIProviderError):
 
 
 class AIModelCompatibilityError(AIProviderError):
-    """The configured model cannot run with native thinking disabled."""
+    """The configured model cannot run the pipeline at all.
+
+    No longer raised for models that merely refuse to disable native thinking:
+    those are degraded but usable, and are warned about at selection instead.
+    Kept as the error for a genuine incompatibility.
+    """
 
 
 ProviderWideError = (
@@ -59,6 +64,16 @@ class AIModelInfo:
     @property
     def supports_reasoning_off(self) -> bool:
         return not self.reasoning_options or "off" in self.reasoning_options
+
+    @property
+    def requires_native_reasoning(self) -> bool:
+        """True when the model thinks natively and cannot be told not to.
+
+        Distinct from `not supports_reasoning_off` only in intent: this one is
+        asked at request time to decide how much output budget to allow, not at
+        setup time to decide whether the model is usable at all.
+        """
+        return bool(self.reasoning_options) and "off" not in self.reasoning_options
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,10 +266,12 @@ class LMStudioProvider:
             raise AIModelNotFoundError(
                 f"Configured LM Studio model {self.settings.model!r} is not downloaded."
             )
-        if not model.supports_reasoning_off:
-            raise AIModelCompatibilityError(
-                f"Model {model.key!r} cannot disable native reasoning."
-            )
+        # A model that cannot disable native reasoning used to be refused here.
+        # It is degraded, not incompatible: `generate` declares the reasoning it
+        # will actually get, LM Studio returns thinking as its own output item,
+        # and the structured reply still parses. Refusing at load time meant a
+        # model setup had accepted could never be used, so the check belongs
+        # where the user is warned -- at selection -- not here.
         if not model.loaded:
             await self._request(
                 "POST",
@@ -309,7 +326,15 @@ class LMStudioProvider:
         }
         if model.reasoning_options:
             requested_reasoning = "off" if reasoning_off else "on"
-            if requested_reasoning in model.reasoning_options:
+            if requested_reasoning not in model.reasoning_options:
+                # The model cannot honour what we asked for. Declaring the
+                # reasoning we are actually going to get beats omitting the key
+                # and leaving it to the model's default: LM Studio then emits
+                # thinking as a separate `reasoning` output item, which this
+                # parser routes away from `final_text`, so the structured reply
+                # stays clean JSON instead of risking inline think markers.
+                requested_reasoning = "on" if "on" in model.reasoning_options else ""
+            if requested_reasoning:
                 request_body["reasoning"] = requested_reasoning
 
         started_at = perf_counter()

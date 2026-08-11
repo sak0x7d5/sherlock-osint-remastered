@@ -23,6 +23,7 @@ from sherlock_project.ai_config import AISettings, load_ai_settings
 from sherlock_project.ai_provider import (
     AICompletion,
     AIGenerationStats,
+    AIModelInfo,
     AIProvider,
     LMStudioProvider,
     ProviderWideError,
@@ -51,6 +52,14 @@ SAFE_EXTRACTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 PASS_ONE_VALIDATION_POLICY_VERSION = "open-dynamic-profile-keys-v4"
 PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v3"
 DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS = 1024
+# Extra output budget for models that cannot be told to stop thinking. Their
+# native reasoning is spent from the same `max_output_tokens` allowance as the
+# answer, so without headroom the JSON is truncated before it is finished and
+# every site fails validation. Additive and applied only to those models, so a
+# model that honours reasoning-off is charged nothing for this. Not part of
+# `pass_one_contract_hash` -- see the note there; the budget is allowed to vary
+# by model precisely because the cache contract does not.
+NATIVE_REASONING_TOKEN_ALLOWANCE = 2048
 
 
 SafeExtractionKey = Annotated[
@@ -655,6 +664,7 @@ class AIService:
         self._extraction_prompt = ""
         self._identity_prompt = ""
         self._closed = False
+        self._model_info: AIModelInfo | None = None
         self._load_prompts()
 
     @classmethod
@@ -675,7 +685,7 @@ class AIService:
             trace_callback=trace_callback,
         )
         try:
-            await resolved_provider.ensure_model_loaded()
+            self._model_info = await resolved_provider.ensure_model_loaded()
         except BaseException:
             await self.close()
             raise
@@ -719,7 +729,7 @@ class AIService:
             },
             response_model=OSINTResponse,
             error_context="OSINT extraction",
-            max_tokens=DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
+            max_tokens=self.pass_one_max_tokens,
             reasoning_off=True,
             transform=lambda response: finalize_pass_one_response(
                 response,
@@ -727,6 +737,30 @@ class AIService:
                 site_name=site_name,
                 site_content=site_content,
             ),
+        )
+
+    @property
+    def uses_native_reasoning(self) -> bool:
+        """True when the loaded model thinks natively and cannot be stopped.
+
+        False when the model info is unknown, which is the case for a service
+        constructed around a provider directly rather than through `create`.
+        Pass 1 is designed around reasoning-off, so the conservative reading of
+        "unknown" is "behaves like every model this pipeline was tuned for".
+        """
+        return (
+            self._model_info is not None
+            and self._model_info.requires_native_reasoning
+        )
+
+    @property
+    def pass_one_max_tokens(self) -> int:
+        """Pass 1 output budget, widened for models that always think."""
+        if not self.uses_native_reasoning:
+            return DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+        return (
+            DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+            + NATIVE_REASONING_TOKEN_ALLOWANCE
         )
 
     @property
