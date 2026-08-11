@@ -13,10 +13,17 @@ import tomli_w
 from platformdirs import user_config_path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-CONFIG_VERSION = 1
+# 2 added the [scan] and [output] sections. A file written by an older build
+# still loads: missing sections take their defaults. A file written by a NEWER
+# build is refused with an explanation rather than a pydantic validation dump,
+# because extra="forbid" would otherwise turn "you upgraded elsewhere" into an
+# unreadable error.
+CONFIG_VERSION = 2
 DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
+DEFAULT_SCAN_CONCURRENCY = 30
+DEFAULT_SCAN_TIMEOUT = 60
 
 
 class AIConfigError(RuntimeError):
@@ -59,11 +66,52 @@ class AISettings(BaseModel):
         return value
 
 
+class ScanSettings(BaseModel):
+    """Defaults for what a scan does. These change what a scan FINDS.
+
+    Which is why anything sourced from here is echoed at scan start: a flag is
+    visible in the command someone typed, a stored default is not, and an
+    investigation whose results depend on invisible state is not reproducible.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    concurrency: int = Field(default=DEFAULT_SCAN_CONCURRENCY, ge=1)
+    timeout: int = Field(default=DEFAULT_SCAN_TIMEOUT, ge=1)
+    proxy: str | None = None
+    nsfw: bool = False
+
+
+class OutputSettings(BaseModel):
+    """Defaults for how results are shown. These change nothing about them."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    color: bool = True
+    verbose: bool = False
+
+
 class SherlockSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: Literal[1] = CONFIG_VERSION
-    ai: AISettings
+    version: int = CONFIG_VERSION
+    # Optional so scan and output preferences can be stored by someone who
+    # never configures a model. It was required when [ai] was the only section.
+    ai: AISettings | None = None
+    scan: ScanSettings = ScanSettings()
+    output: OutputSettings = OutputSettings()
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("must be 1 or greater")
+        if value > CONFIG_VERSION:
+            raise ValueError(
+                f"is {value}, but this build of Sherlock understands "
+                f"{CONFIG_VERSION}. The file was written by a newer version"
+            )
+        return value
 
 
 def ai_config_path(
@@ -97,12 +145,42 @@ def _read_settings(path: Path) -> SherlockSettings:
         ) from error
 
 
+def load_settings(
+    path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> SherlockSettings:
+    """Read the whole config file, or raise AIConfigError explaining why not."""
+    environment = os.environ if environ is None else environ
+    return _read_settings(path or ai_config_path(environment))
+
+
+def try_load_settings(
+    path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> SherlockSettings:
+    """Read the config, falling back to all-defaults when it cannot be read.
+
+    Scan and output preferences must never stop a scan: an absent or corrupt
+    config means "no stored preferences", not "refuse to run". AI settings keep
+    the strict loader, because there the file is the only source and a silent
+    default would point at the wrong endpoint.
+    """
+    try:
+        return load_settings(path=path, environ=environ)
+    except AIConfigError:
+        return SherlockSettings()
+
+
 def load_ai_settings(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> AISettings:
     environment = os.environ if environ is None else environ
     settings = _read_settings(path or ai_config_path(environment)).ai
+    if settings is None:
+        raise AIConfigError(
+            "AI is not configured. Run `sherlock setup ai` first."
+        )
     base_url_override = environment.get("LM_STUDIO_BASE_URL")
     if base_url_override:
         try:
@@ -133,9 +211,30 @@ def save_ai_settings(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Path:
+    """Write the AI section, preserving every other section already stored.
+
+    Rebuilding the file from just the AI settings would silently discard a
+    user's scan and output preferences every time they changed model.
+    """
+    destination = path or ai_config_path(environ)
+    existing = try_load_settings(path=destination, environ=environ)
+    return save_settings(
+        existing.model_copy(update={"ai": settings}),
+        path=destination,
+        environ=environ,
+    )
+
+
+def save_settings(
+    settings: SherlockSettings,
+    path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
     destination = path or ai_config_path(environ)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    payload = SherlockSettings(ai=settings).model_dump(mode="python")
+    payload = settings.model_copy(
+        update={"version": CONFIG_VERSION}
+    ).model_dump(mode="python", exclude_none=True)
     serialized = tomli_w.dumps(payload)
     temporary = destination.with_name(f".{destination.name}.tmp")
     try:
