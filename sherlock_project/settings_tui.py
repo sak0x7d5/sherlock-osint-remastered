@@ -419,5 +419,9 @@ async def run_settings(
             )
         return 0
 
-    SettingsApp(config_path=destination).run()
+    # run_async, never run(). App.run() calls asyncio.run() internally, and
+    # this is reached from inside main()'s loop, so the synchronous form dies
+    # with "asyncio.run() cannot be called from a running event loop" and
+    # leaves an un-awaited coroutine behind.
+    await SettingsApp(config_path=destination).run_async()
     return 0
