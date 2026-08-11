@@ -5,7 +5,6 @@ import pytest
 
 from sherlock_project.ai_config import AISettings
 from sherlock_project.ai_provider import (
-    AIModelCompatibilityError,
     AIProviderAuthenticationError,
     AIProviderProtocolError,
     AIProviderUnavailableError,
@@ -243,17 +242,38 @@ async def test_non_reasoning_model_omits_reasoning_parameter():
     assert "reasoning" not in chat_body
 
 
-async def test_reasoning_only_model_is_rejected():
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"models": [_model(reasoning=["on"])]},
-        )
+async def test_reasoning_only_model_loads_and_declares_thinking_on():
+    """A model that always thinks is usable; the request says so explicitly.
+
+    It used to be refused at load time. Omitting the key instead would leave
+    the mode to the model's default; declaring it means LM Studio returns
+    thinking as its own output item, which keeps `final_text` clean JSON.
+    """
+    chat_body: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(
+                200,
+                json={"models": [_model(reasoning=["on"])]},
+            )
+        if request.url.path == "/api/v1/chat":
+            chat_body.update(json.loads(request.content))
+            return httpx.Response(200, json={"output": [], "stats": {}})
+        return httpx.Response(200, json={})
 
     provider = _provider(handler)
 
-    with pytest.raises(AIModelCompatibilityError, match="cannot disable"):
-        await provider.ensure_model_loaded()
+    model = await provider.ensure_model_loaded()
+    await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
+        reasoning_off=True,
+    )
+
+    assert model.requires_native_reasoning is True
+    assert chat_body["reasoning"] == "on"
 
 
 @pytest.mark.parametrize(

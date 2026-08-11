@@ -1084,3 +1084,74 @@ async def test_synthesis_fingerprint_tracks_provider_settings_and_schema():
     assert fingerprints["context_length"] == "8192"
     assert len(fingerprints["identity"]) == 64
     assert len(fingerprints["target_schema"]) == 64
+
+
+async def test_pass_one_budget_widens_only_for_always_thinking_models():
+    """A model that always thinks needs room for it, or its JSON is cut off.
+
+    Native reasoning is spent from the same output allowance as the answer, so
+    without headroom every site truncates and fails validation. Models that
+    honour reasoning-off are charged nothing for this.
+    """
+    from sherlock_project.ai_engine import (
+        DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
+        NATIVE_REASONING_TOKEN_ALLOWANCE,
+    )
+    from sherlock_project.ai_provider import AIModelInfo
+
+    service, _ = _service()
+
+    def info(reasoning: tuple[str, ...]) -> AIModelInfo:
+        return AIModelInfo(
+            key="vendor/model",
+            display_name="Model",
+            quantization=None,
+            params=None,
+            loaded=True,
+            max_context_length=None,
+            reasoning_options=reasoning,
+        )
+
+    # Unknown model info stays on the tuned default rather than guessing wide.
+    assert service.uses_native_reasoning is False
+    assert service.pass_one_max_tokens == DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+
+    service._model_info = info(("off", "on"))
+    assert service.uses_native_reasoning is False
+    assert service.pass_one_max_tokens == DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+
+    service._model_info = info(())
+    assert service.uses_native_reasoning is False
+    assert service.pass_one_max_tokens == DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS
+
+    service._model_info = info(("on",))
+    assert service.uses_native_reasoning is True
+    assert service.pass_one_max_tokens == (
+        DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS + NATIVE_REASONING_TOKEN_ALLOWANCE
+    )
+
+
+async def test_pass_one_contract_hash_ignores_the_widened_budget():
+    """The budget varies by model; the cache contract must not.
+
+    If it did, configuring an always-thinking model would invalidate every
+    cached extraction on disk -- the exact outcome the model-independent hash
+    exists to prevent.
+    """
+    from sherlock_project.ai_provider import AIModelInfo
+
+    service, _ = _service()
+    baseline = service.pass_one_contract_hash
+
+    service._model_info = AIModelInfo(
+        key="vendor/model",
+        display_name="Model",
+        quantization=None,
+        params=None,
+        loaded=True,
+        max_context_length=None,
+        reasoning_options=("on",),
+    )
+
+    assert service.pass_one_max_tokens != 1024
+    assert service.pass_one_contract_hash == baseline

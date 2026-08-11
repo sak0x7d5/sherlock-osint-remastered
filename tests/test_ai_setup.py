@@ -113,19 +113,23 @@ async def test_noninteractive_setup_saves_selected_compatible_model(
 
 
 @pytest.mark.asyncio
-async def test_interactive_setup_rejects_thinking_only_choice_then_selects_compatible(
+async def test_interactive_setup_accepts_a_thinking_only_choice_with_a_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Choosing an always-thinking model is allowed, and says what it costs.
+
+    It used to be refused and the prompt re-asked, which made "the only model I
+    have" a dead end for roughly a quarter of a typical library.
+    """
     FakeSetupProvider.models = [
         _model("aaa-thinking/model", reasoning=("on",)),
         _model("zzz-plain/model"),
     ]
-    selections = iter([1, 2])
     monkeypatch.setattr(
         ai_setup.IntPrompt,
         "ask",
-        lambda *_args, **_kwargs: next(selections),
+        lambda *_args, **_kwargs: 1,
     )
     path = tmp_path / "config.toml"
     console, output = _console()
@@ -137,16 +141,80 @@ async def test_interactive_setup_rejects_thinking_only_choice_then_selects_compa
         console=console,
         stdin_isatty=True,
     )
+    rendered = output.getvalue()
 
     assert result == 0
-    assert load_ai_settings(path=path, environ={}).model == "zzz-plain/model"
-    rendered = output.getvalue()
+    assert load_ai_settings(path=path, environ={}).model == "aaa-thinking/model"
     assert "Downloaded LM Studio models" in rendered
-    assert "requires native thinking" in rendered
+    assert "always thinks natively" in rendered
+    # The warning has to say what it costs, not just that something is unusual.
+    assert "quality is likely to be lower" in rendered
 
 
 @pytest.mark.asyncio
-async def test_setup_rejects_thinking_only_model(tmp_path: Path):
+async def test_interactive_setup_defaults_to_a_reasoning_off_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Allowed is not recommended: the preselected entry still avoids them."""
+    FakeSetupProvider.models = [
+        _model("aaa-thinking/model", reasoning=("on",)),
+        _model("zzz-plain/model"),
+    ]
+    defaults: list[object] = []
+
+    def capture(*_args, **kwargs):
+        defaults.append(kwargs["default"])
+        return kwargs["default"]
+
+    monkeypatch.setattr(ai_setup.IntPrompt, "ask", capture)
+    path = tmp_path / "config.toml"
+    console, _ = _console()
+
+    result = await ai_setup.run_ai_setup(
+        ["--base-url", "http://localhost:8000", "--no-color"],
+        environ={},
+        config_path=path,
+        console=console,
+        stdin_isatty=True,
+    )
+
+    assert result == 0
+    assert defaults == [2]
+    assert load_ai_settings(path=path, environ={}).model == "zzz-plain/model"
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_setup_saves_a_thinking_only_model_with_a_warning(
+    tmp_path: Path,
+):
+    """--model naming an always-thinking model is honoured, loudly."""
+    FakeSetupProvider.models = [_model("thinking/model", reasoning=("on",))]
+    path = tmp_path / "config.toml"
+    console, output = _console()
+
+    result = await ai_setup.run_ai_setup(
+        [
+            "--base-url",
+            "http://localhost:8000",
+            "--model",
+            "thinking/model",
+            "--no-color",
+        ],
+        environ={},
+        config_path=path,
+        console=console,
+        stdin_isatty=False,
+    )
+
+    assert result == 0
+    assert load_ai_settings(path=path, environ={}).model == "thinking/model"
+    assert "always thinks natively" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_setup_still_rejects_a_model_that_is_not_downloaded(tmp_path: Path):
+    """Relaxing the thinking rule must not relax the existence check."""
     FakeSetupProvider.models = [_model("thinking/model", reasoning=("on",))]
 
     with pytest.raises(SystemExit):
@@ -155,7 +223,7 @@ async def test_setup_rejects_thinking_only_model(tmp_path: Path):
                 "--base-url",
                 "http://localhost:8000",
                 "--model",
-                "thinking/model",
+                "absent/model",
             ],
             environ={},
             config_path=tmp_path / "config.toml",

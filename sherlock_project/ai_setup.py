@@ -99,6 +99,45 @@ def _model_table(models: Sequence[AIModelInfo]) -> Table:
     return table
 
 
+def _warn_native_reasoning(model: AIModelInfo, *, console: Console) -> None:
+    """Say what picking an always-thinking model costs, without blocking it.
+
+    These used to be refused outright, which turned "the only model I have"
+    into a dead end for about a quarter of a typical library -- reasoning
+    models are exactly what many people have downloaded lately. They are not
+    actually incompatible: the request declares reasoning explicitly and LM
+    Studio returns thinking as a separate output item, so the structured reply
+    still parses.
+
+    What they cost is accuracy, and the reason is worth stating rather than
+    hinting at. Pass 1 asks the model to reason INSIDE the response, in a
+    bounded field it can audit, and the prompt is tuned for that. A model that
+    also thinks natively is doing the work twice, against a shared output
+    budget, on instructions written for the other arrangement.
+    """
+    if model.supports_reasoning_off:
+        return
+    console.print(
+        f"[yellow]\\[!] {model.display_name} always thinks natively and cannot "
+        "be told not to.[/yellow]"
+    )
+    console.print(
+        "    Sherlock's per-site extraction asks the model to reason inside "
+        "its answer instead, so this model reasons twice and is being used "
+        "against instructions written for the other arrangement. Extraction "
+        "quality is likely to be lower and each site slower. Extra output "
+        "budget is allowed to keep answers from being cut off."
+    )
+    if model.reasoning_options:
+        console.print(
+            Text(
+                "    thinking modes offered by this model: "
+                + ", ".join(model.reasoning_options),
+                style="dim",
+            )
+        )
+
+
 def _select_model(
     *,
     parser: ArgumentParser,
@@ -112,26 +151,23 @@ def _select_model(
         selected = next((model for model in models if model.key == requested), None)
         if selected is None:
             parser.error(f"LM Studio model {requested!r} is not downloaded")
-        if not selected.supports_reasoning_off:
-            parser.error(
-                f"LM Studio model {requested!r} requires native thinking and "
-                "is incompatible with Sherlock's reasoning-off pipeline"
-            )
+        _warn_native_reasoning(selected, console=console)
         return selected
 
-    compatible = [model for model in models if model.supports_reasoning_off]
-    if not compatible:
-        parser.error(
-            "No downloaded LM Studio LLM can run with native thinking disabled"
-        )
+    preferred = [model for model in models if model.supports_reasoning_off]
     if not interactive:
         parser.error("--model is required when setup input is not interactive")
 
     console.print(_model_table(models))
-    default_index = models.index(compatible[0]) + 1
+    if not preferred:
+        console.print(
+            "[yellow]\\[!] None of your models can turn native thinking off. "
+            "Any of them can still be used -- see the note below.[/yellow]"
+        )
+    default_index = models.index(preferred[0]) + 1 if preferred else 1
     if existing is not None:
         for index, model in enumerate(models, start=1):
-            if model.key == existing.model and model.supports_reasoning_off:
+            if model.key == existing.model:
                 default_index = index
                 break
     while True:
@@ -144,12 +180,7 @@ def _select_model(
             console.print("[yellow]Choose a number from the table.[/yellow]")
             continue
         selected = models[selected_index - 1]
-        if not selected.supports_reasoning_off:
-            console.print(
-                "[yellow]That model requires native thinking. Choose a model "
-                "marked 'off supported' or 'not used'.[/yellow]"
-            )
-            continue
+        _warn_native_reasoning(selected, console=console)
         return selected
 
 
