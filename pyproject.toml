@@ -41,14 +41,20 @@ repository = "https://github.com/sak0x7d5/sherlock-osint-remastered"
 "Upstream Project" = "https://github.com/sherlock-project/sherlock"
 
 [tool.poetry.dependencies]
+# The floor is enforced by the code, not chosen for tidiness: the scan loop in
+# sherlock.py drives `async for ... in asyncio.as_completed(...)`, which is
+# 3.13+ only and raises TypeError on 3.12. See the comment on that loop before
+# lowering this.
 python = ">=3.13,<4.0"
 certifi = ">=2019.6.16"
 rich = "^15.0.0"
 PySocks = "^1.7.0"
 requests = "^2.22.0"
 stem = "^1.8.0"
-pandas = "^2.2.1"
-openpyxl = "^3.0.10"
+# pandas/openpyxl were removed with --csv/--xlsx. They existed to serve one
+# `DataFrame.to_excel()` call and cost ~74MB installed (pandas 47, numpy 24)
+# on a tool that already downloads a browser binary. Structured output is
+# `sherlock show <user> --json`; `--txt` still writes a plain URL list.
 tomli = "^2.2.1"
 playwright = "^1.59.0"
 cloakbrowser = {extras = ["geoip"], version = "^0.3.28"}
