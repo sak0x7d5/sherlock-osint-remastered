@@ -184,11 +184,22 @@ class ModelPickerScreen(ModalScreen[str | None]):
             yield Label("Choose a model", classes="dialog-title")
             yield Static("Asking LM Studio...", id="picker-status")
             yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
+            yield Label(
+                "▸ in use   ● in memory (starts instantly)",
+                classes="dim",
+            )
             yield Label("up/down move   enter select   ^R refresh   esc cancel",
                         classes="dim")
 
     def on_mount(self) -> None:
         table = self.query_one("#models", DataTable)
+        # A two-glyph marker instead of a "state" column. Loaded-in-memory is
+        # worth knowing -- a cold first load was measured at 187s, so choosing
+        # a resident model is the difference between starting now and waiting
+        # three minutes -- but as a column it was blank for every row whenever
+        # nothing happened to be loaded, which is most of the time. Paired with
+        # "in use" it always says something about at least one row.
+        table.add_column("", key="mark", width=2)
         table.add_column("model", key="model")
         table.add_column("size", key="size")
         table.add_column("quant", key="quant")
@@ -196,7 +207,6 @@ class ModelPickerScreen(ModalScreen[str | None]):
         # see, and it was invisible at the moment the choice is made.
         table.add_column("context", key="context")
         table.add_column("thinking", key="thinking")
-        table.add_column("state", key="state")
         self.run_worker(self._load(), exclusive=True)
 
     async def _load(self) -> None:
@@ -228,12 +238,16 @@ class ModelPickerScreen(ModalScreen[str | None]):
         models.sort(key=lambda item: (item.display_name.casefold(), item.key))
         for model in models:
             table.add_row(
+                Text(
+                    ("▸" if model.key == self._current else " ")
+                    + ("●" if model.loaded else " "),
+                    style="bold cyan",
+                ),
                 model.key,
                 model.params or "?",
                 model.quantization or "?",
                 format_context(model.max_context_length),
                 thinking_label(model),
-                "loaded" if model.loaded else "",
                 key=model.key,
             )
 
