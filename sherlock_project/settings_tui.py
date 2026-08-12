@@ -31,7 +31,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Input, Label, ListItem, ListView, Static
+from textual.widgets import DataTable, Footer, Input, Label, Static
 
 from sherlock_project.ai_config import (
     AIConfigError,
@@ -39,7 +39,11 @@ from sherlock_project.ai_config import (
     save_settings,
     try_load_settings,
 )
-from sherlock_project.ai_provider import AIProviderError, LMStudioProvider
+from sherlock_project.ai_provider import (
+    AIModelInfo,
+    AIProviderError,
+    LMStudioProvider,
+)
 from sherlock_project.database import default_database_path
 from sherlock_project.settings import (
     SETTING_FIELDS,
@@ -123,12 +127,46 @@ class TextEditScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ModelPickerScreen(ModalScreen[str | None]):
-    """Enter on `model`: the live list from LM Studio.
+def format_context(length: int | None) -> str:
+    """A context window as people talk about it, not as the API reports it.
 
-    Fetched when the screen opens rather than when the app starts, so a
-    stopped server costs nothing until someone actually asks for the list --
-    and fails as a message in a dialog instead of a dead settings screen.
+    131072 is a number to decode; 128K is a fact you can compare against the
+    other rows at a glance.
+    """
+    if not length:
+        return "?"
+    if length >= 1024 and length % 1024 == 0:
+        return f"{length // 1024}K"
+    return str(length)
+
+
+def thinking_label(model: AIModelInfo) -> str:
+    """Three distinct answers, not two.
+
+    A model with no reasoning capability at all is not the same as one that can
+    be asked to stop, and neither is the same as one that cannot. Pass one is
+    written for reasoning-off, so this column is the difference between a model
+    that fits and one that is merely allowed.
+    """
+    if not model.reasoning_options:
+        return "none"
+    if model.supports_reasoning_off:
+        return "optional"
+    return "always"
+
+
+class ModelPickerScreen(ModalScreen[str | None]):
+    """Enter on `model`: the live list from LM Studio, as a real table.
+
+    A table rather than one line per model, because the fields are the whole
+    point of the screen -- size against quantisation against context window is
+    the comparison someone is here to make, and it cannot be made when the
+    columns do not line up. As a flat list the longest name pushed everything
+    after it out of alignment and wrapped onto a second line.
+
+    Fetched when the screen opens rather than when the app starts, so a stopped
+    server costs nothing until someone actually asks for the list, and fails as
+    a message in this dialog instead of a dead settings screen.
     """
 
     BINDINGS: ClassVar = [
@@ -136,25 +174,35 @@ class ModelPickerScreen(ModalScreen[str | None]):
         Binding("ctrl+r", "reload", "refresh"),
     ]
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, current: str | None = None) -> None:
         super().__init__()
         self._base_url = base_url
+        self._current = current
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("Choose a model")
-            yield Static("Asking LM Studio…", id="picker-status")
-            yield ListView(id="models")
-            yield Label("↑↓ move   ⏎ select   ^R refresh   esc cancel",
+            yield Label("Choose a model", classes="dialog-title")
+            yield Static("Asking LM Studio...", id="picker-status")
+            yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
+            yield Label("up/down move   enter select   ^R refresh   esc cancel",
                         classes="dim")
 
     def on_mount(self) -> None:
+        table = self.query_one("#models", DataTable)
+        table.add_column("model", key="model")
+        table.add_column("size", key="size")
+        table.add_column("quant", key="quant")
+        # Context is here because it decides how much of a page pass one can
+        # see, and it was invisible at the moment the choice is made.
+        table.add_column("context", key="context")
+        table.add_column("thinking", key="thinking")
+        table.add_column("state", key="state")
         self.run_worker(self._load(), exclusive=True)
 
     async def _load(self) -> None:
         status = self.query_one("#picker-status", Static)
-        listing = self.query_one("#models", ListView)
-        await listing.clear()
+        table = self.query_one("#models", DataTable)
+        table.clear()
 
         from sherlock_project.ai_config import AISettings
 
@@ -179,25 +227,34 @@ class ModelPickerScreen(ModalScreen[str | None]):
 
         models.sort(key=lambda item: (item.display_name.casefold(), item.key))
         for model in models:
-            marks = [model.params or "?", model.quantization or "?"]
-            if model.loaded:
-                marks.append("loaded")
-            if not model.supports_reasoning_off:
-                marks.append("always thinks")
-            await listing.append(
-                ListItem(Static(f"{model.key}   {'  ·  '.join(marks)}"),
-                         name=model.key)
+            table.add_row(
+                model.key,
+                model.params or "?",
+                model.quantization or "?",
+                format_context(model.max_context_length),
+                thinking_label(model),
+                "loaded" if model.loaded else "",
+                key=model.key,
             )
+
+        # Start on the configured model rather than at the top, so the list
+        # opens showing what is in use instead of making someone find it.
+        if self._current is not None:
+            for index, model in enumerate(models):
+                if model.key == self._current:
+                    table.move_cursor(row=index)
+                    break
+
         status.update(f"{len(models)} downloaded")
-        listing.focus()
+        table.focus()
 
     def action_reload(self) -> None:
-        self.query_one("#picker-status", Static).update("Asking LM Studio…")
+        self.query_one("#picker-status", Static).update("Asking LM Studio...")
         self.run_worker(self._load(), exclusive=True)
 
-    @on(ListView.Selected)
-    def choose(self, event: ListView.Selected) -> None:
-        self.dismiss(event.item.name)
+    @on(DataTable.RowSelected)
+    def choose(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(event.row_key.value)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -223,8 +280,10 @@ class SettingsApp(App[bool]):
     #status { padding: 1 3 0 3; height: auto; }
     #dialog {
         background: $panel; border: round $accent;
-        padding: 1 2; width: 70; height: auto;
+        padding: 1 2; width: 90%; max-width: 96; height: auto;
     }
+    .dialog-title { text-style: bold; color: $accent; }
+    #models { height: auto; max-height: 20; margin: 1 0; }
     ModalScreen { align: center middle; }
     """
 
@@ -330,7 +389,10 @@ class SettingsApp(App[bool]):
                 self._redraw()
                 return
             self.push_screen(
-                ModelPickerScreen(str(endpoint)),
+                ModelPickerScreen(
+                    str(endpoint),
+                    current=self._values.get("ai.model"),
+                ),
                 lambda chosen: self._accept(field, chosen),
             )
             return

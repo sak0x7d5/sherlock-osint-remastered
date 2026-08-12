@@ -19,8 +19,15 @@ from sherlock_project.ai_config import (
     load_settings,
     save_settings,
 )
+from sherlock_project.ai_provider import AIModelInfo
 from sherlock_project.settings import SETTING_FIELDS
-from sherlock_project.settings_tui import SettingsApp, render_value, run_settings
+from sherlock_project.settings_tui import (
+    SettingsApp,
+    format_context,
+    render_value,
+    run_settings,
+    thinking_label,
+)
 
 
 def _index_of(key: str) -> int:
@@ -268,3 +275,29 @@ async def test_a_stale_message_is_cleared_when_the_cursor_moves(tmp_path: Path):
         assert "Saved" in app._status
         await pilot.press("down")
         assert app._status == ""
+
+
+def test_context_windows_read_as_people_say_them():
+    """131072 is a number to decode; 128K is comparable at a glance."""
+    assert format_context(131072) == "128K"
+    assert format_context(32768) == "32K"
+    assert format_context(1048576) == "1024K"
+    assert format_context(None) == "?"
+    assert format_context(1000) == "1000"
+
+
+def test_thinking_column_distinguishes_three_states():
+    """"Cannot be stopped" and "has none at all" are different facts.
+
+    Pass one is written for reasoning-off, so this column is the difference
+    between a model that fits and one that is merely allowed.
+    """
+    def model(reasoning):
+        return AIModelInfo(
+            key="k", display_name="k", quantization=None, params=None,
+            loaded=False, max_context_length=None, reasoning_options=reasoning,
+        )
+
+    assert thinking_label(model(())) == "none"
+    assert thinking_label(model(("off", "on"))) == "optional"
+    assert thinking_label(model(("on",))) == "always"
