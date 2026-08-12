@@ -185,7 +185,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
             yield Static("Asking LM Studio...", id="picker-status")
             yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
             yield Label(
-                "▸ in use   ● in memory (starts instantly)",
+                "▸ will be used   ● already in memory (starts instantly)",
                 classes="dim",
             )
             yield Label("up/down move   enter select   ^R refresh   esc cancel",
@@ -198,7 +198,12 @@ class ModelPickerScreen(ModalScreen[str | None]):
         # a resident model is the difference between starting now and waiting
         # three minutes -- but as a column it was blank for every row whenever
         # nothing happened to be loaded, which is most of the time. Paired with
-        # "in use" it always says something about at least one row.
+        # the will-be-used marker it always says something about at least
+        # one row.
+        #
+        # "will be used", not "in use" (nothing is running) and not
+        # "selected" (the cursor is what is selected on this screen, and
+        # Textual's own event for pressing enter is RowSelected).
         table.add_column("", key="mark", width=2)
         table.add_column("model", key="model")
         table.add_column("size", key="size")
