@@ -11,6 +11,33 @@ from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_state(tmp_path, monkeypatch):
+    """Point every per-user state location at tmp_path for the whole suite.
+
+    Settings and the database resolve to per-user locations, not to the working
+    directory, so without this the suite reads whatever the developer last saved
+    with `sherlock settings`. That is not hypothetical: a stored
+    `webbrowser = false` made eight tests in test_synthesis_cli.py fail with
+    `KeyError: 'concurrency'` minutes after being saved, with no change to the
+    tests or the code.
+
+    The failure mode this closes is worse than the noise. CI has no config file,
+    so CI stayed green while the same commit failed locally -- meaning a
+    contributor who had ever opened the settings editor got eight failures they
+    did not cause, and the badge gave them no reason to suspect their own state.
+
+    Resolution already honours these overrides -- default_database_path reads
+    SHERLOCK_DB and ai_config_path reads SHERLOCK_CONFIG -- so this is isolation
+    rather than new machinery. LM_STUDIO_BASE_URL is cleared for the same
+    reason: it overrides the configured endpoint, and a developer who exported
+    it should not thereby change what the suite tests.
+    """
+    monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
+    monkeypatch.delenv("LM_STUDIO_BASE_URL", raising=False)
+
+
 def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:
     sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=honor_exclusions)
     sites_iterable: dict[str, dict[str, str]] = {site.name: site.information for site in sites_obj}
