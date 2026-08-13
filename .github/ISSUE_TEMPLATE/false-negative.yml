@@ -1,18 +1,50 @@
 name: False negative
-description: Report a site that is returning false negative results
+description: Report a site that misses an account that does exist
 title: "False negative for: "
 labels: ["false negative"]
 body:
   - type: markdown
     attributes:
       value: |
-        Please include the site name in the title of your issue.
-        Submit **one site per report** for faster resolution. If you have multiple sites in the same report, it often takes longer to fix.
+        Please include the site name in the title, and submit **one site per
+        report** — batched reports take much longer to resolve.
+
+        Three things worth checking before you file:
+
+        **Were you using `--no-webbrowser`?** That mode runs no JavaScript, so a
+        site that assembles its profile page in the browser arrives as an empty
+        shell and a real account reads as absent. This is documented behaviour,
+        not a bug — it is the trade this mode makes. Re-run without the flag; if
+        the browser finds the account, there is nothing to report.
+
+        **UNKNOWN is not a false negative.** Rules are two-sided, and when neither
+        the present nor the absent pattern matches, the result is inconclusive
+        rather than "no account". `sherlock show <username> --unresolved` lists
+        those sites. Bot protection and rejected username formats land there too.
+
+        **Where the fix lands.** If the cause is the site's rule, it belongs in
+        [WhatsMyName](https://github.com/WebBreacher/WhatsMyName/issues), which
+        this project vendors unmodified. File here if the rule looks right but
+        this project still misses the account.
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Which fetch mode were you using?
+      options:
+        - Select one
+        - Stealth browser (the default)
+        - Fast / no browser (--no-webbrowser)
+        - Not sure
+    validations:
+      required: true
   - type: textarea
     id: additional-info
     attributes:
       label: Additional info
-      description: If you know why the site is returning false negatives, or noticed any patterns, please explain.
+      description: |
+        If you know why the site is returning false negatives, or noticed any
+        patterns, please explain. Output from `--verbose` for the affected site is
+        especially useful.
       placeholder: |
         Reddit is returning false negatives because...
     validations:
