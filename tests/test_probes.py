@@ -109,9 +109,11 @@ class TestLiveTargets:
 # The marker fixes gate integrity, NOT that 404 result, which is still
 # undiagnosed and now only runs under `tox -e online`. UNKNOWN rather than
 # AVAILABLE on a plain 404 is the difference between "no account here" and
-# "could not tell", so it is worth diagnosing on merit -- see TODO.md. Pointing
-# these at a local server instead of httpbin would make them hermetic and
-# return them to the gate.
+# "could not tell", so it is worth diagnosing on merit. Unresolved: whether this
+# is httpbin flakiness (the host was up but taking 12s on first response when it
+# failed) or whether `page.goto` on a bare 404 returns None. Pointing these at a
+# local server instead of httpbin would make them hermetic and return them to
+# the gate.
 @pytest.mark.online
 class TestDetectionAgainstControlledResponses:
     """Drive the two sides of a rule against httpbin rather than a real site."""

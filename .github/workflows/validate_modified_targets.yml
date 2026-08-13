@@ -3,11 +3,15 @@ name: Modified Target Validation
 # Inherited from upstream, and now dormant: it triggers only on data.json,
 # which is no longer the default manifest, so ordinary PRs never fire it.
 #
-# Two things to settle before this repository accepts outside PRs. It uses
-# `pull_request_target`, which hands a write-scoped token to a workflow
-# triggered by fork PRs. And it has no WMN equivalent, so changes to
-# wmn-data.json get schema validation from regression.yml but no live probing
-# of the rules that actually changed. Keep, repoint, or delete -- see TODO.md.
+# It uses `pull_request_target`, which runs in the base repository's context with
+# a privileged token even when triggered by a fork. The safe shape is used here
+# deliberately: checkout takes `ref: github.base_ref`, so the code that executes
+# is always this branch's, and the PR's data.json is only ever read as data by
+# that trusted code. Do not change `ref:` to the PR head -- that single edit
+# turns this into arbitrary code execution with a write-scoped token.
+#
+# It also has no WMN equivalent, so changes to wmn-data.json get schema
+# validation from regression.yml but no live probing of the rules that changed.
 
 on:
   pull_request_target:
@@ -20,8 +24,11 @@ jobs:
   validate-modified-targets:
     runs-on: ubuntu-latest
     permissions:
+      # `pull-requests: write` was granted here but no step writes to the PR --
+      # the job ends at a pytest invocation. Least privilege matters more once
+      # forks can trigger this, since pull_request_target hands the token out on
+      # a fork PR. Restore the write scope only alongside a step that needs it.
       contents: read
-      pull-requests: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -95,8 +102,6 @@ jobs:
         if: steps.discover-modified.outputs.changed_targets != ''
         run: |
           poetry run pytest tests/test_manifest.py::test_validate_manifest_against_local_schema
-
-      # --- The rest of the steps below are unchanged ---
 
       - name: Validate modified targets
         if: steps.discover-modified.outputs.changed_targets != ''

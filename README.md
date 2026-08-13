@@ -1,13 +1,3 @@
-<!--
-  PLACEHOLDER — PROJECT LOGO
-  This project currently has no mark of its own. Upstream Sherlock's detective
-  logo lives at docs/images/sherlock-logo.png and is deliberately NOT used here:
-  it is upstream's visual identity, MIT covers their code rather than their
-  branding, and reusing it works against a fork that is trying to be legible as
-  a separate thing. Drop a distinct logo in docs/images/ and reference it above
-  the title when one exists.
--->
-
 # sherlock-osint-remastered
 
 **Find accounts by username across 720 sites — then have a local model tell you
@@ -23,26 +13,6 @@ who they belong to, with every claim traced back to the page it came from.**
 > the `sherlock-project` package on PyPI. Do not report issues found here to
 > upstream. See [NOTICE.md](NOTICE.md) for what is inherited, what is new, and
 > which upstream services this still calls.
-
-<!--
-  PLACEHOLDER — DEMO SCREENSHOTS
-  Two images belong here and neither exists yet:
-    1. a scan in progress (the rich terminal reporter)
-    2. the pass-two profile table, which is this fork's real differentiator
-  docs/images/demo.png is upstream's asset showing upstream's plain URL-list
-  output. It is not used here because it no longer resembles what this tool
-  prints, and advertising a fork with the parent's screenshot is misleading.
-
-  When capturing replacements, two hard rules:
-    - Use a FICTIONAL persona. A pass-two screenshot displays an inferred
-      identity plus the sites it was inferred from; that is a dossier, not a
-      URL list. persona-replacements.txt (kept outside this repo, beside
-      CLAUDE.md) already fixes a persona used by the prompt examples — reuse it
-      rather than inventing a second.
-    - Capture against a throwaway database (`SHERLOCK_DB=/tmp/demo.db`).
-      Clearing the terminal is not enough; the real database carries the scan
-      the screenshot came from.
--->
 
 ## Why this exists
 
@@ -212,9 +182,10 @@ profiles, keyed by username. It persists until you delete it.
 
 > [!NOTE]
 > **There is currently no built-in way to delete a subject from the database.**
-> Removing someone means deleting the database file or editing it with an
-> external SQLite tool. A `sherlock forget <username>` command is the obvious
-> gap; see TODO.
+> Removing someone means deleting the database file, or opening it with an
+> external SQLite tool and deleting that username's rows. Until a command exists
+> for it, pointing `SHERLOCK_DB` at a scratch file is the practical way to keep a
+> scan from being retained at all.
 
 ## Sites
 
@@ -242,16 +213,6 @@ package.
 [docs/sites.md](docs/sites.md) lists the 478 sites in the legacy upstream
 manifest, which is reachable only via `--json` and is not what a normal scan
 uses.
-
-<!--
-  PLACEHOLDER — NO GENERATED LISTING FOR THE SHIPPED MANIFEST
-  devel/site-list.py renders docs/sites.md from the LEGACY data.json only, so
-  the category table above is maintained by hand and will drift when the WMN
-  dataset is refreshed. The WMN manifest has no normalization or generated
-  listing of its own; .github/workflows/update-site-list.yml says so explicitly.
-  Either teach site-list.py a second output for wmn-data.json, or generate this
-  table. Until then, re-check these counts after any WMN refresh.
--->
 
 ## Commands
 
@@ -312,14 +273,6 @@ tox -e offline       # same tests, no coverage, faster
 tox -e lint          # ruff only
 tox -e online        # live-site probes; network dependent, never a gate
 ```
-
-<!--
-  PLACEHOLDER — CONTRIBUTING
-  No CONTRIBUTING.md exists. Before inviting contributions, decide: are pull
-  requests wanted at all, and if so what is expected of them (tests, commit
-  message shape, whether new sites belong here or upstream in WhatsMyName).
-  Issue templates already exist under .github/ISSUE_TEMPLATE/.
--->
 
 ## Credits
 

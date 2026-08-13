@@ -10,7 +10,8 @@ name: Site Rules
 # filter would make this pass vacuously on WMN-only changes. wmn-data.json is
 # schema-checked by tests/test_wmn_adapter.py, which regression.yml already
 # runs on any '**/*.json' change. Normalization and a generated listing for the
-# WMN manifest have no equivalent yet -- see TODO.md.
+# WMN manifest have no equivalent yet, so the README's site-category table is
+# maintained by hand and needs re-checking after a WMN refresh.
 #
 # This derivative owns its own site data. Upstream's variant of this workflow
 # pushed generated output into the Sherlock Project's website repository using
