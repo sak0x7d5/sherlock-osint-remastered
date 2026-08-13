@@ -2,30 +2,55 @@ name: Bug report
 description: File a bug report
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        This is an **independent derivative** of the Sherlock Project, and shares
+        none of its maintainers.
+
+        If you installed with `pip`, `pipx`, Homebrew, or `apt`, you are running
+        **upstream's** release and not this project. Report that
+        [to the Sherlock Project](https://github.com/sherlock-project/sherlock/issues)
+        instead — nothing here can fix it.
   - type: dropdown
     id: package
     attributes:
       label: Installation method
       description: |
-        Some packages are maintained by the community, rather than by the Sherlock Project.
-        Knowing which packages are affected helps us diagnose package-specific bugs.
+        This project is not published to any package index, so the list is short.
+        If the option you used is missing, that is itself worth knowing.
       options:
         - Select one
-        - PyPI (via pip)
-        - Homebrew
+        - From source (git clone + poetry install)
         - Docker
-        - Kali repository (via apt)
-        - Built from source
         - Other (indicate below)
     validations:
       required: true
   - type: input
     id: package-version
     attributes:
-      label: Package version
+      label: Version
       description: |
-        Knowing the version of the package you are using can help us diagnose your issue more quickly.
-        You can find the version by running `sherlock --version`.
+        Output of `sherlock --version`. If you are running from a git checkout,
+        the commit hash (`git rev-parse --short HEAD`) is more useful than the
+        version number.
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Which fetch mode?
+      description: |
+        The two engines behave differently by design. `--no-webbrowser` runs no
+        JavaScript, so a site that builds its profile page in the browser can
+        report a real account as absent. That is documented behaviour rather than
+        a bug, and knowing which mode you used saves a round trip.
+      options:
+        - Select one
+        - Stealth browser (the default)
+        - Fast / no browser (--no-webbrowser)
+        - Not sure
+        - Not relevant to this bug
     validations:
       required: true
   - type: textarea
@@ -58,6 +83,12 @@ body:
     id: additional-info
     attributes:
       label: Additional information
-      description: If you have some additional information, please write it here.
+      description: |
+        Anything else worth knowing. Output from `--verbose` is often the fastest
+        route to a diagnosis.
+
+        Please do not paste scan results for a real person, or the contents of
+        your database. Redact usernames and profile details to whatever the bug
+        actually needs.
     validations:
       required: false

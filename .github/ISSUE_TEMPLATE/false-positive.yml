@@ -1,18 +1,34 @@
 name: False positive
-description: Report a site that is returning false positive results
+description: Report a site that claims an account exists when it does not
 title: "False positive for: "
 labels: ["false positive"]
 body:
   - type: markdown
     attributes:
       value: |
-        Please include the site name in the title of your issue.
-        Submit **one site per report** for faster resolution. If you have multiple sites in the same report, it often takes longer to fix.
+        Please include the site name in the title, and submit **one site per
+        report** — batched reports take much longer to resolve.
+
+        Two things worth checking before you file:
+
+        **UNKNOWN is not a false positive.** Detection rules here are two-sided:
+        one pattern proves a profile exists, another proves it does not. When
+        neither matches, the result is inconclusive and reported as such. That is
+        the rule declining to guess, which is the intended behaviour.
+
+        **Where the fix lands.** If the cause is the site's rule, it belongs in
+        [WhatsMyName](https://github.com/WebBreacher/WhatsMyName/issues), which
+        this project vendors unmodified — fixing it there reaches every tool using
+        the dataset. File here if the rule looks right but this project still gets
+        it wrong, which points at the adapter or the fetch engine.
   - type: textarea
     id: additional-info
     attributes:
       label: Additional info
-      description: If you know why the site is returning false positives, or noticed any patterns, please explain.
+      description: |
+        If you know why the site is returning false positives, or noticed any
+        patterns, please explain. Output from `--verbose` for the affected site is
+        especially useful — it prints the rule being applied and what came back.
       placeholder: |
         Reddit is returning false positives because...
         False positives only occur after x searches...

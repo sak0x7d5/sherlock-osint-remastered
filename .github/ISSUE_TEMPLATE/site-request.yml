@@ -1,27 +1,56 @@
-name: Reuest a new website
-description: Request that Sherlock add support for a new website
+name: Request a new website
+description: Request that a new website be supported
 title: "Requesting support for: "
 labels: ["site support request"]
 body:
   - type: markdown
     attributes:
       value: |
-        Ensure that the site name is in the title of your request. Requests without this information will be **closed**.
+        **Read this first — it will probably get your site supported faster.**
+
+        Site detection rules are not written here. They come from the
+        [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset, which
+        this project vendors **unmodified** so that its licence terms stay
+        verifiable. A rule added directly to this repository would break that,
+        and would be overwritten the next time the dataset is refreshed.
+
+        So the effective route is
+        [requesting it at WhatsMyName](https://github.com/WebBreacher/WhatsMyName/issues).
+        It lands here on the next refresh, and reaches every other tool built on
+        the same dataset.
+
+        Open an issue here instead if the site is already in WhatsMyName and
+        still does not work — that is a bug in this project, not a missing rule.
   - type: input
     id: site-url
     attributes:
       label: Site URL
       description: |
-        What is the URL of the website indicated in your title?
-        Websites sometimes have similar names. This helps constributors find the correct site.
+        The URL of the website in your title.
+        Sites often have similar names; this helps contributors find the right one.
       placeholder: https://reddit.com
     validations:
       required: true
+  - type: input
+    id: profile-url
+    attributes:
+      label: Example profile URL
+      description: |
+        A URL for a profile that definitely exists, with the username in it.
+        Please use a public or fictional account rather than a private individual.
+      placeholder: https://reddit.com/user/someusername
+    validations:
+      required: false
   - type: textarea
     id: additional-info
     attributes:
       label: Additional info
-      description: If you have suggestions on how Sherlock should detect for usernames, please explain below
-      placeholder: Sherlock can detect if a username exists on Reddit by checking for...
+      description: |
+        How can a username be told to exist on this site? A detection rule needs
+        both sides: something that proves a profile exists, and something that
+        proves it does not. A rule with only one side reports UNKNOWN.
+      placeholder: |
+        Present: the page returns 200 and contains "u/{username}"
+        Absent:  the page returns 404, or contains "Sorry, nobody on Reddit goes by that name"
     validations:
       required: false
