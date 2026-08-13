@@ -99,6 +99,20 @@ class TestLiveTargets:
         )
 
 
+# Marked online because every test here fetches https://httpbin.org. Without
+# the marker these ran in the default tox env -- the push gate -- and could turn
+# a green branch red with no code change, which is the failure mode the pinned
+# ruff version exists to prevent. Observed 2026-08-12: all four skipped when the
+# host was down, then minutes later the host was up but slow (12s first
+# response) and status/404 failed with UNKNOWN instead of AVAILABLE.
+#
+# The marker fixes gate integrity, NOT that 404 result, which is still
+# undiagnosed and now only runs under `tox -e online`. UNKNOWN rather than
+# AVAILABLE on a plain 404 is the difference between "no account here" and
+# "could not tell", so it is worth diagnosing on merit -- see TODO.md. Pointing
+# these at a local server instead of httpbin would make them hermetic and
+# return them to the gate.
+@pytest.mark.online
 class TestDetectionAgainstControlledResponses:
     """Drive the two sides of a rule against httpbin rather than a real site."""
 
