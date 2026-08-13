@@ -86,4 +86,4 @@ This repository has not been renamed away from the upstream package name
 (`sherlock-project`) or console script (`sherlock`). It is **not published**
 under that name on PyPI, and no claim is made to it. Installing
 `sherlock-project` from PyPI installs upstream's release, not this work. See
-[docs/README.md](docs/README.md) for how to install from this source tree.
+[README.md](README.md) for how to install from this source tree.
