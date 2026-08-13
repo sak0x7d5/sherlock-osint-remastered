@@ -24,8 +24,8 @@ is preserved as the license requires.
 
 - The site manifest (`sherlock_project/resources/data.json`) and its schema.
 - Site iteration and result modelling (`sites.py`, `result.py`).
-- The scan loop's argument surface and output formats (CSV, XLSX, TXT).
-- Issue templates, code of conduct, and the regression/exclusion workflows.
+- The scan loop's argument surface and the TXT output format.
+- Issue templates and the regression/exclusion workflows.
 
 ## Third-party data: WhatsMyName
 
