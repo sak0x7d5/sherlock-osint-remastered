@@ -691,10 +691,11 @@ async def run_ai_pipeline(
     ai_settings: AISettings | None = None,
 ) -> AIService | None:
     """Load the local model, then own pass-one processing until shutdown."""
-    # Start llama-server if nothing is listening and a models directory is
-    # stored. Adopts a running one untouched, and only ever stops a process it
-    # started itself -- someone running their own server, possibly with quite
-    # different flags, has made a decision worth leaving alone.
+    # Start llama-server if nothing is listening, from the configured models
+    # folder or the usual places. Adopts a running one untouched, and only ever
+    # stops a process it started itself -- someone running their own server,
+    # possibly with quite different flags, has made a decision worth leaving
+    # alone.
     server = (
         ManagedLlamaServer(ai_settings) if ai_settings is not None else None
     )
