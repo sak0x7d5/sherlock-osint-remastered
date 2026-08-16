@@ -6,7 +6,10 @@ import pytest
 import pytest_asyncio
 import requests
 
+from sherlock_project import ai_setup as ai_setup_module
+from sherlock_project import sherlock as sherlock_module
 from sherlock_project.database import SherlockDB
+from sherlock_project.llama_server import ServerStatus
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
 
@@ -36,6 +39,39 @@ def isolated_user_state(tmp_path, monkeypatch):
     monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
     monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_llama_server(monkeypatch):
+    """Stop the suite starting, or killing, real llama-server processes.
+
+    Same reasoning as `isolated_user_state`, one step further: a scan now
+    launches a model server when one is not already listening. Left real, the
+    suite would spawn multi-gigabyte processes on the developer's machine, take
+    minutes, and behave differently depending on which models happen to be
+    installed -- and it would adopt whatever server the developer had running,
+    which is worse than slow because it silently passes.
+
+    Patched at the two integration points rather than on the class, so
+    `tests/test_llama_server.py` -- which imports it directly and is about this
+    behaviour -- still exercises the real thing.
+    """
+    class _StubServer:
+        def __init__(self, _settings, **_kwargs) -> None:
+            pass
+
+        async def ensure_running(self) -> ServerStatus:
+            return ServerStatus(
+                running=True,
+                started_by_us=False,
+                detail="stubbed in tests",
+            )
+
+        async def stop(self) -> None:
+            return None
+
+    for module in (sherlock_module, ai_setup_module):
+        monkeypatch.setattr(module, "ManagedLlamaServer", _StubServer)
 
 
 def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:

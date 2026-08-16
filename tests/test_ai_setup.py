@@ -16,6 +16,7 @@ from sherlock_project.ai_provider import (
     AIModelInfo,
     AIProviderUnavailableError,
 )
+from sherlock_project.llama_server import ServerStatus
 
 
 def _model(
@@ -54,6 +55,26 @@ class FakeSetupProvider:
         type(self).close_calls += 1
 
 
+class FakeManagedServer:
+    """Setup starts a llama-server; these tests are not about that part.
+
+    Managing the process has its own file (test_llama_server.py). Here it would
+    only mean every case spawning a real server, or failing because the machine
+    running the suite has no models on it.
+    """
+
+    def __init__(self, _settings, **_kwargs) -> None:
+        pass
+
+    async def ensure_running(self):
+        return ServerStatus(
+            running=True, started_by_us=False, detail="stub"
+        )
+
+    async def stop(self) -> None:
+        return None
+
+
 @pytest.fixture(autouse=True)
 def reset_provider(monkeypatch: pytest.MonkeyPatch):
     FakeSetupProvider.models = []
@@ -61,6 +82,7 @@ def reset_provider(monkeypatch: pytest.MonkeyPatch):
     FakeSetupProvider.settings_seen = None
     FakeSetupProvider.close_calls = 0
     monkeypatch.setattr(ai_setup, "LlamaCppProvider", FakeSetupProvider)
+    monkeypatch.setattr(ai_setup, "ManagedLlamaServer", FakeManagedServer)
 
 
 def _console() -> tuple[Console, StringIO]:
@@ -269,10 +291,15 @@ async def test_setup_with_no_models_does_not_write_config(tmp_path: Path):
 
     assert result == 2
     assert not path.exists()
-    assert "serving no models" in output.getvalue()
-    # The likeliest cause by far, and invisible without reading the server's
-    # own log, so the guidance has to name it here.
-    assert "ONE DIRECTORY PER MODEL" in output.getvalue()
+    rendered = output.getvalue()
+    assert "No models available" in rendered
+    # The only question left for the user is WHERE their models are. Telling
+    # them to go start a server would be handing back a job the tool now does,
+    # and naming llama.cpp's directory rule would leak an implementation
+    # detail that the generated preset exists precisely to hide.
+    assert "--models-dir" in rendered
+    assert "Any layout works" in rendered
+    assert "llama-server" not in rendered
 
 
 def test_setup_base_url_precedence():
