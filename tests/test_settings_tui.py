@@ -14,6 +14,9 @@ from rich.console import Console
 from textual.widgets import Static
 
 from sherlock_project.ai_config import (
+    DEFAULT_AI_CONTEXT_LENGTH,
+    DEFAULT_AI_TEMPERATURE,
+    DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     ScanSettings,
     SherlockSettings,
@@ -255,20 +258,34 @@ async def test_toggles_flip_and_persist(tmp_path: Path):
     assert load_settings(path=path, environ={}).scan.nsfw is True
 
 
-async def test_an_unset_ai_field_says_so_instead_of_stepping(tmp_path: Path):
-    """With no [ai] stored there is nothing to step, and silence would read
-    as a broken key."""
+async def test_ai_spinners_step_from_their_default_with_no_ai_stored(
+    tmp_path: Path,
+):
+    """Before `setup ai`, the AI spinners are usable rather than blank.
+
+    Reversal of the earlier behaviour, on purpose. These rows used to hold None
+    with nothing stored, so they rendered the literal word `None` between their
+    arrows and refused to step -- a value nobody chose, that means nothing, and
+    that the arrows could not move. They now start at the build's own default
+    and step normally. Absence is still shown, on `ai.model`, which is the only
+    AI field with no shipped answer and the only one the user must supply.
+    """
     path = tmp_path / "config.toml"
     save_settings(SherlockSettings(), path=path, environ={})
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
+        assert app._values["ai.temperature"] == DEFAULT_AI_TEMPERATURE
+        assert app._values["ai.context_length"] == DEFAULT_AI_CONTEXT_LENGTH
+        assert app._values["ai.base_url"] == DEFAULT_LLAMACPP_BASE_URL
+        # The one that genuinely has no default still reads as absent.
+        assert app._values["ai.model"] is None
+
         for _ in range(_index_of("ai.temperature")):
             await pilot.press("down")
         await pilot.press("right")
 
-        assert app._values["ai.temperature"] is None
-        assert "unset" in app._status
+        assert app._values["ai.temperature"] > DEFAULT_AI_TEMPERATURE
 
 
 def test_render_marks_which_rows_respond_to_arrows():
@@ -390,6 +407,11 @@ async def test_ai_settings_can_be_created_when_no_section_exists_yet(
     These edits used to be dropped in silence while the save still reported
     "Saved to ..." -- the worst failure available, because nothing on screen
     said the AI half had not been written.
+
+    Naming the model is now ENOUGH. It used to also require typing an endpoint,
+    which was friction for nothing: the endpoint arrives pre-filled with
+    llama-server's own address, and anyone running it anywhere else already
+    knows to change it.
     """
     path = tmp_path / "config.toml"
     save_settings(SherlockSettings(scan=ScanSettings(concurrency=20)),
@@ -399,17 +421,35 @@ async def test_ai_settings_can_be_created_when_no_section_exists_yet(
     async with app.run_test() as pilot:
         app._values["ai.model"] = "vendor/model"
         await pilot.press("ctrl+s")
-        assert "Cannot save" in app._status
-        assert load_settings(path=path, environ={}).ai is None
-
-        app._values["ai.base_url"] = "http://127.0.0.1:8080"
-        await pilot.press("ctrl+s")
         assert "Saved" in app._status
 
     stored = load_settings(path=path, environ={})
     assert stored.ai is not None
     assert stored.ai.model == "vendor/model"
+    assert stored.ai.base_url == DEFAULT_LLAMACPP_BASE_URL
     assert stored.scan.concurrency == 20
+
+
+async def test_saving_without_a_model_says_only_the_model_is_missing(
+    tmp_path: Path,
+):
+    """The one AI field with no default is the one the message must name.
+
+    The old wording said "AI needs both an endpoint and a model", which sent
+    people hunting for a second problem after the endpoint started defaulting.
+    """
+    path = tmp_path / "config.toml"
+    save_settings(SherlockSettings(), path=path, environ={})
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+s")
+
+        assert "Cannot save" in app._status
+        assert "a model" in app._status
+        assert "an endpoint" not in app._status
+
+    assert load_settings(path=path, environ={}).ai is None
 
 
 async def test_a_stale_message_is_cleared_when_the_cursor_moves(tmp_path: Path):
