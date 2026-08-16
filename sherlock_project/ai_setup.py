@@ -50,7 +50,7 @@ def discover_setup_base_url(
 
 
 def _model_table(models: Sequence[AIModelInfo]) -> Table:
-    table = Table(title="Model loaded by llama-server")
+    table = Table(title="Models llama-server can serve")
     table.add_column("#", justify="right", style="cyan")
     table.add_column("Model")
     table.add_column("Size")
@@ -70,7 +70,10 @@ def _model_table(models: Sequence[AIModelInfo]) -> Table:
             model.params or "?",
             model.quantization or "?",
             thinking,
-            "loaded" if model.loaded else "downloaded",
+            # "downloaded" was LM Studio's word for it. In router mode nothing
+            # is downloaded here -- every entry is already on disk, and the
+            # only question is whether it is in memory yet.
+            "loaded" if model.loaded else "available",
         )
     return table
 
@@ -354,8 +357,10 @@ async def run_ai_setup(
     except AIProviderError as error:
         output.print(f"[red]\\[x] {error}[/red]")
         output.print(
-            "Start llama-server, then run `sherlock setup ai` again, e.g.\n"
-            "  llama-server -m model.gguf -c 8192 --port 8080 --jinja "
+            "Start llama-server, then run `sherlock setup ai` again.\n"
+            "Point it at the folder your models live in and all of them "
+            "become selectable here:\n"
+            "  llama-server --models-dir <folder> --port 8080 --jinja "
             "--reasoning-format deepseek"
         )
         return 2
@@ -363,10 +368,12 @@ async def run_ai_setup(
         await provider.close()
 
     if not models:
-        output.print("[red]\\[x] llama-server has no model loaded.[/red]")
+        output.print("[red]\\[x] llama-server is serving no models.[/red]")
         output.print(
-            "It serves whatever GGUF it was launched with -- restart it "
-            "with -m pointing at a model file."
+            "With --models-dir, that folder needs ONE DIRECTORY PER MODEL, "
+            "each holding its .gguf -- a deeper tree finds nothing and the "
+            "server says so only in its own log. Otherwise restart it with "
+            "-m <file.gguf>."
         )
         return 2
 
