@@ -27,7 +27,6 @@ something.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shutil
 import signal
@@ -72,62 +71,6 @@ class ServerStatus:
     running: bool
     started_by_us: bool
     detail: str
-
-
-def _lmstudio_model_roots() -> list[Path]:
-    """Where LM Studio actually keeps models, which is often not its default.
-
-    Anyone with a small system drive moves their models, and this machine is
-    the proof it matters: `~/.lmstudio/models` was empty while 22 models sat on
-    another drive entirely. Guessing the default location would have found
-    nothing and asked a question the answer to which was already on disk.
-
-    Reads LM Studio's own index cache, which records an absolute directory per
-    model. That is another application's private file, so every step is
-    defensive and any failure simply yields no roots -- a changed format must
-    cost a fallback, never a crash.
-    """
-    index = Path.home() / ".lmstudio" / ".internal" / "model-index-cache.json"
-    try:
-        payload = json.loads(index.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(models, list):
-        return []
-
-    roots: dict[str, Path] = {}
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        concrete = entry.get("concreteModelDirAbsolutePath")
-        if not isinstance(concrete, str) or not concrete:
-            continue
-        # The publisher folder above the model, so one root covers a whole
-        # library rather than adding an entry per model.
-        parent = Path(concrete).parent
-        roots.setdefault(str(parent).casefold(), parent)
-    return list(roots.values())
-
-
-def default_model_roots() -> list[Path]:
-    """Where GGUFs usually already are, so first run needs no answer.
-
-    Every entry is somewhere another tool put models. Nothing is downloaded and
-    nothing is moved -- they are read where they lie.
-    """
-    home = Path.home()
-    roots = [
-        *_lmstudio_model_roots(),
-        home / ".lmstudio" / "models",
-        home / ".cache" / "llama.cpp",
-        home / ".cache" / "huggingface" / "hub",
-        Path.cwd() / "models",
-    ]
-    local_appdata = os.environ.get("LOCALAPPDATA")
-    if local_appdata:
-        roots.append(Path(local_appdata) / "llama.cpp")
-    return [root for root in roots if root.is_dir()]
 
 
 def _is_chat_model(path: Path) -> bool:
@@ -252,13 +195,6 @@ class ManagedLlamaServer:
     def started_by_us(self) -> bool:
         return self._process is not None
 
-    def search_roots(self) -> list[Path]:
-        """The configured models folder, or the usual places if none is set."""
-        configured = self._settings.models_dir
-        if configured:
-            return [Path(configured).expanduser()]
-        return default_model_roots()
-
     def _command(self, binary: str, preset: Path) -> list[str]:
         host, port = _host_and_port(self._settings.base_url)
         return [
@@ -299,18 +235,21 @@ class ManagedLlamaServer:
                 "`sherlock setup ai --server-binary <path>`."
             )
 
-        roots = self.search_roots()
         configured = self._settings.models_dir
-        if configured and not Path(configured).expanduser().is_dir():
+        if not configured:
+            raise LlamaServerError(
+                "No models folder is set. Choose one in the model picker, or "
+                "pass --models-dir <folder>."
+            )
+        root = Path(configured).expanduser()
+        if not root.is_dir():
             raise LlamaServerError(f"Models folder does not exist: {configured}")
 
-        models = await asyncio.to_thread(discover_models, roots)
+        models = await asyncio.to_thread(discover_models, [root])
         if not models:
-            looked_in = ", ".join(str(root) for root in roots) or "the usual places"
             raise LlamaServerError(
-                f"No .gguf models found in {looked_in}. Point Sherlock at your "
-                "models with `sherlock setup ai --models-dir <folder>` -- any "
-                "layout works, it searches inside."
+                f"No .gguf models found in {root} -- any layout works, it "
+                "searches inside, so this folder has none."
             )
 
         preset = write_preset(models, self._preset_path)

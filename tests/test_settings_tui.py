@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
-from textual.widgets import Static
+from textual.widgets import DataTable, Static
 
 from sherlock_project.ai_config import (
     DEFAULT_AI_CONTEXT_LENGTH,
@@ -639,3 +639,71 @@ async def test_the_folder_browser_opens_somewhere_real_when_the_path_is_gone(
     screen = FolderPickerScreen(str(tmp_path / "gone" / "deeper" / "still-gone"))
 
     assert screen._root == tmp_path
+
+
+async def test_the_model_picker_carries_its_own_folder_control(tmp_path: Path):
+    """Changing folder must not mean leaving the screen you are looking at.
+
+    A picker that can only ever list ONE folder is a dead end the moment a
+    model is downloaded somewhere else, or the moment a different user runs
+    the tool at all. The row is added before anything that can fail, so it is
+    on screen even when the listing errored -- which is exactly when it is
+    needed.
+    """
+    from sherlock_project.tui.settings_pane import (
+        FOLDER_ROW_KEY,
+        FolderPickerScreen,
+        ModelPickerScreen,
+    )
+
+    screen = ModelPickerScreen("http://127.0.0.1:8080", current=None, models_dir=None)
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        table = screen.query_one("#models", DataTable)
+        assert table.row_count == 1
+        assert next(iter(table.rows)).value == FOLDER_ROW_KEY
+
+        status = screen.query_one("#picker-status", Static).render().plain
+        assert "No models folder set" in status
+
+        # A real keypress, not a hand-built event: enter on the row must open
+        # the browser rather than be read as a model key.
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, FolderPickerScreen)
+
+        app.screen.action_cancel()
+        await pilot.pause()
+        screen.action_cancel()
+        await pilot.pause()
+
+
+async def test_the_picker_returns_the_folder_even_when_no_model_was_chosen(
+    tmp_path: Path,
+):
+    """Backing out after fixing the folder is not "nothing happened".
+
+    They told us where their models are. Making them say it twice would be the
+    screen forgetting something it was just given.
+    """
+    from sherlock_project.tui.settings_pane import ModelChoice, ModelPickerScreen
+
+    screen = ModelPickerScreen(
+        "http://127.0.0.1:8080", current=None, models_dir=str(tmp_path)
+    )
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+    returned: list[ModelChoice] = []
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen, returned.append)
+        await pilot.pause()
+        screen.action_cancel()
+        await pilot.pause()
+
+    assert returned[0].model is None
+    assert returned[0].models_dir == str(tmp_path)

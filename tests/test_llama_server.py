@@ -1,6 +1,5 @@
 """Starting llama-server, and the rule about never touching someone else's."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -20,24 +19,6 @@ def _settings(**overrides) -> AISettings:
         "model": "Qwen3-8B-GGUF",
     }
     return AISettings(**{**base, **overrides})
-
-
-async def test_no_models_dir_falls_back_to_the_usual_places(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    """An unconfigured install should still find models somebody else put there.
-
-    Asking the user where their models are is a question the tool can usually
-    answer itself, and every question is a step between "installed" and
-    "working".
-    """
-    monkeypatch.setattr(
-        llama_server, "default_model_roots", lambda: [tmp_path / "auto"]
-    )
-    server = ManagedLlamaServer(_settings())
-
-    assert server.search_roots() == [tmp_path / "auto"]
 
 
 def test_discovery_is_recursive_and_ignores_non_chat_ggufs(tmp_path: Path):
@@ -218,49 +199,3 @@ def test_discovery_skips_dot_directories(tmp_path: Path):
     (hidden / "Hidden-Q4_K_M.gguf").write_text("", encoding="utf-8")
 
     assert llama_server.discover_models([tmp_path]) == {}
-
-
-def test_lmstudio_roots_are_read_from_its_index(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    """Guessing LM Studio's default folder is not good enough.
-
-    Anyone with a small system drive relocates their models. Measured on the
-    machine this was written on: ~/.lmstudio/models was EMPTY while 22 models
-    sat on another drive, so the default guess would have asked a question
-    whose answer was already on disk.
-    """
-    internal = tmp_path / ".lmstudio" / ".internal"
-    internal.mkdir(parents=True)
-    (internal / "model-index-cache.json").write_text(
-        json.dumps(
-            {
-                "models": [
-                    {"concreteModelDirAbsolutePath": "D:/AI/models/pub/Repo-A"},
-                    {"concreteModelDirAbsolutePath": "D:/AI/models/pub/Repo-B"},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(llama_server.Path, "home", classmethod(lambda _cls: tmp_path))
-
-    roots = llama_server._lmstudio_model_roots()
-
-    # The publisher folder, deduplicated -- one root for a whole library
-    # rather than an entry per model.
-    assert roots == [Path("D:/AI/models/pub")]
-
-
-def test_a_broken_lmstudio_index_costs_a_fallback_not_a_crash(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    """Another application's private file. A format change must not break us."""
-    internal = tmp_path / ".lmstudio" / ".internal"
-    internal.mkdir(parents=True)
-    (internal / "model-index-cache.json").write_text("not json", encoding="utf-8")
-    monkeypatch.setattr(llama_server.Path, "home", classmethod(lambda _cls: tmp_path))
-
-    assert llama_server._lmstudio_model_roots() == []
