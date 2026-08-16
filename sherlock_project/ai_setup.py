@@ -24,6 +24,7 @@ from sherlock_project.ai_config import (
     try_load_ai_settings,
 )
 from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LlamaCppProvider
+from sherlock_project.llama_server import LlamaServerError, ManagedLlamaServer
 
 
 def discover_setup_base_url(
@@ -50,26 +51,26 @@ def discover_setup_base_url(
 
 
 def _model_table(models: Sequence[AIModelInfo]) -> Table:
+    # No Thinking column. Whether a model can be told to stop thinking is not
+    # in anything llama-server publishes -- `/v1/models` carries modalities and
+    # no capability block -- so the only way to fill it would be to load every
+    # model in the list and ask. For a directory of nineteen that is minutes
+    # and gigabytes to populate one column. Printing "not used" on every row
+    # instead was worse than leaving it out: it read as a determination when it
+    # was really "did not ask". The answer is measured once, against the model
+    # actually chosen, by the provider's reasoning probe.
     table = Table(title="Models llama-server can serve")
     table.add_column("#", justify="right", style="cyan")
     table.add_column("Model")
     table.add_column("Size")
     table.add_column("Quant")
-    table.add_column("Thinking")
     table.add_column("State")
     for index, model in enumerate(models, start=1):
-        if not model.reasoning_options:
-            thinking = "not used"
-        elif model.supports_reasoning_off:
-            thinking = "off supported"
-        else:
-            thinking = "required"
         table.add_row(
             str(index),
             f"{model.display_name}\n[dim]{model.key}[/dim]",
             model.params or "?",
             model.quantization or "?",
-            thinking,
             # "downloaded" was LM Studio's word for it. In router mode nothing
             # is downloaded here -- every entry is already on disk, and the
             # only question is whether it is in memory yet.
@@ -193,6 +194,21 @@ def build_setup_parser() -> ArgumentParser:
     parser.add_argument(
         "--model",
         help="Model key to record. Defaults to whatever llama-server loaded.",
+    )
+    parser.add_argument(
+        "--models-dir",
+        help=(
+            "Folder your GGUFs live in, holding one directory per model. "
+            "Stored so Sherlock can start llama-server for you when none is "
+            "running. Ignored while a server is already listening -- its own "
+            "directory was fixed when it launched."
+        ),
+    )
+    parser.add_argument(
+        "--server-binary",
+        help=(
+            "Path to the llama-server executable. Found on PATH when omitted."
+        ),
     )
     parser.add_argument(
         "--temperature",
@@ -333,6 +349,16 @@ async def run_ai_setup(
         provisional = AISettings(
             base_url=base_url,
             model=provisional_model,
+            models_dir=(
+                args.models_dir
+                if args.models_dir is not None
+                else (existing.models_dir if existing is not None else None)
+            ),
+            server_binary=(
+                args.server_binary
+                if args.server_binary is not None
+                else (existing.server_binary if existing is not None else None)
+            ),
             temperature=temperature,
             context_length=(
                 existing.context_length
@@ -348,6 +374,21 @@ async def run_ai_setup(
         color_system=None if args.no_color else "auto",
         highlight=False,
     )
+
+    # Start one if nothing is listening and a directory is stored, so that
+    # `setup ai --models-dir <folder>` is a single step rather than an
+    # instruction to go and run a command first. Stopped again below: setup is
+    # a configuration step, and in router mode startup only indexes the folder
+    # rather than loading any weights, so this costs about a second.
+    server = ManagedLlamaServer(provisional)
+    try:
+        status = await server.ensure_running()
+    except LlamaServerError as error:
+        output.print(f"[red]\\[x] {error}[/red]")
+        return 2
+    if status.started_by_us:
+        output.print(f"[dim]{status.detail}[/dim]")
+
     provider = LlamaCppProvider(
         provisional,
         api_token=environment.get("LLAMA_API_TOKEN"),
@@ -357,15 +398,15 @@ async def run_ai_setup(
     except AIProviderError as error:
         output.print(f"[red]\\[x] {error}[/red]")
         output.print(
-            "Start llama-server, then run `sherlock setup ai` again.\n"
-            "Point it at the folder your models live in and all of them "
-            "become selectable here:\n"
-            "  llama-server --models-dir <folder> --port 8080 --jinja "
-            "--reasoning-format deepseek"
+            "Either start llama-server yourself, or give Sherlock the folder "
+            "your models live in so it can:\n"
+            "  sherlock setup ai --models-dir <folder>\n"
+            "That folder holds one directory per model, each with its .gguf."
         )
         return 2
     finally:
         await provider.close()
+        await server.stop()
 
     if not models:
         output.print("[red]\\[x] llama-server is serving no models.[/red]")

@@ -399,8 +399,54 @@ class LlamaCppProvider:
                     f"llama-server is not serving {configured!r}. "
                     f"Available: {available}"
                 )
+        # Set BEFORE probing: the probe goes through `generate`, which falls
+        # back to `ensure_model_loaded` when no model is set, and would call
+        # straight back into here.
         self._model_info = selected
-        return selected
+        self._model_info = await self._probe_reasoning(selected)
+        return self._model_info
+
+    async def _probe_reasoning(self, model: AIModelInfo) -> AIModelInfo:
+        """Find out whether this model can actually be told to stop thinking.
+
+        Nothing llama-server publishes answers this. `/v1/models` carries
+        modalities and no capability block, and `--reasoning-format auto`
+        resolves it internally at load time without surfacing the result. So
+        the only honest signal is behavioural: ask for no thinking on a trivial
+        prompt and look at whether `reasoning_content` comes back empty.
+
+        `enable_thinking` is a chat-TEMPLATE feature, so a model whose template
+        has no such switch ignores it and keeps thinking -- with HTTP 200 and
+        nothing in the response admitting it. That silence is exactly why this
+        has to be measured rather than assumed.
+
+        Costs one small request, and in router mode forces the model load that
+        the first extraction would have paid for anyway. Failure is not fatal:
+        an unreachable or odd server leaves the capability unknown, which falls
+        back to the canonical Pass 1 pair -- the documented degraded path.
+        """
+        try:
+            completion = await self.generate(
+                system_prompt="Reply with the single word ok.",
+                payload={"ping": "ok"},
+                max_tokens=16,
+                reasoning_off=True,
+            )
+        except AIProviderError:
+            return model
+
+        thinks_anyway = bool(completion.native_reasoning)
+        return AIModelInfo(
+            key=model.key,
+            display_name=model.display_name,
+            quantization=model.quantization,
+            params=model.params,
+            loaded=True,
+            max_context_length=model.max_context_length,
+            # ("on",) alone is what `requires_native_reasoning` reads as "cannot
+            # be turned off"; ("off", "on") is the ordinary case.
+            reasoning_options=("on",) if thinks_anyway else ("off", "on"),
+        )
 
     @staticmethod
     def _number(

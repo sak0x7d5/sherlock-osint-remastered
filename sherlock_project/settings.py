@@ -235,6 +235,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "ai", "base_url", "endpoint", "text",
         default=DEFAULT_LLAMACPP_BASE_URL,
     ),
+    SettingField("ai", "models_dir", "models folder", "text"),
     SettingField(
         "ai", "temperature", "temperature", "spin",
         tuple(round(step / 10, 1) for step in range(11)),
@@ -408,6 +409,11 @@ _STATIC_DESCRIPTIONS: dict[str, str] = {
     "ai.base_url": (
         "Where llama-server is listening. The LLAMA_SERVER_BASE_URL "
         "environment variable overrides this for a single run."
+    ),
+    "ai.models_dir": (
+        "Folder holding your models, one directory per model. Sherlock starts "
+        "llama-server from it when none is running; a server you started "
+        "yourself is used as-is and this is ignored."
     ),
     "ai.temperature": (
         "How much the model varies its wording. Extraction is not a creative "
