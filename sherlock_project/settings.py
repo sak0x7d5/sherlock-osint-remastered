@@ -271,16 +271,27 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
 def field_values(settings: SherlockSettings) -> dict[str, Any]:
     """Flatten stored settings into {"section.name": value}.
 
-    An absent [ai] section yields None for every AI field rather than being
-    skipped, so the screen can show "not configured" in place instead of
-    silently dropping rows and changing its own shape.
+    An absent [ai] section yields each field's BUILT-IN DEFAULT rather than
+    None, and None only where the build genuinely ships no answer -- which is
+    `ai.model` alone, because which model is right depends on what the user
+    has downloaded.
+
+    It used to yield None for every AI field, on the reasoning that the screen
+    should show "not configured" rather than imply a setting nobody chose.
+    That read well and looked terrible: before `setup ai`, three of the four
+    AI rows were empty, and the two spinners rendered the literal word `None`
+    between their arrows -- a value no user picked, cannot mean anything, and
+    could not be arrowed away from sensibly. The absence is still visible, on
+    the one row where it is true and actionable.
     """
     values: dict[str, Any] = {}
     for field in SETTING_FIELDS:
         section = getattr(settings, field.section, None)
-        values[field.key] = (
-            None if section is None else getattr(section, field.name, None)
-        )
+        if section is not None:
+            values[field.key] = getattr(section, field.name, None)
+            continue
+        default = field_default(field)
+        values[field.key] = None if default is NO_DEFAULT else default
     return values
 
 
@@ -508,9 +519,17 @@ def apply_values(
         # `setup ai`. These edits used to be dropped here in silence while the
         # save still reported success -- the worst possible outcome, because
         # nothing on screen said the AI half had not been written.
-        if not (ai_changes.get("base_url") and ai_changes.get("model")):
+        # Name what is actually missing. The endpoint now arrives pre-filled
+        # with its default, so "AI needs both an endpoint and a model" sent
+        # people hunting for a second problem that was not there.
+        missing = [
+            label
+            for name, label in (("base_url", "an endpoint"), ("model", "a model"))
+            if not ai_changes.get(name)
+        ]
+        if missing:
             raise IncompleteSettingsError(
-                "AI needs both an endpoint and a model before it can be saved"
+                f"AI needs {' and '.join(missing)} before it can be saved"
             )
         updates["ai"] = AISettings(**ai_changes)
 
