@@ -40,22 +40,24 @@ the model endpoint you configure yourself.
   uses an `asyncio` feature added in 3.13 and the package will not install on
   3.10–3.12.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` on your
-  PATH, for the optional AI passes. Tell Sherlock where your models live and
-  it starts the server for you:
+  PATH, plus some `.gguf` models, for the optional AI passes. Sherlock runs the
+  server for you — you never start or stop one:
 
   ```
-  sherlock setup ai --models-dir /path/to/models
+  sherlock setup ai
   ```
 
-  That folder wants **one directory per model**, each holding its `.gguf` — a
-  deeper tree finds nothing, and llama-server only says so in its own log.
-  Every model in there becomes selectable, and switching costs no restart:
-  they load on demand, so expect the first request after a switch to take tens
-  of seconds.
+  It looks where models usually already are (LM Studio, the llama.cpp and
+  HuggingFace caches, `./models`). If yours live somewhere else, say so once
+  with `--models-dir <folder>`; **any layout works**, it searches inside.
+
+  Every model found becomes selectable, and switching costs no restart — they
+  load on demand, so expect the first request after a switch to take tens of
+  seconds.
 
   Already running your own `llama-server`? It is used exactly as it is and
   never restarted or stopped — Sherlock only manages a server it started
-  itself. That also covers single-model servers (`-m model.gguf`).
+  itself. That covers single-model servers (`-m model.gguf`) too.
 
   Other OpenAI-compatible runtimes (Ollama, vLLM, plain endpoints) are not
   supported.
