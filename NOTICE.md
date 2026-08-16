@@ -22,10 +22,13 @@ is preserved as the license requires.
 
 ## Inherited from upstream
 
-- The site manifest (`sherlock_project/resources/data.json`) and its schema.
+- The legacy site manifest (`sherlock_project/resources/data.json`) and its
+  schema. Retained and still shipped, but no longer the manifest a scan uses by
+  default — see "Third-party data: WhatsMyName" below.
 - Site iteration and result modelling (`sites.py`, `result.py`).
 - The scan loop's argument surface and the TXT output format.
-- Issue templates and the regression/exclusion workflows.
+- Issue templates and the regression workflow. Upstream's exclusions updater and
+  site-list workflows were inherited and have since been removed.
 
 ## Third-party data: WhatsMyName
 
