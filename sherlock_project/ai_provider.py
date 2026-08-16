@@ -1,10 +1,26 @@
 """Provider-neutral AI completions and the llama.cpp implementation.
 
-`llama-server` serves ONE model, loaded at launch. There is no model catalogue
-to browse, nothing to load on demand, and no idle-unload TTL -- the lifecycle
-belongs to whoever started the process. So this provider adopts whatever the
-server already has rather than managing anything, and `AIModelInfo` is filled
-from `/props` plus the filename.
+
+`llama-server` runs in two shapes and this provider supports both, because the
+difference is the whole user experience:
+
+- ROUTER, `--models-dir PATH`: every GGUF under that directory is on offer,
+  and naming one in a chat request loads it on demand. Models live wherever
+  the user keeps them and switching costs a request rather than a restart.
+  This is the mode worth running and the one setup should steer people to.
+- SINGLE, `-m FILE`: one model, fixed until the process is restarted.
+
+Neither loads or unloads anything on a timer, so there is no TTL to manage --
+the lifecycle belongs to whoever started the process.
+
+Model metadata is thin either way: llama-server publishes nothing like LM
+Studio's capability block, so quantization and parameter count are recovered
+from the filename and reasoning capability is not detected at all yet.
+
+Structured output is ENFORCED here, not requested. The JSON Schema rides in
+`response_format`, llama.cpp compiles it to a GBNF grammar, and the model
+physically cannot emit anything else. That replaces pasting the schema into the
+system prompt and hoping, which is what the LM Studio path did.
 
 Structured output is ENFORCED here, not requested. The JSON Schema rides in
 `response_format`, llama.cpp compiles it to a GBNF grammar, and the model
@@ -27,12 +43,25 @@ from sherlock_project.ai_config import AISettings
 
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 600.0
+# `/props.role` when llama-server was started with `--models-dir`, and absent
+# when it was started with `-m`. The only way to tell the two apart.
+ROUTER_ROLE = "router"
 
 # Quantization is not in any llama-server response, but it is in the filename
 # every GGUF ships under. Worth recovering: the setup screen shows it, and
 # "which quant am I actually running" is the first question when quality drops.
 _QUANT_PATTERN = re.compile(
     r"(?:^|[-_.])((?:IQ|Q)\d+(?:_[A-Z0-9]+)*|BF16|F16|F32|MXFP4)(?:[-_.]|$)",
+    re.IGNORECASE,
+)
+# Parameter count, also filename-only: llama-server reports nothing like LM
+# Studio's `params_string`, and an all-"?" Size column is worth less than a
+# figure recovered from the name every GGUF already carries. Anchored on a
+# separator so the "3" of "Qwen3" cannot be read as a size.
+# The optional E is Gemma's "effective parameters" naming (E2B, E4B). Reporting
+# 2B for an E2B is closer to useful than reporting nothing.
+_PARAMS_PATTERN = re.compile(
+    r"(?:^|[-_.])E?(\d+(?:\.\d+)?)\s*B(?:[-_.]|$)",
     re.IGNORECASE,
 )
 
@@ -137,10 +166,18 @@ class AIProvider(Protocol):
     async def close(self) -> None: ...
 
 
+def _basename(name: str) -> str:
+    return name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].removesuffix(".gguf")
+
+
 def _quantization_from_name(name: str) -> str | None:
-    stem = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].removesuffix(".gguf")
-    match = _QUANT_PATTERN.search(stem)
+    match = _QUANT_PATTERN.search(_basename(name))
     return match.group(1).upper() if match else None
+
+
+def _params_from_name(name: str) -> str | None:
+    match = _PARAMS_PATTERN.search(_basename(name))
+    return f"{match.group(1)}B" if match else None
 
 
 class LlamaCppProvider:
@@ -227,19 +264,82 @@ class LlamaCppProvider:
         return payload
 
     async def list_models(self) -> list[AIModelInfo]:
-        """Whatever this server has loaded -- one model, or none.
+        """Every model this server can serve.
 
-        Kept plural to satisfy the Protocol and to keep the setup screen's
-        table code unchanged. It is not a catalogue: llama-server cannot load
-        anything it was not launched with.
+        llama-server runs in one of two shapes and they answer this very
+        differently, so the mode is detected rather than assumed:
+
+        - ROUTER (`--models-dir PATH`): a real catalogue. `/v1/models` lists
+          every GGUF under that directory, loaded or not, and naming one in a
+          chat request loads it on demand -- `--models-autoload` is on by
+          default. This is the mode worth running: models live wherever the
+          user keeps them and switching costs a request, not a restart.
+        - SINGLE (`-m FILE`): one model, fixed at launch. `/v1/models` returns
+          it with its full path as the id, which is not a name worth showing,
+          so `/props` is the better source and is used instead.
+
+        `/props.role` is the discriminator: "router" there, absent otherwise.
+
+        The directory layout the router expects is `<models-dir>/<repo>/*.gguf`
+        -- one level, not two. Pointing it at a tree of publisher directories
+        finds nothing and says "Loaded 0 local model presets", which is easy to
+        read as "the flag did not work".
         """
-        model = await self._describe_loaded_model()
+        props = self._response_json(await self._request("GET", "/props"))
+        if props.get("role") == ROUTER_ROLE:
+            return await self._list_router_models()
+        model = self._model_from_props(props)
         return [model] if model is not None else []
 
-    async def _describe_loaded_model(self) -> AIModelInfo | None:
-        props = self._response_json(await self._request("GET", "/props"))
+    async def _list_router_models(self) -> list[AIModelInfo]:
+        payload = self._response_json(await self._request("GET", "/v1/models"))
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise AIProviderProtocolError(
+                "llama-server model listing is missing the data array."
+            )
+        parsed = [self._model_from_router_entry(entry) for entry in data]
+        return [model for model in parsed if model is not None]
+
+    @staticmethod
+    def _model_from_router_entry(raw: object) -> AIModelInfo | None:
+        if not isinstance(raw, dict):
+            return None
+        key = raw.get("id")
+        if not isinstance(key, str) or not key:
+            return None
+        raw_status = raw.get("status")
+        status = raw_status if isinstance(raw_status, dict) else {}
+        # The launch argv the router would use carries the real .gguf path,
+        # which is the only place the quantization appears. The id is the
+        # repo directory name, which usually does not carry it.
+        path = ""
+        args = status.get("args")
+        if isinstance(args, list):
+            for index, argument in enumerate(args):
+                if argument in {"-m", "--model"} and index + 1 < len(args):
+                    candidate = args[index + 1]
+                    if isinstance(candidate, str):
+                        path = candidate
+                    break
+        return AIModelInfo(
+            key=key,
+            display_name=key.removesuffix("-GGUF"),
+            quantization=_quantization_from_name(path or key),
+            params=_params_from_name(path or key),
+            loaded=status.get("value") == "loaded",
+            # Unknown until the model is actually loaded: the router reports
+            # n_ctx per instance, and an unloaded entry has no instance.
+            max_context_length=None,
+            reasoning_options=(),
+        )
+
+    @staticmethod
+    def _model_from_props(props: dict[str, Any]) -> AIModelInfo | None:
         raw_path = props.get("model_path")
-        if not isinstance(raw_path, str) or not raw_path:
+        # Router mode with nothing loaded reports the string "none" here, which
+        # is why this is only ever reached after the role check above.
+        if not isinstance(raw_path, str) or not raw_path or raw_path == "none":
             return None
 
         name = raw_path.replace("\\", "/").rsplit("/", 1)[-1]
@@ -251,7 +351,7 @@ class LlamaCppProvider:
             key=name,
             display_name=name.removesuffix(".gguf"),
             quantization=_quantization_from_name(name),
-            params=None,
+            params=_params_from_name(name),
             loaded=True,
             max_context_length=(
                 context_length
@@ -266,21 +366,41 @@ class LlamaCppProvider:
         )
 
     async def ensure_model_loaded(self) -> AIModelInfo:
-        """Adopt the server's model. Nothing is loaded or unloaded here.
+        """Pick the configured model, or adopt the only one on offer.
 
-        The configured `model` is advisory: it is recorded against extractions
-        so results say which model produced them, but it cannot select
-        anything. A mismatch is not an error -- the user may have relaunched
-        llama-server with a different GGUF, and refusing to run would be
-        obstruction, not safety.
+        Nothing is loaded here even in router mode -- naming the model on the
+        chat request is what triggers the load, so the cost lands on the first
+        real call rather than on a preflight that might be for a model the run
+        never uses. Expect that first call to take tens of seconds cold.
+
+        The two shapes want opposite things from a mismatch, so the rule is on
+        the COUNT rather than the mode. One model on offer means the server was
+        launched with it and the configured name is stale bookkeeping: adopt it
+        rather than refuse, because the user changing what they launched is a
+        decision, not a mistake. Several on offer means the name genuinely
+        selects, and a name that is not there has to be reported -- silently
+        running a different model than the one configured would put the wrong
+        attribution on every extraction it produced.
         """
-        model = await self._describe_loaded_model()
-        if model is None:
+        models = await self.list_models()
+        if not models:
             raise AIModelNotFoundError(
-                f"llama-server at {self.settings.base_url} has no model loaded."
+                f"llama-server at {self.settings.base_url} is serving no models."
             )
-        self._model_info = model
-        return model
+
+        configured = self.settings.model
+        selected = next((model for model in models if model.key == configured), None)
+        if selected is None:
+            if len(models) == 1:
+                selected = models[0]
+            else:
+                available = ", ".join(sorted(model.key for model in models)[:8])
+                raise AIModelNotFoundError(
+                    f"llama-server is not serving {configured!r}. "
+                    f"Available: {available}"
+                )
+        self._model_info = selected
+        return selected
 
     @staticmethod
     def _number(

@@ -54,7 +54,44 @@ def _provider(handler, *, settings: AISettings | None = None) -> LlamaCppProvide
     return LlamaCppProvider(settings or _settings(), client=client)
 
 
-async def test_list_models_reports_what_the_server_loaded():
+def _router_props() -> dict:
+    """Router mode reports no model of its own; the catalogue is /v1/models."""
+    return {
+        "role": "router",
+        "model_path": "none",
+        "default_generation_settings": {"n_ctx": 0},
+    }
+
+
+def _router_entry(name: str, *, loaded: bool = False, quant: str = "Q4_K_M") -> dict:
+    return {
+        "id": f"{name}-GGUF",
+        "object": "model",
+        "status": {
+            "value": "loaded" if loaded else "unloaded",
+            "args": [
+                "llama-server.exe",
+                "--alias",
+                f"{name}-GGUF",
+                "--model",
+                f"D:/models/{name}-GGUF/{name}-{quant}.gguf",
+            ],
+        },
+    }
+
+
+def _router_handler(entries: list[dict]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_router_props())
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"object": "list", "data": entries})
+        return httpx.Response(200, json=_chat_response())
+
+    return handler
+
+
+async def test_single_mode_reports_the_one_loaded_model():
     provider = _provider(lambda _request: httpx.Response(200, json=_props()))
     models = await provider.list_models()
 
@@ -66,30 +103,63 @@ async def test_list_models_reports_what_the_server_loaded():
     assert models[0].loaded is True
 
 
-async def test_ensure_model_loaded_adopts_rather_than_loading():
-    """llama-server cannot load anything: it serves what it was launched with.
+async def test_router_mode_lists_the_whole_catalogue():
+    """`--models-dir` makes this a real picker, not a one-row table.
 
-    The whole LM Studio load/TTL dance is gone, so the only correct behaviour
-    is to look once and adopt. A second request would have nothing to ask for.
+    Every GGUF under the directory is offered whether loaded or not, because
+    naming one in a chat request loads it on demand.
     """
-    paths: list[str] = []
+    provider = _provider(
+        _router_handler([
+            _router_entry("Qwen3-8B", loaded=True),
+            _router_entry("gemma-4-E2B-it", quant="Q8_0"),
+        ]),
+        settings=_settings(model="Qwen3-8B-GGUF"),
+    )
+    models = await provider.list_models()
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        return httpx.Response(200, json=_props())
+    assert [model.key for model in models] == ["Qwen3-8B-GGUF", "gemma-4-E2B-it-GGUF"]
+    assert models[0].display_name == "Qwen3-8B"
+    assert models[0].loaded is True
+    assert models[1].loaded is False
+    # The quantization lives only in the launch argv's .gguf path -- the id is
+    # the repo directory name and usually does not carry it.
+    assert models[1].quantization == "Q8_0"
 
-    provider = _provider(handler)
+
+async def test_router_mode_selects_the_configured_model():
+    provider = _provider(
+        _router_handler([
+            _router_entry("Qwen3-8B"),
+            _router_entry("gemma-4-E2B-it"),
+        ]),
+        settings=_settings(model="gemma-4-E2B-it-GGUF"),
+    )
     model = await provider.ensure_model_loaded()
 
-    assert model.loaded is True
-    assert paths == ["/props"]
+    assert model.key == "gemma-4-E2B-it-GGUF"
 
 
-async def test_configured_model_mismatch_is_not_an_error():
-    """The config records which model ran; it cannot select one.
+async def test_router_mode_reports_a_model_it_does_not_serve():
+    """With a real catalogue, a name that is not there is a real mistake.
 
-    Someone relaunching llama-server with a different GGUF has changed the
-    model, not made a mistake. Refusing to run would be obstruction.
+    Quietly running something else would put the wrong attribution on every
+    extraction produced -- `results.ai_extraction_model` would be a lie.
+    """
+    provider = _provider(
+        _router_handler([_router_entry("Qwen3-8B"), _router_entry("gemma-4-E2B-it")]),
+        settings=_settings(model="absent/model"),
+    )
+
+    with pytest.raises(AIModelNotFoundError, match="Available:"):
+        await provider.ensure_model_loaded()
+
+
+async def test_single_mode_adopts_a_mismatch_rather_than_refusing():
+    """One model on offer means the launch flag decided, not the config.
+
+    Relaunching llama-server with a different GGUF is a decision, so the stored
+    name is stale bookkeeping rather than an instruction to obey.
     """
     provider = _provider(
         lambda _request: httpx.Response(200, json=_props()),
@@ -100,10 +170,18 @@ async def test_configured_model_mismatch_is_not_an_error():
     assert model.key == "Qwen3-8B-Q4_K_M.gguf"
 
 
-async def test_server_with_no_model_is_reported():
+async def test_nothing_served_at_all_is_reported():
     provider = _provider(lambda _request: httpx.Response(200, json={"model_path": ""}))
 
-    with pytest.raises(AIModelNotFoundError, match="no model loaded"):
+    with pytest.raises(AIModelNotFoundError, match="serving no models"):
+        await provider.ensure_model_loaded()
+
+
+async def test_router_with_an_empty_directory_is_reported():
+    """The `--models-dir` layout trap: one level too deep finds zero models."""
+    provider = _provider(_router_handler([]))
+
+    with pytest.raises(AIModelNotFoundError, match="serving no models"):
         await provider.ensure_model_loaded()
 
 

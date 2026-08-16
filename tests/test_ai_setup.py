@@ -146,7 +146,7 @@ async def test_interactive_setup_accepts_a_thinking_only_choice_with_a_warning(
 
     assert result == 0
     assert load_ai_settings(path=path, environ={}).model == "aaa-thinking/model"
-    assert "Model loaded by llama-server" in rendered
+    assert "Models llama-server can serve" in rendered
     assert "always thinks natively" in rendered
     # The warning has to say what it costs, not just that something is unusual.
     assert "quality is likely to be lower" in rendered
@@ -269,7 +269,10 @@ async def test_setup_with_no_models_does_not_write_config(tmp_path: Path):
 
     assert result == 2
     assert not path.exists()
-    assert "no model loaded" in output.getvalue()
+    assert "serving no models" in output.getvalue()
+    # The likeliest cause by far, and invisible without reading the server's
+    # own log, so the guidance has to name it here.
+    assert "ONE DIRECTORY PER MODEL" in output.getvalue()
 
 
 def test_setup_base_url_precedence():
