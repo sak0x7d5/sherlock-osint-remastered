@@ -54,6 +54,10 @@ from sherlock_project.ai_provider import (
     LlamaCppProvider,
 )
 from sherlock_project.database import default_database_path
+from sherlock_project.llama_server import (
+    LlamaServerError,
+    ManagedLlamaServer,
+)
 from sherlock_project.settings import (
     NO_DEFAULT,
     SETTING_FIELDS,
@@ -185,7 +189,7 @@ def thinking_label(model: AIModelInfo) -> str:
 
 
 class ModelPickerScreen(ModalScreen[str | None]):
-    """Enter on `model`: what llama-server has loaded, as a real table.
+    """Enter on `model`: every model that can be used, as a real table.
 
     A table rather than one line per model, because the fields are the whole
     point of the screen -- size against quantisation against context window is
@@ -193,9 +197,14 @@ class ModelPickerScreen(ModalScreen[str | None]):
     columns do not line up. As a flat list the longest name pushed everything
     after it out of alignment and wrapped onto a second line.
 
-    Fetched when the screen opens rather than when the app starts, so a stopped
-    server costs nothing until someone actually asks for the list, and fails as
-    a message in this dialog instead of a dead settings screen.
+    Starts a llama-server if none is running, and stops the one it started when
+    the screen closes. It used to instruct the user to go and start one, which
+    was the last place in the tool still asking them to run a server by hand --
+    and it did so on precisely the first run where the list is most needed.
+
+    The work happens when the screen opens rather than at app start, so nothing
+    is spawned until someone actually asks for the list, and a failure is a
+    message in this dialog instead of a dead settings screen.
     """
 
     BINDINGS: ClassVar = [
@@ -203,15 +212,22 @@ class ModelPickerScreen(ModalScreen[str | None]):
         Binding("ctrl+r", "reload", "refresh"),
     ]
 
-    def __init__(self, base_url: str, current: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        current: str | None = None,
+        models_dir: str | None = None,
+    ) -> None:
         super().__init__()
         self._base_url = base_url
         self._current = current
+        self._models_dir = models_dir
+        self._server: ManagedLlamaServer | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Choose a model", classes="dialog-title")
-            yield Static("Asking llama-server...", id="picker-status")
+            yield Static("Looking for models...", id="picker-status")
             yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
             yield Label(
                 "▸ will be used   ● already in memory (starts instantly)",
@@ -240,7 +256,10 @@ class ModelPickerScreen(ModalScreen[str | None]):
         # Context is here because it decides how much of a page pass one can
         # see, and it was invisible at the moment the choice is made.
         table.add_column("context", key="context")
-        table.add_column("thinking", key="thinking")
+        # No "thinking" column. Whether a model can be told to stop thinking is
+        # in nothing llama-server publishes, so filling it would mean loading
+        # every model in the list to ask. It is measured once, against the
+        # model actually chosen, when a scan starts.
         self.run_worker(self._load(), exclusive=True)
 
     async def _load(self) -> None:
@@ -251,22 +270,39 @@ class ModelPickerScreen(ModalScreen[str | None]):
         from sherlock_project.ai_config import AISettings
 
         try:
-            settings = AISettings(base_url=self._base_url, model="listing")
-            provider = LlamaCppProvider(settings)
+            settings = AISettings(
+                base_url=self._base_url,
+                model="listing",
+                models_dir=self._models_dir,
+            )
         except ValueError as error:
             status.update(f"Endpoint is not usable: {error}")
             return
 
+        # Start a server rather than telling the user to. This screen used to
+        # say "Start llama-server, then press ^R", which handed back a job the
+        # rest of the tool had already taken over -- and left the picker empty
+        # on exactly the first run where someone needs it.
+        self._server = ManagedLlamaServer(settings)
+        try:
+            await self._server.ensure_running()
+        except LlamaServerError as error:
+            status.update(str(error))
+            return
+
+        provider = LlamaCppProvider(settings)
         try:
             models = await provider.list_models()
         except AIProviderError as error:
-            status.update(f"{error}\nStart llama-server, then press ^R.")
+            status.update(str(error))
             return
         finally:
             await provider.close()
 
         if not models:
-            status.update("llama-server has no model loaded.")
+            status.update(
+                "No models found. Set the models folder, then press ^R."
+            )
             return
 
         models.sort(key=lambda item: (item.display_name.casefold(), item.key))
@@ -281,7 +317,6 @@ class ModelPickerScreen(ModalScreen[str | None]):
                 model.params or "?",
                 model.quantization or "?",
                 format_context(model.max_context_length),
-                thinking_label(model),
                 key=model.key,
             )
 
@@ -293,18 +328,30 @@ class ModelPickerScreen(ModalScreen[str | None]):
                     table.move_cursor(row=index)
                     break
 
-        status.update(f"{len(models)} downloaded")
+        status.update(f"{len(models)} available")
         table.focus()
 
     def action_reload(self) -> None:
-        self.query_one("#picker-status", Static).update("Asking llama-server...")
+        self.query_one("#picker-status", Static).update("Looking for models...")
         self.run_worker(self._load(), exclusive=True)
+
+    async def _release_server(self) -> None:
+        """Stop the server this screen started, if it started one.
+
+        Picking a model must not leave a process behind. A server that was
+        already running is untouched -- `stop()` no-ops unless we spawned it.
+        """
+        server, self._server = self._server, None
+        if server is not None:
+            await server.stop()
 
     @on(DataTable.RowSelected)
     def choose(self, event: DataTable.RowSelected) -> None:
+        self.run_worker(self._release_server())
         self.dismiss(event.row_key.value)
 
     def action_cancel(self) -> None:
+        self.run_worker(self._release_server())
         self.dismiss(None)
 
 
@@ -476,10 +523,12 @@ class SettingsPane(Vertical):
                 self._status = "Set the endpoint first."
                 self._redraw()
                 return
+            models_dir = self._values.get("ai.models_dir")
             self.app.push_screen(
                 ModelPickerScreen(
                     str(endpoint),
                     current=self._values.get("ai.model"),
+                    models_dir=str(models_dir) if models_dir else None,
                 ),
                 lambda chosen: self._accept(field, chosen),
             )
