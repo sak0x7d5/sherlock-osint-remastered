@@ -337,6 +337,17 @@ def build_profile_provenance(
     ]
 
 
+# The anchor caveat, as STORED on the profile. It is also stated by the
+# renderer for every aggregate profile, so the two say the same thing and the
+# renderer drops this one rather than printing the caveat twice. Named here, and
+# imported there, so the sentence cannot drift out of alignment on one side and
+# quietly start appearing twice again.
+AGGREGATE_ANCHOR_WARNING = (
+    "No anchor was supplied. Values may describe different people "
+    "who use the same username."
+)
+
+
 def synthesis_warnings(evidence: SynthesisEvidence) -> list[str]:
     warnings: list[str] = []
     if evidence.pending_site_ids:
@@ -384,11 +395,7 @@ def aggregate_synthesis(
 
     warnings = synthesis_warnings(evidence)
     if strong_profile:
-        warnings.insert(
-            0,
-            "No anchor was supplied. Values may describe different people "
-            "who use the same username.",
-        )
+        warnings.insert(0, AGGREGATE_ANCHOR_WARNING)
     return ProfileSynthesis(
         username=username,
         input_hash=input_hash,

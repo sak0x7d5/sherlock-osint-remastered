@@ -16,6 +16,7 @@ from sherlock_project.notify import (
 )
 from sherlock_project.profile_synthesis import ProfileSynthesis
 from sherlock_project.result import QueryResult, QueryStatus
+from sherlock_project.settings import TRANSPORT_DOC_URL
 
 
 def _reporter(
@@ -70,6 +71,56 @@ def _structured_error() -> StructuredResponseError:
         final_content_chars=4701,
         validation_error="json_invalid",
     )
+
+
+def test_restored_hits_say_when_no_browser_found_them() -> None:
+    """`show` already qualifies these rows; the scan has to as well.
+
+    A resumed run reprints stored hits before scanning. Left unqualified, the
+    reader acting on the output right now is the one not told that a browser
+    never saw the page.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.restored_results(
+        username="blue",
+        results={
+            "FastHit": {
+                "status": _result("FastHit", QueryStatus.CLAIMED),
+                "transport": "http",
+            },
+            "BrowserHit": {
+                "status": _result("BrowserHit", QueryStatus.CLAIMED),
+                "transport": "browser",
+            },
+        },
+        to_scan=3,
+    )
+
+    lines = output.getvalue().splitlines()
+    fast = next(line for line in lines if "FastHit" in line)
+    browser = next(line for line in lines if "BrowserHit" in line)
+    assert "stored, no browser" in fast
+    assert "stored" in browser
+    assert "no browser" not in browser
+
+
+def test_browserless_transport_states_the_limit_before_the_scan() -> None:
+    """The warning has to carry the WHY, not just the mode name.
+
+    "Fast transport" alone tells a reader nothing about how to read the results
+    it is about to produce, which is the entire reason this prints.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.browserless_transport()
+
+    rendered = output.getvalue()
+    assert "without a browser" in rendered
+    assert "assembled in the browser" in rendered
+    assert 'read as "not found"' in rendered
+    # Printed, not only linked: OSC 8 does not survive a redirect to a file.
+    assert TRANSPORT_DOC_URL in rendered
 
 
 def test_scan_output_uses_instance_counters_and_keeps_claimed_sites() -> None:
@@ -668,6 +719,39 @@ def test_verbose_trace_shows_malformed_final_and_unexpected_native_reasoning() -
     assert "despite reasoning-off mode" in rendered
 
 
+def test_verbose_trace_stays_quiet_when_native_reasoning_is_the_design() -> None:
+    """A model that cannot stop thinking is not ignoring us.
+
+    Warning per site on a scan that deliberately relies on native reasoning
+    buries the warnings that mean something.
+    """
+    reporter, output, _ = _reporter(verbose=True)
+    trace = replace(
+        _trace(),
+        native_reasoning="planned thought",
+        native_reasoning_expected=True,
+        structured_reasoning="",
+        stats=AIGenerationStats(reasoning_tokens=7),
+    )
+
+    reporter.ai_trace(trace)
+
+    rendered = output.getvalue()
+    assert "planned thought" in rendered
+    assert "Native reasoning (transient)" in rendered
+    assert "despite reasoning-off mode" not in rendered
+    assert "Unexpected native reasoning" not in rendered
+
+
+def test_verbose_trace_flags_a_reasoning_field_the_variant_forbade() -> None:
+    reporter, output, _ = _reporter(verbose=True)
+    trace = replace(_trace(), native_reasoning_expected=True)
+
+    reporter.ai_trace(trace)
+
+    assert "despite the no-reasoning prompt" in output.getvalue()
+
+
 def test_verbose_trace_shows_expected_pass_two_native_reasoning() -> None:
     reporter, output, _ = _reporter(verbose=True)
     trace = replace(
@@ -975,12 +1059,57 @@ def test_anchored_profile_shows_the_anchors_it_was_built_from() -> None:
     reporter.render_profile(profile)
 
     rendered = output.getvalue()
-    assert "anchored to" in rendered
-    assert "name=Avery Stone" in rendered
-    # Trust is shown only when it is not the default.
-    assert "roles=Hacker [context]" in rendered
-    assert "name=Avery Stone [strong]" not in rendered
-    assert "city=Oslo (from case notes)" in rendered
+    # A SECTION, headed and shaped exactly like CONFIDENT and MATCHING -- an
+    # anchor is a field and a value about this person, same as they hold.
+    assert "ANCHORS" in rendered
+    assert "anchored to" not in rendered
+    assert "name=Avery Stone" not in rendered
+    for field, value in (("name", "Avery Stone"), ("roles", "Hacker"), ("city", "Oslo")):
+        assert field in rendered
+        assert value in rendered
+
+    # Trust is named only when it is NOT the default. It no longer influences
+    # anything observable and the UI stopped offering it, so printing "strong"
+    # beside every anchor would restate a value nobody chose. A level somebody
+    # did choose -- on the command line -- still shows.
+    assert "strong" not in rendered
+    assert "context" in rendered
+    # Real provenance is kept...
+    assert "case notes" in rendered
+
+
+def test_internal_anchor_sources_are_not_printed() -> None:
+    """"you typed it here" is not provenance.
+
+    `command_line` and `user_interface` are how the code labels its own entry
+    points. Printed beside every anchor as "(from user_interface)" they read as
+    debug output and crowd out the part that means something.
+    """
+    reporter, output, _ = _reporter()
+    profile = ProfileSynthesis.model_validate(
+        {
+            "username": "fixture_handle",
+            "input_hash": "hash",
+            "mode": "anchored",
+            "resolution_status": "resolved",
+            "completeness": "partial",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+            "anchors": [
+                {"field": "name", "value": "ryan", "trust": "verified",
+                 "source": "user_interface"},
+                {"field": "city", "value": "Oslo", "source": "case notes"},
+            ],
+        }
+    )
+    reporter.render_profile(profile)
+    rendered = output.getvalue()
+
+    assert "ANCHORS" in rendered
+    assert "user_interface" not in rendered
+    assert "command_line" not in rendered
+    # The anchor itself, and a source worth having, both survive.
+    assert "ryan" in rendered
+    assert "case notes" in rendered
 
 
 def test_anchorless_profile_shows_no_anchor_row() -> None:

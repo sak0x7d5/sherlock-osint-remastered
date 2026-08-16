@@ -103,7 +103,51 @@ async def test_ensure_model_loaded_posts_expected_configuration():
         "model": "example/model",
         "context_length": 8192,
         "echo_load_config": True,
+        "ttl_seconds": 300,
     }
+
+
+async def _load_body(settings: AISettings) -> dict:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(200, json={"models": [_model()]})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"type": "llm", "status": "loaded"})
+
+    bodies: list[dict] = []
+    await _provider(handler, settings=settings).ensure_model_loaded()
+    return bodies[0]
+
+
+async def test_idle_unload_is_sent_in_seconds_under_lm_studios_key():
+    """The config is minutes; the wire is `ttl_seconds`, and only that spelling.
+
+    `ttl` is what LM Studio documents, and both this endpoint and /api/v1/chat
+    reject it with HTTP 400 -- which fails the load rather than degrading to no
+    TTL, so the name is worth a test of its own.
+    """
+    body = await _load_body(
+        AISettings(
+            base_url="http://lmstudio.test",
+            model="example/model",
+            unload_after_minutes=15,
+        )
+    )
+
+    assert body["ttl_seconds"] == 900
+
+
+async def test_never_unloading_omits_the_key_rather_than_sending_zero():
+    """0 minutes means "keep it", and 0 seconds would mean "drop it at once"."""
+    body = await _load_body(
+        AISettings(
+            base_url="http://lmstudio.test",
+            model="example/model",
+            unload_after_minutes=0,
+        )
+    )
+
+    assert "ttl_seconds" not in body
 
 
 async def test_loaded_model_is_reused_without_load_request():

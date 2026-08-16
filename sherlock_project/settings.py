@@ -19,7 +19,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sherlock_project.ai_config import AISettings, SherlockSettings
+from sherlock_project.ai_config import (
+    DEFAULT_LM_STUDIO_BASE_URL,
+    AISettings,
+    OutputSettings,
+    ScanSettings,
+    SherlockSettings,
+)
 
 SettingSource = Literal["flag", "config", "default"]
 
@@ -62,6 +68,7 @@ class RuntimeSettings:
     timeout: ResolvedValue
     proxy: ResolvedValue
     nsfw: ResolvedValue
+    webbrowser: ResolvedValue
     color: ResolvedValue
     verbose: ResolvedValue
 
@@ -76,6 +83,7 @@ class RuntimeSettings:
             ("timeout", self.timeout),
             ("proxy", self.proxy),
             ("nsfw sites", self.nsfw),
+            ("web browser", self.webbrowser),
             ("color", self.color),
             ("verbose", self.verbose),
         )
@@ -93,6 +101,8 @@ def resolve_runtime_settings(
     timeout: int | None,
     proxy: str | None,
     nsfw: bool | None,
+    webbrowser: bool | None,
+    no_webbrowser: bool | None,
     no_color: bool | None,
     verbose: bool | None,
 ) -> RuntimeSettings:
@@ -101,6 +111,11 @@ def resolve_runtime_settings(
     `no_color` is inverted on the way in: the flag expresses the negative
     because that is what a terminal user reaches for, while the stored setting
     expresses the positive because that is what reads correctly in a file.
+
+    The transport takes BOTH flags, and they are mutually exclusive at the
+    parser. The positive one is not redundant with the default: it is the only
+    way to override a stored `webbrowser = false` for one run, on the setting
+    where being unable to do that changes whether the answers are right.
     """
     scan_defaults = type(stored.scan)()
     output_defaults = type(stored.output)()
@@ -126,6 +141,11 @@ def resolve_runtime_settings(
             config=stored.scan.nsfw,
             default=scan_defaults.nsfw,
         ),
+        webbrowser=resolve_value(
+            flag=(True if webbrowser else (False if no_webbrowser else None)),
+            config=stored.scan.webbrowser,
+            default=scan_defaults.webbrowser,
+        ),
         color=resolve_value(
             flag=(False if no_color else None),
             config=stored.output.color,
@@ -150,6 +170,33 @@ def resolve_runtime_settings(
 
 FieldKind = Literal["spin", "toggle", "text", "model"]
 
+# A field this build ships no value for. Distinct from None, which IS the
+# shipped value of `scan.proxy` -- "no proxy" is an answer, while "no model"
+# is the absence of one and cannot be reset to.
+NO_DEFAULT = object()
+
+# PLACEHOLDER. The page does not exist yet and the repository is still private,
+# so this 404s for anyone who follows it. Tracked in TODO; do not ship a release
+# pointing at example.com. Every message carrying it states its reason in full
+# first, so it is always a "read more" and never the only explanation.
+#
+# PRINTED AS PLAIN TEXT, never as a terminal hyperlink. That was tried and
+# measured on 2026-08-12: Textual does not emit OSC 8 for a Rich `link` style at
+# all, so in the settings screen -- the surface that most looked like it wanted
+# a link -- it was underlined text pretending to be clickable. Rich itself only
+# emits OSC 8 outside the legacy Windows console, so even the scan warning
+# worked in Windows Terminal and not in cmd.exe. A plain URL is honest, is
+# copyable everywhere, and terminals that autodetect URLs make it clickable
+# themselves without us claiming they will.
+# EMPTY, deliberately. It held "https://example.com" as a placeholder, which
+# meant every surface carrying it -- the settings help line, the plain-text
+# listing, the scan warning -- offered a "read more" that went nowhere. An
+# obviously fake link is worse than no link: it reads as an oversight in a tool
+# whose whole job is telling you what is real. Put the real URL here when the
+# page exists; everything that prints it already guards on it being non-empty,
+# so nothing needs changing but this line.
+TRANSPORT_DOC_URL = ""
+
 
 @dataclass(frozen=True, slots=True)
 class SettingField:
@@ -162,7 +209,20 @@ class SettingField:
     # number this list does not offer -- so stepping moves to the nearest
     # neighbour rather than rejecting what it finds.
     choices: tuple[Any, ...] = ()
-    note: str = ""
+    doc_url: str = ""
+    # Only for fields the schema marks required but the tool still has a
+    # conventional starting value for -- the LM Studio endpoint is required
+    # because there is nothing sane to fall back to at load time, yet
+    # "put it back to the usual one" is a real thing to want.
+    default: Any = NO_DEFAULT
+    # Printed after the value. For the fields whose number means nothing on its
+    # own: `‹ 5 ›` does not say five of what, and the label column is too narrow
+    # to answer it for every row that needs it.
+    unit: str = ""
+    # What 0 means, when it means something other than zero-of-the-unit.
+    # "unload after 0 min" reads as "immediately" and means the exact opposite,
+    # so the sentinel is spelled out rather than shown as a number.
+    zero_label: str = ""
 
     @property
     def key(self) -> str:
@@ -171,7 +231,10 @@ class SettingField:
 
 SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField("ai", "model", "model", "model"),
-    SettingField("ai", "base_url", "endpoint", "text"),
+    SettingField(
+        "ai", "base_url", "endpoint", "text",
+        default=DEFAULT_LM_STUDIO_BASE_URL,
+    ),
     SettingField(
         "ai", "temperature", "temperature", "spin",
         tuple(round(step / 10, 1) for step in range(11)),
@@ -179,6 +242,19 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField(
         "ai", "context_length", "context length", "spin",
         (2048, 4096, 8192, 16384, 32768, 65536, 131072),
+    ),
+    SettingField(
+        "ai", "unload_after_minutes", "unload after", "spin",
+        (0, 5, 15, 30, 60),
+        unit="min",
+        zero_label="never",
+    ),
+    # First in its section because it is the setting here with the largest
+    # effect on what a scan finds -- everything below it changes how fast or
+    # how broad the scan is, this one changes whether an answer is right.
+    SettingField(
+        "scan", "webbrowser", "web browser", "toggle",
+        doc_url=TRANSPORT_DOC_URL,
     ),
     SettingField(
         "scan", "concurrency", "concurrency", "spin",
@@ -209,6 +285,174 @@ def field_values(settings: SherlockSettings) -> dict[str, Any]:
             None if section is None else getattr(section, field.name, None)
         )
     return values
+
+
+SECTION_MODELS: dict[str, type] = {
+    "ai": AISettings,
+    "scan": ScanSettings,
+    "output": OutputSettings,
+}
+
+
+def field_default(field: SettingField) -> Any:
+    """What this build ships for a field, or NO_DEFAULT if it ships nothing.
+
+    Read off the pydantic model rather than restated here, so the screen's idea
+    of a default can never drift from the one the config loader and the CLI
+    use. `ai.model` is the one field with no answer -- which model is right
+    depends on what the user has downloaded, so there is nothing to restore.
+    """
+    if field.default is not NO_DEFAULT:
+        return field.default
+    info = SECTION_MODELS[field.section].model_fields[field.name]
+    return NO_DEFAULT if info.is_required() else info.default
+
+
+@dataclass(frozen=True, slots=True)
+class FieldFlag:
+    """A terse label riding on a row, and whether it is the risky side.
+
+    `warning` drives colour rather than the screen guessing from the words:
+    "faster; inaccurate" and "slower; accurate" are the two halves of one
+    choice, and only one of them should look like an alarm.
+    """
+
+    text: str = ""
+    warning: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.text)
+
+
+def field_note(field: SettingField, value: Any) -> FieldFlag:
+    """The two- or three-word label that rides on the row itself.
+
+    BOTH sides of a genuine trade-off are labelled, not just the risky one.
+    "slower; accurate" beside the default is what says the default was a
+    decision rather than an oversight, and it is the only thing that makes the
+    faster mode discoverable to someone who never opens the help line. What
+    must not grow labels is every unrelated row: eleven captions is wallpaper,
+    and the one worth reading would be lost in it.
+
+    It states the TRADE, never the mechanism -- two words cannot carry
+    "client-side rendering" without lying by compression, and the trade is what
+    the reader is choosing between anyway. The mechanism belongs in
+    `field_description`, which has room to be accurate.
+
+    This short because it has to survive the cursor being on some other row,
+    which is exactly when a warning gets missed.
+    """
+    if field.key == "scan.webbrowser":
+        if value:
+            return FieldFlag("slower; accurate")
+        return FieldFlag("faster; inaccurate", warning=True)
+    return FieldFlag()
+
+
+def field_description(field: SettingField, value: Any) -> str:
+    """What the selected setting does, in the terms of someone using the tool.
+
+    Shown for whichever row the cursor is on, so every field can afford a real
+    sentence -- printed against all eleven rows at once this would be a wall
+    nobody reads, which is why the inline notes stay terse.
+
+    Keyed on the value where the value changes the answer. A transport is not
+    "the browser setting", it is either "this is why the results are
+    trustworthy" or "this is what you are giving up", and only one of those is
+    true at a time.
+
+    Lives here rather than in the screen so the wording is testable without a
+    terminal, and so both surfaces read from one source.
+    """
+    # WORDING, decided 2026-08-12 and worth not re-litigating. "No JavaScript"
+    # names the mechanism correctly but sounds like a smaller thing than it is.
+    # "Dynamic sites" is the tempting plain-English swap and is WRONG in the
+    # direction that matters: a server-rendered site is dynamic and arrives
+    # complete, so the fast path handles it fine. The failure is specifically
+    # CLIENT-SIDE RENDERING -- the server sends a shell and the page is built
+    # afterwards, in the browser. So: describe that, in plain words, and name
+    # the term once so anyone who wants to look it up can.
+    if field.key == "scan.webbrowser":
+        if value:
+            return (
+                "Loads each page the way a real browser does, including the "
+                "code that runs after the page arrives. Slower, and the reason "
+                "the results can be trusted."
+            )
+        return (
+            "Fetches only what the server sends back. Sites that assemble "
+            "their profile page in the browser afterwards (client-side "
+            "rendering) arrive as an empty shell, and some refuse a plain "
+            "request outright -- so a real account can be reported as absent."
+        )
+    return _STATIC_DESCRIPTIONS.get(field.key, "")
+
+
+# Descriptions that do not depend on the current value. Held apart from
+# SETTING_FIELDS so the field table stays a table of what a setting IS, rather
+# than growing a paragraph per row.
+_STATIC_DESCRIPTIONS: dict[str, str] = {
+    "ai.model": (
+        "Which local model runs both AI passes. The picker lists what LM "
+        "Studio has downloaded, so it needs the server running."
+    ),
+    "ai.base_url": (
+        "Where LM Studio is listening. The LM_STUDIO_BASE_URL environment "
+        "variable overrides this for a single run."
+    ),
+    "ai.temperature": (
+        "How much the model varies its wording. Extraction is not a creative "
+        "task, so low keeps it literal."
+    ),
+    "ai.context_length": (
+        "How much of a page the model can read at once. Larger sees more of a "
+        "long profile and costs proportionally more memory."
+    ),
+    "ai.unload_after_minutes": (
+        "How long the model may sit idle before LM Studio frees the memory it "
+        "is holding. Only worth raising if you tend to run another scan soon "
+        "after; the model is several GB, and it waits there either way. Set to "
+        "never to keep it loaded until you unload it yourself."
+    ),
+    "scan.concurrency": (
+        "How many sites are checked at the same time. Higher is faster until "
+        "the network or the sites themselves push back."
+    ),
+    "scan.timeout": (
+        "Seconds to wait for one site before giving up. A site that times out "
+        "is recorded as inconclusive -- never as absent."
+    ),
+    "scan.proxy": (
+        "Route every request through this proxy. Applies to both transports."
+    ),
+    "scan.nsfw": (
+        "Include the sites the manifest flags as NSFW. They are skipped by "
+        "default."
+    ),
+    "output.color": "Colour terminal output.",
+    "output.verbose": (
+        "Show the diagnostic detail behind a run: per-request traces, model "
+        "failures, and what was skipped."
+    ),
+}
+
+
+def value_label(field: SettingField, value: Any) -> str:
+    """A field's value as words, before any surface decorates it.
+
+    Lives here, beside `unit` and `zero_label`, because it is the same decision
+    they are: what a stored number MEANS is part of what the setting is, not
+    something the screen invents. Both surfaces that print a value read it from
+    here, so a setting cannot end up reading two ways in two places.
+
+    Returns `str(value)` untouched for every field that declares neither, which
+    is all of them but one.
+    """
+    if field.zero_label and value == 0 and not isinstance(value, bool):
+        return field.zero_label
+    if field.unit and value is not None and value != "":
+        return f"{value} {field.unit}"
+    return str(value)
 
 
 def step_value(field: SettingField, current: Any, delta: int) -> Any:

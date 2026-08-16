@@ -21,7 +21,15 @@ from sherlock_project.ai_config import (
     save_settings,
     try_load_settings,
 )
-from sherlock_project.settings import resolve_runtime_settings, resolve_value
+from sherlock_project.settings import (
+    NO_DEFAULT,
+    SETTING_FIELDS,
+    field_default,
+    field_description,
+    field_note,
+    resolve_runtime_settings,
+    resolve_value,
+)
 
 
 def _resolve(stored: SherlockSettings, **flags):
@@ -30,6 +38,8 @@ def _resolve(stored: SherlockSettings, **flags):
         "timeout": None,
         "proxy": None,
         "nsfw": None,
+        "webbrowser": None,
+        "no_webbrowser": None,
         "no_color": None,
         "verbose": None,
     }
@@ -88,6 +98,139 @@ def test_no_color_flag_inverts_into_the_stored_positive():
     assert _resolve(stored, no_color=True).color.value is False
     assert _resolve(stored).color.value is True
     assert _resolve(SherlockSettings(output=OutputSettings(color=False))).color.source == "config"
+
+
+def test_no_webbrowser_flag_inverts_into_the_stored_positive():
+    """The flag says --no-webbrowser; the file says webbrowser = true."""
+    stored = SherlockSettings()
+
+    assert _resolve(stored).webbrowser.value is True
+    assert _resolve(stored, no_webbrowser=True).webbrowser.value is False
+    assert _resolve(stored, no_webbrowser=True).webbrowser.source == "flag"
+
+
+def test_the_browser_can_be_forced_back_on_for_one_run():
+    """Without the positive flag, a stored `webbrowser = false` is a one-way
+    door: every later scan is degraded and no command line can undo it for a
+    single run, on the one setting that decides whether answers are right."""
+    stored = SherlockSettings(scan=ScanSettings(webbrowser=False))
+
+    assert _resolve(stored).webbrowser.value is False
+    assert _resolve(stored, webbrowser=True).webbrowser.value is True
+    assert _resolve(stored, webbrowser=True).webbrowser.source == "flag"
+
+
+def test_a_stored_browserless_default_is_reported_at_scan_start():
+    """The setting that changes what a scan FINDS is the one that must be echoed.
+
+    Someone reading the output days later has no other way to know the browser
+    was off -- it is not in the command line, because nobody typed it.
+    """
+    stored = SherlockSettings(scan=ScanSettings(webbrowser=False))
+
+    resolved = _resolve(stored)
+
+    assert resolved.webbrowser.source == "config"
+    assert resolved.from_config() == {"web browser": False}
+
+
+def test_defaults_come_from_the_schema_not_from_a_second_list():
+    """A restated default is one that can silently disagree with the real one."""
+    def field(key: str):
+        return next(item for item in SETTING_FIELDS if item.key == key)
+
+    assert field_default(field("scan.concurrency")) == 30
+    assert field_default(field("scan.webbrowser")) is True
+    assert field_default(field("output.color")) is True
+
+
+def test_no_proxy_is_an_answer_but_no_model_is_an_absence():
+    """The distinction the reset key turns on.
+
+    `scan.proxy` really does ship as None, so resetting it to None is correct.
+    `ai.model` has no shipped value at all -- which model is right depends on
+    what the user downloaded -- so there is nothing to restore and blanking it
+    would be worse than refusing.
+    """
+    def field(key: str):
+        return next(item for item in SETTING_FIELDS if item.key == key)
+
+    assert field_default(field("scan.proxy")) is None
+    assert field_default(field("ai.model")) is NO_DEFAULT
+    assert field_default(field("ai.base_url")) == "http://127.0.0.1:1234"
+
+
+def test_both_sides_of_the_transport_trade_are_labelled():
+    """The default needs a label too, or it reads as an oversight.
+
+    "slower; accurate" beside the browser is what says the default was chosen,
+    and it is the only thing making the faster mode discoverable to someone who
+    never reads the help line. Only the risky side is flagged as a warning,
+    because only one of the two should look like an alarm.
+    """
+    field = next(item for item in SETTING_FIELDS if item.key == "scan.webbrowser")
+
+    on = field_note(field, True)
+    off = field_note(field, False)
+
+    assert (on.text, on.warning) == ("slower; accurate", False)
+    assert (off.text, off.warning) == ("faster; inaccurate", True)
+
+
+def test_no_setting_offers_a_placeholder_link():
+    """A "read more" that goes nowhere is worse than none at all.
+
+    `TRANSPORT_DOC_URL` was "https://example.com" while the real page did not
+    exist, and it was printed on the settings help line, in the plain-text
+    listing and in the scan warning -- an obviously fake link, in a tool whose
+    job is telling you what is real. It is empty until there is a page; every
+    surface already guards on it being non-empty.
+    """
+    for field in SETTING_FIELDS:
+        assert "example.com" not in field.doc_url, (
+            f"{field.key} points at a placeholder URL"
+        )
+
+
+def test_unremarkable_settings_carry_no_label():
+    """Labelling all eleven rows is wallpaper, and buries the one that counts."""
+    for key in ("scan.concurrency", "scan.timeout", "output.verbose"):
+        field = next(item for item in SETTING_FIELDS if item.key == key)
+        assert not field_note(field, 30)
+
+
+def test_the_transport_description_changes_with_the_transport():
+    """"The browser setting" is two different facts depending on its value.
+
+    On, the sentence worth reading is why the results can be trusted; off, it
+    is what has been given up. A single value-independent caption could only
+    say one of them, and would be wrong half the time.
+    """
+    field = next(item for item in SETTING_FIELDS if item.key == "scan.webbrowser")
+
+    assert "can be trusted" in field_description(field, True)
+    assert "reported as absent" in field_description(field, False)
+
+
+def test_the_transport_description_names_the_real_mechanism():
+    """"Dynamic sites" is the tempting simplification and is wrong in the
+    direction that matters -- a server-rendered site is dynamic and arrives
+    complete, so the fast path handles it fine. The failure is client-side
+    rendering specifically, and the term is named once so it can be looked up.
+    """
+    field = next(item for item in SETTING_FIELDS if item.key == "scan.webbrowser")
+
+    assert "client-side rendering" in field_description(field, False)
+
+
+def test_every_setting_has_something_to_say_for_itself():
+    """The help line is worthless if it is blank on most rows.
+
+    It also guards the next setting added: a field with no description silently
+    produces an empty caption rather than an error.
+    """
+    for field in SETTING_FIELDS:
+        assert field_description(field, None).strip(), field.key
 
 
 def test_resolve_value_treats_false_as_an_answer():

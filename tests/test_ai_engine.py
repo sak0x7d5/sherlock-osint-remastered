@@ -1155,3 +1155,152 @@ async def test_pass_one_contract_hash_ignores_the_widened_budget():
 
     assert service.pass_one_max_tokens != 1024
     assert service.pass_one_contract_hash == baseline
+
+
+def _model_info(reasoning: tuple[str, ...]):
+    from sherlock_project.ai_provider import AIModelInfo
+
+    return AIModelInfo(
+        key="vendor/model",
+        display_name="Model",
+        quantization=None,
+        params=None,
+        loaded=True,
+        max_context_length=None,
+        reasoning_options=reasoning,
+    )
+
+
+async def test_always_thinking_model_gets_the_no_reasoning_pass_one_prompt():
+    """Prompt and schema have to move together, or neither moves.
+
+    Nothing in the request enforces the schema -- it is sent as prompt text --
+    so dropping the field from the model while leaving two worked examples that
+    show `reasoning` would just produce a response the model then rejects.
+    """
+    traces: list[AIRequestTrace] = []
+    service, provider = _service(
+        [_completion(json.dumps({"extraction": {"full_name": ["Jane Doe"]}}))],
+        traces=traces,
+    )
+    service._model_info = _model_info(("on",))
+
+    response = await service.extract_profile(
+        "sample_handle",
+        "Example",
+        "Jane Doe",
+        known_profile_keys=[],
+    )
+
+    assert response.extraction == {"full_name": ["Jane Doe"]}
+    system_prompt = str(provider.generate_calls[0]["system_prompt"])
+    assert "Do not repeat your thinking inside the JSON object" in system_prompt
+    assert "One short clause per owner-evidence line" not in system_prompt
+    assert '"reasoning"' not in system_prompt
+    assert traces[0].native_reasoning_expected is True
+
+
+async def test_reasoning_off_model_keeps_the_scaffolded_pass_one_prompt():
+    traces: list[AIRequestTrace] = []
+    service, provider = _service(
+        [_completion({"extraction": {"full_name": ["Jane Doe"]}})],
+        traces=traces,
+    )
+    service._model_info = _model_info(("off", "on"))
+
+    await service.extract_profile(
+        "sample_handle",
+        "Example",
+        "Jane Doe",
+        known_profile_keys=[],
+    )
+
+    system_prompt = str(provider.generate_calls[0]["system_prompt"])
+    assert "One short clause per owner-evidence line" in system_prompt
+    assert traces[0].native_reasoning_expected is False
+
+
+async def test_always_thinking_model_keeps_an_extraction_that_carries_reasoning():
+    """A stray field is a habit, not a failure.
+
+    Rejecting a usable extraction because the model also narrated would
+    recreate the truncation-shaped failure this variant exists to remove. The
+    field is surfaced in the trace instead, so a verbose run shows the prompt
+    did not land.
+    """
+    traces: list[AIRequestTrace] = []
+    service, _ = _service(
+        [
+            _completion(
+                json.dumps(
+                    {
+                        "reasoning": "include Jane Doe as full_name",
+                        "extraction": {"full_name": ["Jane Doe"]},
+                    }
+                )
+            )
+        ],
+        traces=traces,
+    )
+    service._model_info = _model_info(("on",))
+
+    response = await service.extract_profile(
+        "sample_handle",
+        "Example",
+        "Jane Doe",
+        known_profile_keys=[],
+    )
+
+    assert response.extraction == {"full_name": ["Jane Doe"]}
+    assert traces[0].validation_error is None
+    assert traces[0].structured_reasoning == "include Jane Doe as full_name"
+
+
+async def test_pass_one_contract_hash_ignores_the_prompt_variant():
+    """Both variants store the same artifact under the same value contract.
+
+    Hashing whichever prompt a given model was sent would make the contract
+    model-dependent by the back door: every cached extraction would be stranded
+    on configuring an always-thinking model, and stranded again on switching
+    back.
+    """
+    from sherlock_project.ai_engine import (
+        PASS_ONE_NATIVE_REASONING_PROMPT_PATH,
+        PASS_ONE_PROMPT_PATH,
+    )
+
+    service, _ = _service()
+    baseline = service.pass_one_contract_hash
+    service._model_info = _model_info(("on",))
+
+    assert service.pass_one_contract_hash == baseline
+    assert pass_one_contract_hash() == baseline
+    # Not vacuous: the prompts really do differ.
+    assert PASS_ONE_NATIVE_REASONING_PROMPT_PATH.read_text(
+        encoding="utf-8"
+    ) != PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+async def test_both_pass_one_prompts_share_every_extraction_rule():
+    """Two files, one contract -- only the Output section may differ.
+
+    They are edited by hand and nothing else notices drift. A rule added to one
+    and not the other silently changes what a scan finds depending on which
+    model is configured.
+    """
+    from sherlock_project.ai_engine import (
+        PASS_ONE_NATIVE_REASONING_PROMPT_PATH,
+        PASS_ONE_PROMPT_PATH,
+    )
+
+    def section(prompt: str, heading: str) -> str:
+        return prompt.split(f"\n{heading}\n", maxsplit=1)[1].split(
+            "\n## ",
+            maxsplit=1,
+        )[0].strip()
+
+    canonical = PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8")
+    variant = PASS_ONE_NATIVE_REASONING_PROMPT_PATH.read_text(encoding="utf-8")
+
+    for heading in ("## Input", "## Extract", "## Skip", "## Keys"):
+        assert section(canonical, heading) == section(variant, heading), heading

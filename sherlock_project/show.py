@@ -97,6 +97,22 @@ def build_show_parser() -> ArgumentParser:
     return parser
 
 
+# The stored transport that did NOT run a browser. "browser" and "api" both
+# go through one; "http" is the plain request, which runs no JavaScript.
+_BROWSERLESS_TRANSPORT = "http"
+
+
+def _transport_note(transport: str | None) -> str | None:
+    """The words that go beside a result fetched without a browser.
+
+    Only the browserless case is annotated. Labelling every browser result too
+    would make the exception invisible, which is the opposite of the point. A
+    NULL transport is a row written before the column existed -- unknown, which
+    is not the same as "no browser", so it is left unmarked rather than guessed.
+    """
+    return "no browser" if transport == _BROWSERLESS_TRANSPORT else None
+
+
 def _claimed_accounts(saved_rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Stored rows for sites where the username was found, name-sorted."""
     claimed = [
@@ -104,6 +120,7 @@ def _claimed_accounts(saved_rows: dict[str, dict[str, Any]]) -> list[dict[str, A
             "site_name": site_name,
             "url": row.get("site_url") or "",
             "confidence": row.get("confidence"),
+            "transport": row.get("transport"),
             "scanned_at": row.get("scanned_at"),
         }
         for site_name, row in saved_rows.items()
@@ -137,6 +154,7 @@ def _unresolved_sites(
             "url": row.get("site_url") or "",
             "status": row.get("status"),
             "reason": _UNRESOLVED_REASONS[str(row.get("status"))],
+            "transport": row.get("transport"),
             "context": row.get("error_context") or None,
         }
         for site_name, row in saved_rows.items()
@@ -268,6 +286,12 @@ def _report_unresolved(
     )
     for entry in unresolved:
         detail = entry["reason"]
+        # Before the context, not after: "no browser" is often the whole
+        # explanation for an inconclusive result, and burying it behind a
+        # timeout message hides the cause behind the symptom.
+        note = _transport_note(entry["transport"])
+        if note:
+            detail = f"{detail}; {note}"
         if entry["context"]:
             detail = f"{detail}; {entry['context']}"
         reporter.warning(f"{entry['site_name']}: {entry['url']}", detail=detail)
@@ -310,7 +334,12 @@ def _report(
             qualifier = ""
             if account["confidence"] and account["confidence"] != "Confirmed":
                 qualifier = f" [{account['confidence']}]"
-            reporter.success(f"{account['site_name']}: {account['url']}{qualifier}")
+            # A hit found without a browser is weaker evidence than one found
+            # with it, and months later this is the only place that says so.
+            reporter.success(
+                f"{account['site_name']}: {account['url']}{qualifier}",
+                detail=_transport_note(account["transport"]),
+            )
 
     if want_accounts or want_unresolved:
         _report_unresolved(reporter, record, listing=want_unresolved)

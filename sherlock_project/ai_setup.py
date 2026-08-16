@@ -109,11 +109,12 @@ def _warn_native_reasoning(model: AIModelInfo, *, console: Console) -> None:
     Studio returns thinking as a separate output item, so the structured reply
     still parses.
 
-    What they cost is accuracy, and the reason is worth stating rather than
-    hinting at. Pass 1 asks the model to reason INSIDE the response, in a
-    bounded field it can audit, and the prompt is tuned for that. A model that
-    also thinks natively is doing the work twice, against a shared output
-    budget, on instructions written for the other arrangement.
+    What they cost is no longer the double reasoning it used to be: Pass 1
+    sends such a model a variant prompt and schema that ask for the reasoning
+    natively and forbid it in the JSON, so the traversal happens once. What is
+    left is that the tuned path, the examples, and the measurements are all on
+    the other arrangement, and that thinking is not free in time. Say that,
+    rather than implying the model is broken or that it is fine.
     """
     if model.supports_reasoning_off:
         return
@@ -122,11 +123,12 @@ def _warn_native_reasoning(model: AIModelInfo, *, console: Console) -> None:
         "be told not to.[/yellow]"
     )
     console.print(
-        "    Sherlock's per-site extraction asks the model to reason inside "
-        "its answer instead, so this model reasons twice and is being used "
-        "against instructions written for the other arrangement. Extraction "
-        "quality is likely to be lower and each site slower. Extra output "
-        "budget is allowed to keep answers from being cut off."
+        "    Per-site extraction switches to a prompt that asks for that "
+        "thinking natively instead of inside the answer, so the work is not "
+        "done twice. Each site is still slower, and extraction quality is "
+        "likely to be lower than a model that can think with reasoning off: "
+        "this path is the less tested of the two. Extra output budget is "
+        "allowed to keep answers from being cut off."
     )
     if model.reasoning_options:
         console.print(

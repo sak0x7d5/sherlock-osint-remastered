@@ -25,6 +25,11 @@ class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
 
 class PlaywrightEngine:
+    # None means "the scan decides per site": a rule needing a POST goes out on
+    # the API transport, everything else renders in the browser. The
+    # browser-free engine pins this to one value instead -- see HttpEngine.
+    fixed_transport: str | None = None
+
     def __init__(
         self,
         concurrency: int = 30,

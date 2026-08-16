@@ -186,6 +186,8 @@ async def test_fresh_disables_the_saved_site_resume_filter(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 
@@ -262,6 +264,8 @@ async def test_concurrency_option_reaches_the_fetch_engine(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **kwargs: object) -> None:
             engine_kwargs.update(kwargs)
 
@@ -295,6 +299,192 @@ async def test_concurrency_option_reaches_the_fetch_engine(
     await sherlock_module.main()
 
     assert engine_kwargs["concurrency"] == 7
+
+
+async def test_browser_run_rescans_sites_the_fast_transport_did_not_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The contamination guard, end to end.
+
+    Measured live on 2026-08-12: the fast transport reported Instagram as NOT
+    FOUND for a username the browser found in the same minute. Without this
+    filter that false absence is stored, satisfies the resume rule forever, and
+    a later browser scan never revisits it -- the user would need --fresh, with
+    nothing on screen suggesting why.
+    """
+
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [
+                SimpleNamespace(name="FastHit", information={}),
+                SimpleNamespace(name="FastMiss", information={}),
+                SimpleNamespace(name="BrowserMiss", information={}),
+            ]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    def _row(name: str, status: str, transport: str) -> dict:
+        return {
+            "site_name": name,
+            "site_url": f"https://{name.lower()}.example/blue",
+            "status": status,
+            "status_code": 200,
+            "query_time_ms": 1.0,
+            "error_context": None,
+            "confidence": None,
+            "transport": transport,
+        }
+
+    class FakeDB:
+        closed = False
+
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {
+                "FastHit": _row("FastHit", "Claimed", "http"),
+                "FastMiss": _row("FastMiss", "Available", "http"),
+                "BrowserMiss": _row("BrowserMiss", "Available", "browser"),
+            }
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeEngine:
+        fixed_transport = None
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+    database = FakeDB()
+    scanned_sites: list[str] = []
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_scan(**kwargs: object) -> dict:
+        scanned_sites.extend(kwargs["site_data"])
+        return {}
+
+    monkeypatch.setattr(sys, "argv", ["sherlock", "--local", "blue"])
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+
+    await sherlock_module.main()
+
+    # The unconfirmed fast answer, and only that one: a fast HIT really did
+    # find its marker, and a browser answer is already the best available.
+    assert scanned_sites == ["FastMiss"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_engine"),
+    [
+        (["sherlock", "--local", "blue"], "browser"),
+        (["sherlock", "--local", "--no-webbrowser", "blue"], "http"),
+    ],
+)
+async def test_transport_choice_decides_which_engine_is_built(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_engine: str,
+):
+    """Not starting Chromium at all is most of what the fast mode buys.
+
+    Constructing the browser engine and then not fetching with it would keep
+    the startup cost the mode exists to avoid, and the saving would be
+    invisible to anyone measuring it.
+    """
+    built: list[str] = []
+
+    class FakeSites:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.items = [SimpleNamespace(name="Example", information={})]
+
+        def __iter__(self):
+            return iter(self.items)
+
+        def remove_nsfw_sites(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeDB:
+        closed = False
+
+        async def get_extraction_model_counts(
+            self,
+            _username: str,
+        ) -> dict[str | None, int]:
+            return {}
+
+        async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
+            return {}
+
+        async def close(self) -> None:
+            self.closed = True
+
+    def _engine(name: str):
+        class FakeEngine:
+            fixed_transport = None if name == "browser" else "http"
+
+            def __init__(self, **_kwargs: object) -> None:
+                built.append(name)
+
+            async def __aenter__(self) -> Self:
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                pass
+
+        return FakeEngine
+
+    database = FakeDB()
+
+    async def fake_db_create(_path: str) -> FakeDB:
+        return database
+
+    async def fake_scan(**_kwargs: object) -> dict:
+        return {}
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        sherlock_module.requests,
+        "get",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            text=f'{{"tag_name": "v{sherlock_module.__version__}"}}'
+        ),
+    )
+    monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
+    monkeypatch.setattr(sherlock_module, "PlaywrightEngine", _engine("browser"))
+    monkeypatch.setattr(sherlock_module, "HttpEngine", _engine("http"))
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
+
+    await sherlock_module.main()
+
+    assert built == [expected_engine]
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])
@@ -363,6 +553,8 @@ async def test_fully_cached_username_reports_without_scanning(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 
@@ -479,6 +671,8 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 
@@ -606,6 +800,8 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 
@@ -720,6 +916,8 @@ async def test_model_load_failure_finishes_scan_and_skips_synthesis(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 
@@ -1050,6 +1248,7 @@ async def test_main_scan_cancellation_returns_130_and_skips_exports(
             self.close_calls += 1
 
     class FakeEngine:
+        fixed_transport = None
         exit_calls = 0
         exit_error: type[BaseException] | None = None
 
@@ -1173,6 +1372,7 @@ async def test_main_ai_generation_cancellation_closes_once_and_skips_synthesis(
             self.close_calls += 1
 
     class FakeEngine:
+        fixed_transport = None
         exit_calls = 0
 
         def __init__(self, **_kwargs: object) -> None:
@@ -1324,6 +1524,7 @@ async def test_sherlock_cancellation_gathers_done_and_unfinished_site_tasks(
         url = "https://example.test/blue"
 
     class FakeEngine:
+        fixed_transport = None
         blocked_cancelled = asyncio.Event()
 
         def get_request_fn(self, _method: str) -> object:
@@ -1462,6 +1663,7 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
         url = "https://example.test/fast/blue"
 
     class FakeEngine:
+        fixed_transport = None
         exit_calls = 0
 
         def get_request_fn(self, _method: str) -> object:
@@ -1605,6 +1807,7 @@ async def test_main_interruption_survives_ai_and_database_close_failures(
             pass
 
     class FakeEngine:
+        fixed_transport = None
         async def __aenter__(self) -> Self:
             return self
 
@@ -1780,6 +1983,8 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
             pass
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(
             self,
             *,
@@ -1943,6 +2148,8 @@ async def test_fresh_redoes_extraction_and_silences_the_model_warning(
             self.closed = True
 
     class FakeEngine:
+        fixed_transport = None
+
         def __init__(self, **_kwargs: object) -> None:
             pass
 

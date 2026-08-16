@@ -45,6 +45,44 @@ def test_no_usernames_provided(cliargs):
         Interactives.run_cli(cliargs)
 
 
+def test_browser_run_rechecks_what_the_fast_transport_could_not_confirm():
+    """The rule that stops one fast run from degrading a stored record.
+
+    Without it the fast transport answers every site cheaply, the resume filter
+    skips them forever, and a later browser scan silently inherits answers a
+    browser never gave.
+    """
+    unconfirmed = {"status": str(QueryStatus.AVAILABLE), "transport": "http"}
+    blocked = {"status": str(QueryStatus.UNKNOWN), "transport": "http"}
+    found = {"status": str(QueryStatus.CLAIMED), "transport": "http"}
+
+    assert sherlock.is_resumable(unconfirmed, using_browser=True) is False
+    assert sherlock.is_resumable(blocked, using_browser=True) is False
+    # A marker proving the account exists was actually found. Finding it
+    # without JavaScript does not make it less found -- the failure this rule
+    # defends against is an empty page read as a confident absence.
+    assert sherlock.is_resumable(found, using_browser=True) is True
+
+
+def test_browser_results_are_never_re_checked_by_a_fast_run():
+    """Replacing browser-grade evidence with something weaker is a downgrade."""
+    row = {"status": str(QueryStatus.AVAILABLE), "transport": "browser"}
+
+    assert sherlock.is_resumable(row, using_browser=False) is True
+    assert sherlock.is_resumable(row, using_browser=True) is True
+
+
+def test_rows_predating_the_transport_column_are_resumable():
+    """NULL means "unknown", and unknown rows are overwhelmingly browser rows.
+
+    Treating them as suspect would make the first run after this change
+    re-scan every site every user has ever stored.
+    """
+    row = {"status": str(QueryStatus.AVAILABLE)}
+
+    assert sherlock.is_resumable(row, using_browser=True) is True
+
+
 def test_restore_saved_results_rebuilds_scan_shape():
     """A repeat scan must still report hits that were found the first time.
 

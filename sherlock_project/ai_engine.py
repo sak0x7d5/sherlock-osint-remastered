@@ -45,6 +45,15 @@ from sherlock_project.profile_synthesis import (
 )
 
 PASS_ONE_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_one.md"
+# Pass 1 for models that always think natively. Same extraction rules as
+# `pass_one.md`, differing only in the Output section and the examples: it asks
+# for the reasoning in native thinking and forbids it in the JSON, so such a
+# model does not narrate the work twice against one output budget. Edits to the
+# extraction, skip, or key rules must be made in BOTH files -- they are one
+# contract with two output shapes, and only this file's copy is under test.
+PASS_ONE_NATIVE_REASONING_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "resources" / "pass_one_native_reasoning.md"
+)
 PASS_TWO_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_two.md"
 PASS_TWO_MAX_INPUT_BYTES = 12_000
 PASS_TWO_MAX_OUTPUT_TOKENS = 2_048
@@ -271,6 +280,11 @@ class AIRequestTrace:
     structured_reasoning: str
     validated_output: dict[str, Any] | None
     validation_error: str | None
+    # True when this request was sent to a model that always thinks, so native
+    # reasoning is the design rather than a model ignoring reasoning-off. The
+    # reporter needs the difference: warning about it on every site of a scan
+    # that deliberately relies on it is noise that hides the real warnings.
+    native_reasoning_expected: bool = False
 
 
 AITraceCallback = Callable[[AIRequestTrace], None]
@@ -340,6 +354,14 @@ def _render_structured_reasoning(validated: BaseModel | None) -> str:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+    if isinstance(reasoning, (dict, list)):
+        # Only reachable on the native-reasoning variant, which allows extra
+        # fields: a model that ignored "no reasoning field" may put anything
+        # there. Render it so the trace shows the prompt did not land.
+        try:
+            return json.dumps(reasoning, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return ""
     return ""
 
 
@@ -377,6 +399,53 @@ class OSINTResponse(StrictResponse):
             key: list(dict.fromkeys(values))
             for key, values in extraction.items()
         }
+
+
+class NativeReasoningOSINTResponse(BaseModel):
+    """Pass 1 for a model whose native thinking cannot be turned off.
+
+    `OSINTResponse.reasoning` is scaffolding: writing one clause per evidence
+    line, in page order, is what stops a model deciding the whole answer in one
+    leap and dropping facts on the way. A model that always thinks natively has
+    already made that pass before it starts the JSON, so asking for the field
+    again buys no accuracy and spends the output budget the answer needs.
+
+    Deliberately neither a base class nor a subclass of `OSINTResponse`. Sharing
+    the field through inheritance would reorder that model's JSON Schema
+    properties, and its schema is hashed into `pass_one_contract_hash` -- a
+    reordering alone would invalidate every cached extraction on disk.
+
+    `extra="allow"`, not `StrictResponse`'s `extra="forbid"`: a model that emits
+    `reasoning` out of habit has still produced a usable extraction, and
+    rejecting it would recreate the exact failure this variant exists to remove.
+    The stray field rides into the trace instead, so a verbose run shows whether
+    the prompt actually landed.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    extraction: dict[SafeExtractionKey, ProfileFactList] = Field(
+        description=(
+            "Every fact the page states about the owner, under a snake_case "
+            "key; each value is a nonempty array of nonempty strings. The only "
+            "permitted field -- reason in your own thinking, not in here."
+        ),
+        json_schema_extra={"additionalProperties": False},
+    )
+
+    @field_validator("extraction")
+    @classmethod
+    def deduplicate_extraction_values(
+        cls,
+        extraction: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        return {
+            key: list(dict.fromkeys(values))
+            for key, values in extraction.items()
+        }
+
+
+PassOneResponse = OSINTResponse | NativeReasoningOSINTResponse
 
 
 def validate_pass_one_extraction_payload(
@@ -583,13 +652,15 @@ def sanitize_pass_one_extraction(
     return sanitized
 
 
-def finalize_pass_one_response(
-    response: OSINTResponse,
+def finalize_pass_one_response[
+    PassOneResponseT: (OSINTResponse, NativeReasoningOSINTResponse)
+](
+    response: PassOneResponseT,
     *,
     searched_username: str,
     site_name: str,
     site_content: str,
-) -> OSINTResponse:
+) -> PassOneResponseT:
     """Apply deterministic semantic sanitation to the model's extraction."""
 
     return response.model_copy(
@@ -631,7 +702,16 @@ def _pass_one_contract_hash(prompt: str) -> str:
 
 
 def pass_one_contract_hash() -> str:
-    """Return the model-independent cache contract for current Pass 1."""
+    """Return the model-independent cache contract for current Pass 1.
+
+    Pinned to the canonical prompt and `OSINTResponse`, never to whichever
+    variant a given model was actually sent. Both variants ask for the same
+    facts under the same key rules and produce the same stored artifact -- only
+    `extraction` is ever written to disk, and its value contract is identical.
+    Hashing the variant instead would make the hash model-dependent by the back
+    door: configuring an always-thinking model would strand every cached
+    extraction, and switching back would strand them again.
+    """
 
     return _pass_one_contract_hash(
         PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8")
@@ -662,6 +742,7 @@ class AIService:
         )
         self._trace_callback = trace_callback
         self._extraction_prompt = ""
+        self._native_reasoning_extraction_prompt = ""
         self._identity_prompt = ""
         self._closed = False
         self._model_info: AIModelInfo | None = None
@@ -693,6 +774,9 @@ class AIService:
 
     def _load_prompts(self) -> None:
         self._extraction_prompt = PASS_ONE_PROMPT_PATH.read_text(encoding="utf-8")
+        self._native_reasoning_extraction_prompt = (
+            PASS_ONE_NATIVE_REASONING_PROMPT_PATH.read_text(encoding="utf-8")
+        )
         self._identity_prompt = PASS_TWO_PROMPT_PATH.read_text(encoding="utf-8")
 
     async def close(self) -> None:
@@ -710,27 +794,44 @@ class AIService:
         site_content: str,
         *,
         known_profile_keys: Sequence[str],
-    ) -> OSINTResponse:
+    ) -> PassOneResponse:
         if self._provider is None:
             raise RuntimeError("Load a model before calling extract_profile().")
 
+        # A model that always thinks gets the variant that asks for the
+        # reasoning in its native thinking and forbids it in the JSON, so it is
+        # not charged twice for one traversal. Prompt and schema move together:
+        # the schema alone would not beat two worked examples, because nothing
+        # in this request enforces the schema -- it is sent as prompt text.
+        native = self.uses_native_reasoning
+        response_model = (
+            NativeReasoningOSINTResponse if native else OSINTResponse
+        )
         return await self._respond_structured(
             phase="pass_one",
             username=username,
             site_name=site_name,
             site_id=None,
             attempt=1,
-            system_prompt=self._extraction_prompt,
+            system_prompt=(
+                self._native_reasoning_extraction_prompt
+                if native
+                else self._extraction_prompt
+            ),
             payload={
                 "searched_username_do_not_extract": username,
                 "site_name": site_name,
                 "known_profile_keys": list(known_profile_keys),
                 "site_content": site_content,
             },
-            response_model=OSINTResponse,
+            response_model=response_model,
             error_context="OSINT extraction",
             max_tokens=self.pass_one_max_tokens,
-            reasoning_off=True,
+            # Same request either way -- `generate` already falls back to "on"
+            # when "off" is not offered. Saying so is honest about the variant
+            # relying on that thinking rather than tolerating it.
+            reasoning_off=not native,
+            native_reasoning_expected=native,
             transform=lambda response: finalize_pass_one_response(
                 response,
                 searched_username=username,
@@ -769,6 +870,8 @@ class AIService:
 
     @property
     def pass_one_contract_hash(self) -> str:
+        # Canonical prompt only, whatever this service will actually send --
+        # see `pass_one_contract_hash` for why the variant stays out of it.
         return _pass_one_contract_hash(self._extraction_prompt)
 
     @property
@@ -1088,6 +1191,7 @@ class AIService:
         error_context: str,
         max_tokens: int = DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
         reasoning_off: bool = True,
+        native_reasoning_expected: bool = False,
         transform: Callable[[ResponseModelT], ResponseModelT] | None = None,
     ) -> ResponseModelT:
         if self._provider is None:
@@ -1185,5 +1289,6 @@ class AIService:
                         else None
                     ),
                     validation_error=validation_error_code,
+                    native_reasoning_expected=native_reasoning_expected,
                 )
             )

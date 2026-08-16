@@ -273,14 +273,32 @@ class LMStudioProvider:
         # model setup had accepted could never be used, so the check belongs
         # where the user is warned -- at selection -- not here.
         if not model.loaded:
+            load_body: dict[str, object] = {
+                "model": model.key,
+                "context_length": self.settings.context_length,
+                "echo_load_config": True,
+            }
+            # The key is `ttl_seconds`, and only on this endpoint. Verified
+            # against LM Studio 2026-08-12, because the documented spelling is
+            # a trap: the docs give `ttl` (seconds) for the OpenAI-compatible
+            # routes and `lms load --ttl`, and BOTH `/api/v1/models/load` and
+            # `/api/v1/chat` reject a `ttl` key outright -- HTTP 400,
+            # `unrecognized_keys`. Sending the documented name here does not
+            # degrade to "no TTL", it fails the load and takes the scan with
+            # it, so do not "correct" this to match the docs.
+            #
+            # Omitted entirely at 0 rather than sent as 0, which would be read
+            # as "unload immediately" rather than "never".
+            if self.settings.unload_after_minutes > 0:
+                load_body["ttl_seconds"] = self.settings.unload_after_minutes * 60
+            # Only reached when the model was not already loaded, so a model the
+            # user loaded themselves in the LM Studio UI keeps whatever
+            # lifetime they gave it. Sherlock sets a TTL on the instances it
+            # starts; it does not put a clock on someone else's.
             await self._request(
                 "POST",
                 "/api/v1/models/load",
-                json_body={
-                    "model": model.key,
-                    "context_length": self.settings.context_length,
-                    "echo_load_config": True,
-                },
+                json_body=load_body,
             )
             model = AIModelInfo(
                 key=model.key,
