@@ -542,6 +542,12 @@ async def test_the_model_picker_starts_a_server_instead_of_asking_you_to(
     monkeypatch.setattr(pane_module, "ManagedLlamaServer", RecordingServer)
     monkeypatch.setattr(pane_module, "LlamaCppProvider", FakeProvider)
 
+    # A real .gguf, because the picker now checks the folder holds one before
+    # it bothers starting anything -- an empty folder is answered on the spot.
+    repo = tmp_path / "Some-Repo"
+    repo.mkdir()
+    (repo / "Some-Model-Q4_K_M.gguf").write_text("", encoding="utf-8")
+
     screen = pane_module.ModelPickerScreen(
         "http://127.0.0.1:8080",
         current=None,
@@ -565,82 +571,6 @@ async def test_the_model_picker_starts_a_server_instead_of_asking_you_to(
     assert stopped == ["stopped"]
 
 
-async def test_the_models_folder_row_opens_a_browser_not_a_blank_box(
-    tmp_path: Path,
-):
-    """Typing an absolute path from memory is not a reasonable ask.
-
-    The row is `kind="folder"` so the pane opens a tree; `kind="text"` would
-    give the empty Input this replaced.
-    """
-    from sherlock_project.tui.settings_pane import FolderPickerScreen
-
-    field = next(f for f in SETTING_FIELDS if f.key == "ai.models_dir")
-    assert field.kind == "folder"
-
-    path = tmp_path / "config.toml"
-    _seed(path)
-    app = SettingsApp(config_path=path)
-
-    async with app.run_test() as pilot:
-        for _ in range(_index_of("ai.models_dir")):
-            await pilot.press("down")
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert isinstance(app.screen, FolderPickerScreen)
-        app.screen.action_cancel()
-        await pilot.pause()
-
-
-async def test_the_folder_browser_counts_models_under_the_cursor(
-    tmp_path: Path,
-):
-    """The count is why the screen beats a text box.
-
-    "Is this the right folder" is unanswerable from a path alone, and it is
-    computed with the same recursive search the server will use, so what it
-    reports is what would actually be served.
-    """
-    from sherlock_project.tui.settings_pane import FolderPickerScreen
-
-    models = tmp_path / "models" / "Some-Repo"
-    models.mkdir(parents=True)
-    (models / "Some-Model-Q4_K_M.gguf").write_text("", encoding="utf-8")
-    (models / "mmproj-Some-Model-F16.gguf").write_text("", encoding="utf-8")
-
-    screen = FolderPickerScreen(str(tmp_path / "models"))
-    app = SettingsApp(config_path=tmp_path / "config.toml")
-
-    async with app.run_test() as pilot:
-        await app.push_screen(screen)
-        await pilot.pause()
-        await screen._count(tmp_path / "models")
-        rendered = screen.query_one("#folder-path", Static).render().plain
-
-        # One model, not two: the projector is not a chat model.
-        assert "1 model" in rendered
-        assert "2 model" not in rendered
-
-        screen.action_cancel()
-        await pilot.pause()
-
-
-async def test_the_folder_browser_opens_somewhere_real_when_the_path_is_gone(
-    tmp_path: Path,
-):
-    """A stored folder on a drive that is not mounted today.
-
-    Walking up beats falling back to the filesystem root: the parent is a place
-    the user recognises, the drive root is not.
-    """
-    from sherlock_project.tui.settings_pane import FolderPickerScreen
-
-    screen = FolderPickerScreen(str(tmp_path / "gone" / "deeper" / "still-gone"))
-
-    assert screen._root == tmp_path
-
-
 async def test_the_model_picker_carries_its_own_folder_control(tmp_path: Path):
     """Changing folder must not mean leaving the screen you are looking at.
 
@@ -652,8 +582,8 @@ async def test_the_model_picker_carries_its_own_folder_control(tmp_path: Path):
     """
     from sherlock_project.tui.settings_pane import (
         FOLDER_ROW_KEY,
-        FolderPickerScreen,
         ModelPickerScreen,
+        TextEditScreen,
     )
 
     screen = ModelPickerScreen("http://127.0.0.1:8080", current=None, models_dir=None)
@@ -671,11 +601,11 @@ async def test_the_model_picker_carries_its_own_folder_control(tmp_path: Path):
         assert "No models folder set" in status
 
         # A real keypress, not a hand-built event: enter on the row must open
-        # the browser rather than be read as a model key.
+        # the textbox rather than be read as a model key.
         table.focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert isinstance(app.screen, FolderPickerScreen)
+        assert isinstance(app.screen, TextEditScreen)
 
         app.screen.action_cancel()
         await pilot.pause()
@@ -709,66 +639,57 @@ async def test_the_picker_returns_the_folder_even_when_no_model_was_chosen(
     assert returned[0].models_dir == str(tmp_path)
 
 
-def test_every_drive_is_offered_not_just_the_one_home_is_on():
-    """A DirectoryTree only walks DOWN, and Windows has no node above a drive.
+def test_a_folder_with_no_models_is_named_as_such(tmp_path: Path):
+    """The whole job of the textbox's feedback.
 
-    Rooted at the home folder, a models directory on any other drive was
-    unreachable -- no amount of arrowing could get there. That is the normal
-    case rather than an edge one: anyone with a small system disk keeps models
-    on a second drive.
+    A path with a typo, or one aimed a level off, looks exactly like a correct
+    one until something searches inside it -- and the search is the same
+    recursive one the server runs, so a folder that passes here will serve.
     """
-    from sherlock_project.tui.settings_pane import list_drives
+    from sherlock_project.tui.settings_pane import folder_warning
 
-    drives = list_drives()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert "No .gguf models found" in folder_warning(str(empty))
 
-    assert drives
-    assert all(drive.is_absolute() for drive in drives)
-    # Whatever the platform, the drive the home folder lives on must be there
-    # or the browser cannot even reach the user's own files.
-    anchor = Path(Path.home().anchor)
-    assert any(str(d).lower() == str(anchor).lower() for d in drives)
+    assert "No such folder" in folder_warning(str(tmp_path / "nope"))
+
+    # Nothing typed is not a complaint -- it is just not answered yet.
+    assert folder_warning(None) == ""
+    assert folder_warning("") == ""
+
+    repo = tmp_path / "models" / "Some-Repo"
+    repo.mkdir(parents=True)
+    (repo / "Some-Model-Q4_K_M.gguf").write_text("", encoding="utf-8")
+    assert folder_warning(str(tmp_path / "models")) == ""
 
 
-async def test_backspace_reroots_the_browser_upwards(tmp_path: Path):
-    """Without this, a wrong starting folder means cancel and reopen.
+async def test_the_models_folder_row_opens_a_textbox_and_warns(tmp_path: Path):
+    """A plain input, and the warning arrives on the screen you typed into.
 
-    The tree has no notion of a parent above where it was rooted, so going up
-    has to be done by re-rooting it.
+    The tree browser that lived here is gone: it needed drive enumeration,
+    re-rooting and a cancellable disk walk to work at all, and a path pastes
+    out of a file manager faster than it arrows.
     """
-    from sherlock_project.tui.settings_pane import FolderPickerScreen
+    from sherlock_project.tui.settings_pane import TextEditScreen
 
-    nested = tmp_path / "one" / "two"
-    nested.mkdir(parents=True)
-
-    screen = FolderPickerScreen(str(nested))
-    app = SettingsApp(config_path=tmp_path / "config.toml")
+    path = tmp_path / "config.toml"
+    _seed(path)
+    app = SettingsApp(config_path=path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
 
     async with app.run_test() as pilot:
-        await app.push_screen(screen)
+        for _ in range(_index_of("ai.models_dir")):
+            await pilot.press("down")
+        await pilot.press("enter")
         await pilot.pause()
-        assert screen._root == nested
+        assert isinstance(app.screen, TextEditScreen)
 
-        await pilot.press("backspace")
-        await pilot.pause()
-        assert screen._root == tmp_path / "one"
-
-        screen.action_cancel()
+        app.screen.dismiss(str(empty))
         await pilot.pause()
 
-
-async def test_going_up_stops_at_the_drive_root(tmp_path: Path):
-    """Repeated backspace must settle, not loop or raise."""
-    from sherlock_project.tui.settings_pane import FolderPickerScreen
-
-    screen = FolderPickerScreen(str(tmp_path))
-    app = SettingsApp(config_path=tmp_path / "config.toml")
-
-    async with app.run_test() as pilot:
-        await app.push_screen(screen)
-        await pilot.pause()
-        for _ in range(30):
-            screen.action_go_up()
-        assert screen._root == Path(screen._root.anchor)
-
-        screen.action_cancel()
-        await pilot.pause()
+        # Stored even though it is empty -- a folder someone is about to fill
+        # is not a rejection -- but they are told now rather than at scan time.
+        assert app._values["ai.models_dir"] == str(empty)
+        assert "No .gguf models found" in app._status
