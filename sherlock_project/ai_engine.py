@@ -25,7 +25,7 @@ from sherlock_project.ai_provider import (
     AIGenerationStats,
     AIModelInfo,
     AIProvider,
-    LMStudioProvider,
+    LlamaCppProvider,
     ProviderWideError,
 )
 from sherlock_project.profile_synthesis import (
@@ -310,7 +310,7 @@ class StructuredResponseError(RuntimeError):
         self.final_content_chars = final_content_chars
         self.validation_error = validation_error
         super().__init__(
-            f"LM Studio did not return a valid structured {error_context} "
+            f"llama-server did not return a valid structured {error_context} "
             f"(predicted_tokens="
             f"{predicted_tokens if predicted_tokens is not None else 'unknown'}, "
             f"max_tokens={max_tokens}, parsed_type={parsed_type}, "
@@ -759,7 +759,7 @@ class AIService:
         resolved_settings = settings or (
             provider.settings if provider is not None else load_ai_settings()
         )
-        resolved_provider = provider or LMStudioProvider(resolved_settings)
+        resolved_provider = provider or LlamaCppProvider(resolved_settings)
         self = cls(
             provider=resolved_provider,
             settings=resolved_settings,
@@ -1161,11 +1161,27 @@ class AIService:
         system_prompt: str,
         response_model: type[BaseModel],
     ) -> str:
+        """Say what shape is wanted. Do not paste the schema.
+
+        The schema now rides in `response_format`, where llama.cpp compiles it
+        to a grammar and the model cannot emit anything else. Sending it here
+        as well would spend roughly 700 characters of a budget Pass 1 is
+        already short of, to restate a rule that is no longer advisory.
+
+        This also retires a trap worth naming: while the schema was prompt
+        text, it could LOSE to the worked examples beneath it, so the two had
+        to be edited in lockstep or the model followed the examples and failed
+        validation. Enforcement removes that coupling -- the grammar wins
+        regardless of what the examples show.
+
+        `response_model` is still taken so callers cannot forget which model
+        the reply will be validated against, and so the signature survives if
+        a future provider needs the text form back.
+        """
         return (
             system_prompt.rstrip()
-            + "\n\nReturn exactly one JSON object matching this JSON Schema. "
-            + "Do not use Markdown fences or add text outside the object.\n"
-            + cls._compact_schema(response_model)
+            + "\n\nReturn exactly one JSON object. "
+            + "Do not use Markdown fences or add text outside the object."
         )
 
     def _emit_trace(self, trace: AIRequestTrace) -> None:
@@ -1210,6 +1226,7 @@ class AIService:
                 payload=payload,
                 max_tokens=max_tokens,
                 reasoning_off=reasoning_off,
+                json_schema=response_model.model_json_schema(),
             )
             if not completion.final_text:
                 validation_error_code = "empty_final_response"

@@ -31,7 +31,7 @@ pytestmark = pytest.mark.asyncio
 
 def _settings() -> AISettings:
     return AISettings(
-        base_url="http://localhost:1234",
+        base_url="http://localhost:8080",
         model="example/model",
         temperature=0.1,
     )
@@ -153,8 +153,12 @@ async def test_extract_profile_validates_complete_json_and_emits_trace():
     assert len(provider.generate_calls) == 1
     call = provider.generate_calls[0]
     system_prompt = str(call["system_prompt"])
-    assert "JSON Schema" in system_prompt
-    assert '"reasoning"' in system_prompt
+    # The schema is ENFORCED now, not asked for: it travels in `json_schema`,
+    # where llama.cpp turns it into a grammar. It must NOT also be pasted into
+    # the prompt -- that spent roughly 700 characters restating a rule the
+    # sampler already guarantees, against a Pass 1 budget that is short.
+    assert "JSON Schema" not in system_prompt
+    assert call["json_schema"] == OSINTResponse.model_json_schema()
     schema = OSINTResponse.model_json_schema()
     reasoning_schema = schema["properties"]["reasoning"]
     assert reasoning_schema["type"] == "string"
@@ -179,7 +183,7 @@ async def test_extract_profile_validates_complete_json_and_emits_trace():
     assert traces[0].structured_reasoning
     assert traces[0].validated_output == response.model_dump(mode="json")
     assert traces[0].stats.reasoning_tokens == 0
-    assert traces[0].provider == "lmstudio"
+    assert traces[0].provider == "llamacpp"
     assert traces[0].context_length == 8192
 
 
@@ -631,7 +635,7 @@ async def test_pass_one_contract_hash_is_deterministic_and_model_independent(
 ):
     service, _ = _service()
     other_settings = AISettings(
-        base_url="http://localhost:1234",
+        base_url="http://localhost:8080",
         model="different/model",
         temperature=0.8,
     )
@@ -1077,7 +1081,7 @@ async def test_synthesis_fingerprint_tracks_provider_settings_and_schema():
 
     fingerprints = service.synthesis_prompt_fingerprints
 
-    assert fingerprints["provider"] == "lmstudio"
+    assert fingerprints["provider"] == "llamacpp"
     assert fingerprints["native_reasoning"] == "on"
     assert fingerprints["max_output_tokens"] == str(PASS_TWO_MAX_OUTPUT_TOKENS)
     assert fingerprints["temperature"] == "0.1"
@@ -1216,7 +1220,12 @@ async def test_reasoning_off_model_keeps_the_scaffolded_pass_one_prompt():
     )
 
     system_prompt = str(provider.generate_calls[0]["system_prompt"])
-    assert "One short clause per owner-evidence line" in system_prompt
+    # Asserted against pass_one.md's own wording, not the schema's field
+    # description. It used to match the description, which reached the model
+    # only because the schema was pasted into the prompt -- so this passed for
+    # the wrong reason and would have kept passing if the canonical prompt were
+    # swapped for the variant. The prompt file carries the instruction itself.
+    assert "one short clause per owner-evidence line" in system_prompt
     assert traces[0].native_reasoning_expected is False
 
 

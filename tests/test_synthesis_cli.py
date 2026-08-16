@@ -20,7 +20,7 @@ def configured_ai(monkeypatch: pytest.MonkeyPatch):
         sherlock_module,
         "load_ai_settings",
         lambda: AISettings(
-            base_url="http://localhost:1234",
+            base_url="http://localhost:8080",
             model="example/model",
         ),
     )

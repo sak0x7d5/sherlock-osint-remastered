@@ -1013,7 +1013,7 @@ class TerminalReporter(QueryNotify):
             )
             if unexpected:
                 self.warning(
-                    f"{trace.site_name}: LM Studio returned native reasoning "
+                    f"{trace.site_name}: llama-server returned native reasoning "
                     "despite reasoning-off mode",
                     detail=f"{trace.stats.reasoning_tokens or 0} tokens",
                 )

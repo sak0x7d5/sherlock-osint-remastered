@@ -157,7 +157,7 @@ def test_no_proxy_is_an_answer_but_no_model_is_an_absence():
 
     assert field_default(field("scan.proxy")) is None
     assert field_default(field("ai.model")) is NO_DEFAULT
-    assert field_default(field("ai.base_url")) == "http://127.0.0.1:1234"
+    assert field_default(field("ai.base_url")) == "http://127.0.0.1:8080"
 
 
 def test_both_sides_of_the_transport_trade_are_labelled():
@@ -249,7 +249,7 @@ def test_saving_ai_settings_preserves_scan_preferences(tmp_path: Path):
     )
 
     save_ai_settings(
-        AISettings(base_url="http://localhost:1234", model="vendor/model"),
+        AISettings(base_url="http://localhost:8080", model="vendor/model"),
         path=path,
         environ={},
     )

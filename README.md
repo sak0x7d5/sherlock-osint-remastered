@@ -40,7 +40,15 @@ the model endpoint you configure yourself.
   uses an `asyncio` feature added in 3.13 and the package will not install on
   3.10–3.12.
 - A local model server for the optional AI passes. Currently
-  [LM Studio](https://lmstudio.ai) — `sherlock setup ai` auto-detects it.
+  [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`, which
+  must already be running — it serves one model, chosen when you launch it:
+
+  ```
+  llama-server -m model.gguf -c 8192 --port 8080 --jinja --reasoning-format deepseek
+  ```
+
+  Then `sherlock setup ai` adopts whatever it has loaded. Other
+  OpenAI-compatible runtimes (Ollama, vLLM, plain endpoints) are not supported.
 - The first browser-backed run downloads a stealth Chromium build.
 
 ## Install

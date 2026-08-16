@@ -7,6 +7,7 @@ from rich.console import Console
 
 from sherlock_project import ai_setup
 from sherlock_project.ai_config import (
+    DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     load_ai_settings,
     save_ai_settings,
@@ -59,7 +60,7 @@ def reset_provider(monkeypatch: pytest.MonkeyPatch):
     FakeSetupProvider.error = None
     FakeSetupProvider.settings_seen = None
     FakeSetupProvider.close_calls = 0
-    monkeypatch.setattr(ai_setup, "LMStudioProvider", FakeSetupProvider)
+    monkeypatch.setattr(ai_setup, "LlamaCppProvider", FakeSetupProvider)
 
 
 def _console() -> tuple[Console, StringIO]:
@@ -145,7 +146,7 @@ async def test_interactive_setup_accepts_a_thinking_only_choice_with_a_warning(
 
     assert result == 0
     assert load_ai_settings(path=path, environ={}).model == "aaa-thinking/model"
-    assert "Downloaded LM Studio models" in rendered
+    assert "Model loaded by llama-server" in rendered
     assert "always thinks natively" in rendered
     # The warning has to say what it costs, not just that something is unusual.
     assert "quality is likely to be lower" in rendered
@@ -268,22 +269,28 @@ async def test_setup_with_no_models_does_not_write_config(tmp_path: Path):
 
     assert result == 2
     assert not path.exists()
-    assert "no downloaded LLMs" in output.getvalue()
+    assert "no model loaded" in output.getvalue()
 
 
-def test_setup_base_url_precedence(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(ai_setup, "_lms_server_url", lambda: "http://localhost:9000")
+def test_setup_base_url_precedence():
+    """Explicit, then environment, then stored, then the default.
+
+    There used to be a fifth source patched in here: `_lms_server_url`, which
+    shelled out to `lms server status --json` to learn the port LM Studio had
+    chosen. llama.cpp publishes nothing equivalent -- the port is whatever
+    `--port` was passed -- so the chain ends at llama-server's own 8080.
+    """
     existing = type("Existing", (), {"base_url": "http://localhost:7000"})()
 
     assert ai_setup.discover_setup_base_url(
         "http://localhost:6000",
         existing=existing,  # type: ignore[arg-type]
-        environ={"LM_STUDIO_BASE_URL": "http://localhost:5000"},
+        environ={"LLAMA_SERVER_BASE_URL": "http://localhost:5000"},
     ) == "http://localhost:6000"
     assert ai_setup.discover_setup_base_url(
         None,
         existing=existing,  # type: ignore[arg-type]
-        environ={"LM_STUDIO_BASE_URL": "http://localhost:5000"},
+        environ={"LLAMA_SERVER_BASE_URL": "http://localhost:5000"},
     ) == "http://localhost:5000"
     assert ai_setup.discover_setup_base_url(
         None,
@@ -294,7 +301,7 @@ def test_setup_base_url_precedence(monkeypatch: pytest.MonkeyPatch):
         None,
         existing=None,
         environ={},
-    ) == "http://localhost:9000"
+    ) == DEFAULT_LLAMACPP_BASE_URL
 
 
 @pytest.mark.asyncio
@@ -368,7 +375,7 @@ async def test_show_flags_an_endpoint_coming_from_the_environment(
     """The printed endpoint is the effective one, so say when it is overridden."""
     path = tmp_path / "config.toml"
     save_ai_settings(
-        AISettings(base_url="http://localhost:1234", model="vendor/large"),
+        AISettings(base_url="http://localhost:8080", model="vendor/large"),
         path=path,
         environ={},
     )
@@ -376,7 +383,7 @@ async def test_show_flags_an_endpoint_coming_from_the_environment(
 
     result = await ai_setup.run_ai_setup(
         ["--show", "--no-color"],
-        environ={"LM_STUDIO_BASE_URL": "http://elsewhere:4321"},
+        environ={"LLAMA_SERVER_BASE_URL": "http://elsewhere:4321"},
         config_path=path,
         console=console,
     )
@@ -384,7 +391,7 @@ async def test_show_flags_an_endpoint_coming_from_the_environment(
 
     assert result == 0
     assert "http://elsewhere:4321" in text
-    assert "LM_STUDIO_BASE_URL" in text
+    assert "LLAMA_SERVER_BASE_URL" in text
 
 
 @pytest.mark.asyncio
