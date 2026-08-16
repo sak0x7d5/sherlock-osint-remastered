@@ -707,3 +707,68 @@ async def test_the_picker_returns_the_folder_even_when_no_model_was_chosen(
 
     assert returned[0].model is None
     assert returned[0].models_dir == str(tmp_path)
+
+
+def test_every_drive_is_offered_not_just_the_one_home_is_on():
+    """A DirectoryTree only walks DOWN, and Windows has no node above a drive.
+
+    Rooted at the home folder, a models directory on any other drive was
+    unreachable -- no amount of arrowing could get there. That is the normal
+    case rather than an edge one: anyone with a small system disk keeps models
+    on a second drive.
+    """
+    from sherlock_project.tui.settings_pane import list_drives
+
+    drives = list_drives()
+
+    assert drives
+    assert all(drive.is_absolute() for drive in drives)
+    # Whatever the platform, the drive the home folder lives on must be there
+    # or the browser cannot even reach the user's own files.
+    anchor = Path(Path.home().anchor)
+    assert any(str(d).lower() == str(anchor).lower() for d in drives)
+
+
+async def test_backspace_reroots_the_browser_upwards(tmp_path: Path):
+    """Without this, a wrong starting folder means cancel and reopen.
+
+    The tree has no notion of a parent above where it was rooted, so going up
+    has to be done by re-rooting it.
+    """
+    from sherlock_project.tui.settings_pane import FolderPickerScreen
+
+    nested = tmp_path / "one" / "two"
+    nested.mkdir(parents=True)
+
+    screen = FolderPickerScreen(str(nested))
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+        assert screen._root == nested
+
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert screen._root == tmp_path / "one"
+
+        screen.action_cancel()
+        await pilot.pause()
+
+
+async def test_going_up_stops_at_the_drive_root(tmp_path: Path):
+    """Repeated backspace must settle, not loop or raise."""
+    from sherlock_project.tui.settings_pane import FolderPickerScreen
+
+    screen = FolderPickerScreen(str(tmp_path))
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+        for _ in range(30):
+            screen.action_go_up()
+        assert screen._root == Path(screen._root.anchor)
+
+        screen.action_cancel()
+        await pilot.pause()

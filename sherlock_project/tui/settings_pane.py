@@ -30,7 +30,9 @@ that takes over a CI log is worse than the crash it replaces.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -42,7 +44,16 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, DirectoryTree, Input, Label, Static, Tree
+from textual.widgets import (
+    DataTable,
+    DirectoryTree,
+    Input,
+    Label,
+    OptionList,
+    Static,
+    Tree,
+)
+from textual.widgets.option_list import Option
 
 from sherlock_project.ai_config import (
     AIConfigError,
@@ -176,6 +187,25 @@ def format_context(length: int | None) -> str:
     return str(length)
 
 
+def list_drives() -> list[Path]:
+    """Every drive root worth offering, most useful first.
+
+    Windows has no filesystem node above `C:\\`, so a folder browser rooted
+    anywhere on one drive can never reach another. `os.listdrives` is the
+    supported way to enumerate them and needs 3.12, which this package already
+    requires; POSIX has a single root and needs none of this.
+    """
+    lister = getattr(os, "listdrives", None)
+    if lister is None:
+        return [Path("/")]
+    try:
+        return [Path(drive) for drive in lister()]
+    except OSError:
+        # Enumerating drives can fail on a disconnected network mapping. One
+        # unreachable drive must not cost the whole screen.
+        return [Path(Path.home().anchor or "/")]
+
+
 def thinking_label(model: AIModelInfo) -> str:
     """Three distinct answers, not two.
 
@@ -211,36 +241,82 @@ class FolderPickerScreen(ModalScreen[str | None]):
     the only way to tell "this is where my models are" from "this looks right"
     before committing, and it is computed with the same recursive search the
     server will use, so what it reports is what will be served.
+
+    EVERY DRIVE IS LISTED, and that is a correctness fix rather than a
+    convenience. A `DirectoryTree` only ever walks DOWN from its root, and
+    Windows has no filesystem node above `C:\\`, so rooting at the home folder
+    made a models directory on any other drive unreachable -- no amount of
+    arrowing could get there. That is the normal case, not an edge one: anyone
+    with a small system disk keeps models on a second drive. Backspace also
+    re-roots upwards, so a wrong starting folder no longer means cancelling and
+    reopening.
     """
 
     BINDINGS: ClassVar = [
         Binding("escape", "cancel", "cancel"),
+        Binding("backspace", "go_up", "up a level"),
     ]
 
     def __init__(self, current: str | None = None) -> None:
         super().__init__()
         self._current = current
         start = Path(current).expanduser() if current else Path.home()
-        # Falling back up the tree rather than to the filesystem root: a stored
-        # folder on a drive that is not mounted today should still open
-        # somewhere recognisable rather than at C:\ or /.
+        # Fall back UP the tree, not to a drive root: a stored folder on a
+        # drive that is not mounted today should still open somewhere
+        # recognisable rather than dumping the user at the top.
         while not start.is_dir() and start != start.parent:
             start = start.parent
         self._root = start if start.is_dir() else Path.home()
 
     def compose(self) -> ComposeResult:
+        drives = list_drives()
         with Vertical(id="dialog"):
             yield Label("Choose your models folder", classes="dialog-title")
             yield Static(str(self._root), id="folder-path")
+            # Every drive, always. A DirectoryTree only ever walks DOWN from
+            # its root, so rooting at the home folder made a models directory
+            # on any other drive literally unreachable -- which is the normal
+            # case, because anyone with a small system disk keeps models
+            # elsewhere. Shown rather than hidden behind a keybinding, since a
+            # user cannot press a key they have no reason to know exists.
+            if len(drives) > 1:
+                yield OptionList(
+                    *[Option(str(drive), id=str(drive)) for drive in drives],
+                    id="drives",
+                )
             yield DirectoryTree(str(self._root), id="folders")
             yield Label(
-                "up/down move   → open   ← back   enter use this folder   "
-                "esc cancel",
+                "tab drives/folders   ↑↓ move   → open   ⌫ up a level   "
+                "enter use this folder   esc cancel",
                 classes="dim",
             )
 
     def on_mount(self) -> None:
         self.query_one("#folders", DirectoryTree).focus()
+
+    def _rebase(self, root: Path) -> None:
+        """Point the tree somewhere else and say so."""
+        self._root = root
+        tree = self.query_one("#folders", DirectoryTree)
+        tree.path = str(root)
+        tree.reload()
+        self.run_worker(partial(self._count, root), exclusive=True)
+        tree.focus()
+
+    @on(OptionList.OptionSelected, "#drives")
+    def switch_drive(self, event: OptionList.OptionSelected) -> None:
+        self._rebase(Path(str(event.option.id)))
+
+    def action_go_up(self) -> None:
+        """Move the root one level towards the drive root.
+
+        The tree cannot do this itself -- it has no notion of a parent above
+        where it was rooted -- so without it the only way out of a wrong
+        starting folder would be to cancel and reopen.
+        """
+        parent = self._root.parent
+        if parent != self._root and parent.is_dir():
+            self._rebase(parent)
 
     @on(Tree.NodeHighlighted)
     def preview(self, event: Tree.NodeHighlighted) -> None:
@@ -254,14 +330,21 @@ class FolderPickerScreen(ModalScreen[str | None]):
         target = getattr(path, "path", None)
         if target is None:
             return
-        self.run_worker(self._count(Path(target)), exclusive=True)
+        self.run_worker(partial(self._count, Path(target)), exclusive=True)
 
     async def _count(self, folder: Path) -> None:
         label = self.query_one("#folder-path", Static)
-        label.update(f"{folder}  …")
         if not folder.is_dir():
             label.update(str(folder))
             return
+        # Never count a whole drive. Nobody points a models folder at C:\, and
+        # the walk cannot be interrupted once it is in a thread -- cancelling
+        # the worker abandons the result, not the work -- so browsing up to a
+        # drive root would spin a full-disk scan nobody asked for.
+        if folder == Path(folder.anchor):
+            label.update(str(folder))
+            return
+        label.update(f"{folder}  …")
         found = await asyncio.to_thread(discover_models, [folder])
         # Same recursive search the server will run, so this number is what
         # would actually be served rather than an estimate.
