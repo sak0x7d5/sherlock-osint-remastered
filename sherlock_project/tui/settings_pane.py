@@ -29,10 +29,7 @@ that takes over a CI log is worse than the crash it replaces.
 
 from __future__ import annotations
 
-import asyncio
-import os
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -44,16 +41,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import (
-    DataTable,
-    DirectoryTree,
-    Input,
-    Label,
-    OptionList,
-    Static,
-    Tree,
-)
-from textual.widgets.option_list import Option
+from textual.widgets import DataTable, Input, Label, Static
 
 from sherlock_project.ai_config import (
     AIConfigError,
@@ -187,23 +175,25 @@ def format_context(length: int | None) -> str:
     return str(length)
 
 
-def list_drives() -> list[Path]:
-    """Every drive root worth offering, most useful first.
+def folder_warning(folder: str | None) -> str:
+    """What is wrong with this models folder, or "" if nothing is.
 
-    Windows has no filesystem node above `C:\\`, so a folder browser rooted
-    anywhere on one drive can never reach another. `os.listdrives` is the
-    supported way to enumerate them and needs 3.12, which this package already
-    requires; POSIX has a single root and needs none of this.
+    Checked where it is typed rather than left for the scan to discover: a
+    path with a typo, or one pointing at a parent two levels off, is
+    indistinguishable from a correct one until something looks inside it.
+
+    Uses the same recursive search the server will run, so a folder that
+    passes here is a folder that will serve models -- any layout, since the
+    generated preset takes absolute paths.
     """
-    lister = getattr(os, "listdrives", None)
-    if lister is None:
-        return [Path("/")]
-    try:
-        return [Path(drive) for drive in lister()]
-    except OSError:
-        # Enumerating drives can fail on a disconnected network mapping. One
-        # unreachable drive must not cost the whole screen.
-        return [Path(Path.home().anchor or "/")]
+    if not folder:
+        return ""
+    path = Path(folder).expanduser()
+    if not path.is_dir():
+        return f"No such folder: {path}"
+    if not discover_models([path]):
+        return f"No .gguf models found in {path}"
+    return ""
 
 
 def thinking_label(model: AIModelInfo) -> str:
@@ -219,145 +209,6 @@ def thinking_label(model: AIModelInfo) -> str:
     if model.supports_reasoning_off:
         return "optional"
     return "always"
-
-
-class FolderPickerScreen(ModalScreen[str | None]):
-    """Enter on `models folder`: browse to it instead of typing it.
-
-    Nobody should have to recall an absolute path to switch on an optional
-    feature, and this row used to open an empty text box that expected exactly
-    that.
-
-    A Textual tree rather than the OS folder dialog, deliberately. `tkinter` is
-    importable on a typical Windows install, so the native picker LOOKS
-    available -- but it is a separate system package on Debian and Ubuntu, and
-    it cannot draw at all over SSH, in WSL without an X server, in a container,
-    or on a headless box. Those are ordinary places to run an OSINT scan. A
-    dialog that works on the developer's desktop and hangs on a user's remote
-    session is worse than no dialog, and this widget works wherever the rest of
-    the TUI already does.
-
-    The count beside the path is the point of the screen, not decoration: it is
-    the only way to tell "this is where my models are" from "this looks right"
-    before committing, and it is computed with the same recursive search the
-    server will use, so what it reports is what will be served.
-
-    EVERY DRIVE IS LISTED, and that is a correctness fix rather than a
-    convenience. A `DirectoryTree` only ever walks DOWN from its root, and
-    Windows has no filesystem node above `C:\\`, so rooting at the home folder
-    made a models directory on any other drive unreachable -- no amount of
-    arrowing could get there. That is the normal case, not an edge one: anyone
-    with a small system disk keeps models on a second drive. Backspace also
-    re-roots upwards, so a wrong starting folder no longer means cancelling and
-    reopening.
-    """
-
-    BINDINGS: ClassVar = [
-        Binding("escape", "cancel", "cancel"),
-        Binding("backspace", "go_up", "up a level"),
-    ]
-
-    def __init__(self, current: str | None = None) -> None:
-        super().__init__()
-        self._current = current
-        start = Path(current).expanduser() if current else Path.home()
-        # Fall back UP the tree, not to a drive root: a stored folder on a
-        # drive that is not mounted today should still open somewhere
-        # recognisable rather than dumping the user at the top.
-        while not start.is_dir() and start != start.parent:
-            start = start.parent
-        self._root = start if start.is_dir() else Path.home()
-
-    def compose(self) -> ComposeResult:
-        drives = list_drives()
-        with Vertical(id="dialog"):
-            yield Label("Choose your models folder", classes="dialog-title")
-            yield Static(str(self._root), id="folder-path")
-            # Every drive, always. A DirectoryTree only ever walks DOWN from
-            # its root, so rooting at the home folder made a models directory
-            # on any other drive literally unreachable -- which is the normal
-            # case, because anyone with a small system disk keeps models
-            # elsewhere. Shown rather than hidden behind a keybinding, since a
-            # user cannot press a key they have no reason to know exists.
-            if len(drives) > 1:
-                yield OptionList(
-                    *[Option(str(drive), id=str(drive)) for drive in drives],
-                    id="drives",
-                )
-            yield DirectoryTree(str(self._root), id="folders")
-            yield Label(
-                "tab drives/folders   ↑↓ move   → open   ⌫ up a level   "
-                "enter use this folder   esc cancel",
-                classes="dim",
-            )
-
-    def on_mount(self) -> None:
-        self.query_one("#folders", DirectoryTree).focus()
-
-    def _rebase(self, root: Path) -> None:
-        """Point the tree somewhere else and say so."""
-        self._root = root
-        tree = self.query_one("#folders", DirectoryTree)
-        tree.path = str(root)
-        tree.reload()
-        self.run_worker(partial(self._count, root), exclusive=True)
-        tree.focus()
-
-    @on(OptionList.OptionSelected, "#drives")
-    def switch_drive(self, event: OptionList.OptionSelected) -> None:
-        self._rebase(Path(str(event.option.id)))
-
-    def action_go_up(self) -> None:
-        """Move the root one level towards the drive root.
-
-        The tree cannot do this itself -- it has no notion of a parent above
-        where it was rooted -- so without it the only way out of a wrong
-        starting folder would be to cancel and reopen.
-        """
-        parent = self._root.parent
-        if parent != self._root and parent.is_dir():
-            self._rebase(parent)
-
-    @on(Tree.NodeHighlighted)
-    def preview(self, event: Tree.NodeHighlighted) -> None:
-        """Say how many models are under whatever the cursor is on.
-
-        Off the event loop because it walks the filesystem, and re-entrant by
-        design: `exclusive=True` cancels the previous count, so holding an
-        arrow key does not queue a scan per row.
-        """
-        path = getattr(event.node, "data", None)
-        target = getattr(path, "path", None)
-        if target is None:
-            return
-        self.run_worker(partial(self._count, Path(target)), exclusive=True)
-
-    async def _count(self, folder: Path) -> None:
-        label = self.query_one("#folder-path", Static)
-        if not folder.is_dir():
-            label.update(str(folder))
-            return
-        # Never count a whole drive. Nobody points a models folder at C:\, and
-        # the walk cannot be interrupted once it is in a thread -- cancelling
-        # the worker abandons the result, not the work -- so browsing up to a
-        # drive root would spin a full-disk scan nobody asked for.
-        if folder == Path(folder.anchor):
-            label.update(str(folder))
-            return
-        label.update(f"{folder}  …")
-        found = await asyncio.to_thread(discover_models, [folder])
-        # Same recursive search the server will run, so this number is what
-        # would actually be served rather than an estimate.
-        label.update(
-            f"{folder}  —  {len(found)} model{'' if len(found) == 1 else 's'}"
-        )
-
-    @on(DirectoryTree.DirectorySelected)
-    def choose(self, event: DirectoryTree.DirectorySelected) -> None:
-        self.dismiss(str(event.path))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,8 +339,14 @@ class ModelPickerScreen(ModalScreen[ModelChoice]):
 
         if not self._models_dir:
             status.update(
-                "No models folder set — press enter on the first row to choose one."
+                "No models folder set — press enter on the first row to set one."
             )
+            table.focus()
+            return
+
+        warning = folder_warning(self._models_dir)
+        if warning:
+            status.update(warning)
             table.focus()
             return
 
@@ -572,19 +429,29 @@ class ModelPickerScreen(ModalScreen[ModelChoice]):
         self.dismiss(ModelChoice(model=event.row_key.value, models_dir=self._models_dir))
 
     def _change_folder(self) -> None:
-        """Open the folder browser, then relist without leaving the screen.
+        """Ask for the folder, then relist without leaving the screen.
+
+        A plain text box. A tree browser lived here and was removed: it needed
+        drive enumeration, re-rooting, and a cancellable disk walk to be usable
+        at all, and a path can be pasted straight out of a file manager faster
+        than it can be arrowed to. What it was really buying was feedback, and
+        `folder_warning` gives that without the machinery.
 
         The old server is stopped first: it was started against the previous
         folder and its preset names models from there, so keeping it would show
         the old list under the new folder's name.
         """
         def chosen(folder: str | None) -> None:
+            folder = (folder or "").strip()
             if not folder or folder == self._models_dir:
                 return
             self._models_dir = folder
             self.run_worker(self._reload_for_new_folder(), exclusive=True)
 
-        self.app.push_screen(FolderPickerScreen(self._models_dir), chosen)
+        self.app.push_screen(
+            TextEditScreen("models folder", self._models_dir or ""),
+            chosen,
+        )
 
     async def _reload_for_new_folder(self) -> None:
         await self._release_server()
@@ -780,8 +647,8 @@ class SettingsPane(Vertical):
         if field.kind == "folder":
             current = self._values.get(field.key)
             self.app.push_screen(
-                FolderPickerScreen(str(current) if current else None),
-                lambda chosen: self._accept(field, chosen or None),
+                TextEditScreen(field.label, str(current) if current else ""),
+                lambda edited: self._accept_folder(field, edited),
             )
             return
         if field.kind == "text":
@@ -795,6 +662,20 @@ class SettingsPane(Vertical):
     def _accept(self, field: SettingField, value: Any) -> None:
         if value is not None or field.kind == "text":
             self._values[field.key] = value
+        self._redraw()
+
+    def _accept_folder(self, field: SettingField, edited: str | None) -> None:
+        """Take the typed path, and say so immediately if nothing is in it.
+
+        Stored either way. A folder that is empty today may be where the user
+        is about to put models, and refusing to remember what they typed would
+        make the warning a rejection -- which it is not.
+        """
+        value = (edited or "").strip() or None
+        self._values[field.key] = value
+        warning = folder_warning(value)
+        if warning:
+            self._status = warning
         self._redraw()
 
     def _accept_model_choice(self, choice: ModelChoice | None) -> None:
