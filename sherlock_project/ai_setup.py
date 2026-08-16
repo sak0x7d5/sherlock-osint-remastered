@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from rich.console import Console
-from rich.prompt import IntPrompt
+from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
 
@@ -24,7 +24,12 @@ from sherlock_project.ai_config import (
     try_load_ai_settings,
 )
 from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LlamaCppProvider
-from sherlock_project.llama_server import LlamaServerError, ManagedLlamaServer
+from sherlock_project.llama_server import (
+    LlamaServerError,
+    ManagedLlamaServer,
+    default_model_roots,
+    discover_models,
+)
 
 
 def discover_setup_base_url(
@@ -118,6 +123,52 @@ def _warn_native_reasoning(model: AIModelInfo, *, console: Console) -> None:
                 style="dim",
             )
         )
+
+
+def _ask_for_models_folder(
+    *,
+    console: Console,
+    error: LlamaServerError,
+) -> str | None:
+    """Ask where the models are, offering anything already found.
+
+    Reached only when discovery came up empty, and only when someone is there
+    to answer. The alternative -- printing `sherlock setup ai --models-dir
+    <folder>` and exiting -- ends the session by handing back a command,
+    which is the thing the whole flow is meant to avoid.
+
+    Folders that already hold models come first as numbered choices, because
+    picking a number beats recalling an absolute path. Typing one stays
+    available, since a CLI cannot browse; the TUI's `models folder` row can,
+    and that is the better door for anyone who has it.
+    """
+    console.print(f"[yellow]\\[!] {error}[/yellow]")
+    candidates = [root for root in default_model_roots() if discover_models([root])]
+    if candidates:
+        console.print("Folders that look like they hold models:")
+        for index, root in enumerate(candidates, start=1):
+            found = len(discover_models([root]))
+            console.print(
+                Text(f"  {index}. {root} ", style="none").append(
+                    f"({found} model{'' if found == 1 else 's'})", style="dim"
+                )
+            )
+    try:
+        answer = Prompt.ask(
+            "Path to your models folder (blank to give up)",
+            default="",
+            console=console,
+        ).strip()
+    except EOFError:
+        # Same situation the interactive guard covers: isatty() is not a
+        # reliable answer on Windows, so a prompt can be reached with nothing
+        # able to reply. Give up quietly rather than raise out of rich.
+        return None
+    if not answer:
+        return None
+    if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+        return str(candidates[int(answer) - 1])
+    return answer
 
 
 def _select_model(
@@ -375,6 +426,8 @@ async def run_ai_setup(
         highlight=False,
     )
 
+    interactive = sys.stdin.isatty() if stdin_isatty is None else stdin_isatty
+
     # Setup starts its own server rather than asking the user to. Stopped again
     # below: this is a configuration step, and startup only indexes models
     # rather than loading any weights, so it costs about a second.
@@ -382,9 +435,26 @@ async def run_ai_setup(
     try:
         status = await server.ensure_running()
     except LlamaServerError as error:
-        output.print(f"[red]\\[x] {error}[/red]")
-        await server.stop()
-        return 2
+        # Nothing found. Ask WHERE the models are rather than printing a
+        # command to go and run -- that was the instruction-shaped dead end
+        # this whole flow exists to remove.
+        chosen = (
+            _ask_for_models_folder(console=output, error=error)
+            if interactive
+            else None
+        )
+        if chosen is None:
+            output.print(f"[red]\\[x] {error}[/red]")
+            await server.stop()
+            return 2
+        provisional = provisional.model_copy(update={"models_dir": chosen})
+        server = ManagedLlamaServer(provisional)
+        try:
+            status = await server.ensure_running()
+        except LlamaServerError as retry_error:
+            output.print(f"[red]\\[x] {retry_error}[/red]")
+            await server.stop()
+            return 2
     if status.started_by_us:
         output.print(f"[dim]{status.detail}[/dim]")
 
@@ -417,9 +487,7 @@ async def run_ai_setup(
         requested=args.model,
         existing=existing,
         console=output,
-        interactive=(
-            sys.stdin.isatty() if stdin_isatty is None else stdin_isatty
-        ),
+        interactive=interactive,
     )
     settings = provisional.model_copy(update={"model": selected.key})
     try:

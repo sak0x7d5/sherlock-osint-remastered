@@ -27,6 +27,7 @@ something.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import signal
@@ -73,6 +74,42 @@ class ServerStatus:
     detail: str
 
 
+def _lmstudio_model_roots() -> list[Path]:
+    """Where LM Studio actually keeps models, which is often not its default.
+
+    Anyone with a small system drive moves their models, and this machine is
+    the proof it matters: `~/.lmstudio/models` was empty while 22 models sat on
+    another drive entirely. Guessing the default location would have found
+    nothing and asked a question the answer to which was already on disk.
+
+    Reads LM Studio's own index cache, which records an absolute directory per
+    model. That is another application's private file, so every step is
+    defensive and any failure simply yields no roots -- a changed format must
+    cost a fallback, never a crash.
+    """
+    index = Path.home() / ".lmstudio" / ".internal" / "model-index-cache.json"
+    try:
+        payload = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+
+    roots: dict[str, Path] = {}
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        concrete = entry.get("concreteModelDirAbsolutePath")
+        if not isinstance(concrete, str) or not concrete:
+            continue
+        # The publisher folder above the model, so one root covers a whole
+        # library rather than adding an entry per model.
+        parent = Path(concrete).parent
+        roots.setdefault(str(parent).casefold(), parent)
+    return list(roots.values())
+
+
 def default_model_roots() -> list[Path]:
     """Where GGUFs usually already are, so first run needs no answer.
 
@@ -81,6 +118,7 @@ def default_model_roots() -> list[Path]:
     """
     home = Path.home()
     roots = [
+        *_lmstudio_model_roots(),
         home / ".lmstudio" / "models",
         home / ".cache" / "llama.cpp",
         home / ".cache" / "huggingface" / "hub",
@@ -116,15 +154,28 @@ def discover_models(roots: Sequence[Path]) -> dict[str, Path]:
         if not root.is_dir():
             continue
         root_depth = len(root.parts)
-        for path in sorted(root.rglob(f"*{MODEL_SUFFIX}")):
-            if len(path.parts) - root_depth > MAX_SCAN_DEPTH:
-                continue
-            if not path.is_file() or not _is_chat_model(path):
-                continue
-            name = path.stem
-            # First root wins, so an explicitly configured directory beats an
-            # auto-detected one holding the same file.
-            found.setdefault(name, path)
+        # os.walk with PRUNING, not rglob. rglob walks the entire tree and
+        # leaves depth to be filtered afterwards, which is no help at all: the
+        # cost is the walk. Pointing this at a home directory -- which the
+        # folder browser does by default -- then crawls every file the user
+        # owns. Measured as 92s in the test suite before this loop replaced it.
+        for current, directories, filenames in os.walk(root):
+            here = Path(current)
+            if len(here.parts) - root_depth >= MAX_SCAN_DEPTH:
+                directories.clear()
+            # Big, uninteresting, and common directly under a home directory.
+            directories[:] = [
+                name for name in directories if not name.startswith((".", "$"))
+            ]
+            for filename in sorted(filenames):
+                if not filename.endswith(MODEL_SUFFIX):
+                    continue
+                path = here / filename
+                if not _is_chat_model(path):
+                    continue
+                # First root wins, so an explicitly configured directory beats
+                # an auto-detected one holding the same file.
+                found.setdefault(path.stem, path)
     return found
 
 

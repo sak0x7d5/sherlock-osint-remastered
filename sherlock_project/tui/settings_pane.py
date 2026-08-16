@@ -29,6 +29,7 @@ that takes over a CI log is worse than the crash it replaces.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -40,7 +41,7 @@ from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Label, Static
+from textual.widgets import DataTable, DirectoryTree, Input, Label, Static, Tree
 
 from sherlock_project.ai_config import (
     AIConfigError,
@@ -57,6 +58,7 @@ from sherlock_project.database import default_database_path
 from sherlock_project.llama_server import (
     LlamaServerError,
     ManagedLlamaServer,
+    discover_models,
 )
 from sherlock_project.settings import (
     NO_DEFAULT,
@@ -186,6 +188,92 @@ def thinking_label(model: AIModelInfo) -> str:
     if model.supports_reasoning_off:
         return "optional"
     return "always"
+
+
+class FolderPickerScreen(ModalScreen[str | None]):
+    """Enter on `models folder`: browse to it instead of typing it.
+
+    Nobody should have to recall an absolute path to switch on an optional
+    feature, and this row used to open an empty text box that expected exactly
+    that.
+
+    A Textual tree rather than the OS folder dialog, deliberately. `tkinter` is
+    importable on a typical Windows install, so the native picker LOOKS
+    available -- but it is a separate system package on Debian and Ubuntu, and
+    it cannot draw at all over SSH, in WSL without an X server, in a container,
+    or on a headless box. Those are ordinary places to run an OSINT scan. A
+    dialog that works on the developer's desktop and hangs on a user's remote
+    session is worse than no dialog, and this widget works wherever the rest of
+    the TUI already does.
+
+    The count beside the path is the point of the screen, not decoration: it is
+    the only way to tell "this is where my models are" from "this looks right"
+    before committing, and it is computed with the same recursive search the
+    server will use, so what it reports is what will be served.
+    """
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "cancel", "cancel"),
+    ]
+
+    def __init__(self, current: str | None = None) -> None:
+        super().__init__()
+        self._current = current
+        start = Path(current).expanduser() if current else Path.home()
+        # Falling back up the tree rather than to the filesystem root: a stored
+        # folder on a drive that is not mounted today should still open
+        # somewhere recognisable rather than at C:\ or /.
+        while not start.is_dir() and start != start.parent:
+            start = start.parent
+        self._root = start if start.is_dir() else Path.home()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("Choose your models folder", classes="dialog-title")
+            yield Static(str(self._root), id="folder-path")
+            yield DirectoryTree(str(self._root), id="folders")
+            yield Label(
+                "up/down move   → open   ← back   enter use this folder   "
+                "esc cancel",
+                classes="dim",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#folders", DirectoryTree).focus()
+
+    @on(Tree.NodeHighlighted)
+    def preview(self, event: Tree.NodeHighlighted) -> None:
+        """Say how many models are under whatever the cursor is on.
+
+        Off the event loop because it walks the filesystem, and re-entrant by
+        design: `exclusive=True` cancels the previous count, so holding an
+        arrow key does not queue a scan per row.
+        """
+        path = getattr(event.node, "data", None)
+        target = getattr(path, "path", None)
+        if target is None:
+            return
+        self.run_worker(self._count(Path(target)), exclusive=True)
+
+    async def _count(self, folder: Path) -> None:
+        label = self.query_one("#folder-path", Static)
+        label.update(f"{folder}  …")
+        if not folder.is_dir():
+            label.update(str(folder))
+            return
+        found = await asyncio.to_thread(discover_models, [folder])
+        # Same recursive search the server will run, so this number is what
+        # would actually be served rather than an estimate.
+        label.update(
+            f"{folder}  —  {len(found)} model{'' if len(found) == 1 else 's'}"
+        )
+
+    @on(DirectoryTree.DirectorySelected)
+    def choose(self, event: DirectoryTree.DirectorySelected) -> None:
+        self.dismiss(str(event.path))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class ModelPickerScreen(ModalScreen[str | None]):
@@ -531,6 +619,13 @@ class SettingsPane(Vertical):
                     models_dir=str(models_dir) if models_dir else None,
                 ),
                 lambda chosen: self._accept(field, chosen),
+            )
+            return
+        if field.kind == "folder":
+            current = self._values.get(field.key)
+            self.app.push_screen(
+                FolderPickerScreen(str(current) if current else None),
+                lambda chosen: self._accept(field, chosen or None),
             )
             return
         if field.kind == "text":
