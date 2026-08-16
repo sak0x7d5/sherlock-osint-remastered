@@ -1,5 +1,6 @@
 """Starting llama-server, and the rule about never touching someone else's."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -184,3 +185,82 @@ def test_the_server_launches_from_a_generated_preset(tmp_path: Path):
     assert command[command.index("--port") + 1] == "9999"
     # NOT --models-dir: that one imposes a directory layout on the user.
     assert "--models-dir" not in command
+
+
+def test_discovery_prunes_instead_of_walking_the_whole_tree(tmp_path: Path):
+    """Depth is a PRUNE, not a filter applied after the walk.
+
+    rglob walks everything and discards by depth afterwards, which costs the
+    same as no limit at all. The folder browser opens on the home directory by
+    default, so an unpruned walk crawls every file the user owns -- measured as
+    92s in this suite before the walk was bounded.
+    """
+    deep = tmp_path
+    for level in range(12):
+        deep = deep / f"level{level}"
+    deep.mkdir(parents=True)
+    (deep / "Too-Deep-Q4_K_M.gguf").write_text("", encoding="utf-8")
+
+    shallow = tmp_path / "repo"
+    shallow.mkdir()
+    (shallow / "Found-Q4_K_M.gguf").write_text("", encoding="utf-8")
+
+    found = llama_server.discover_models([tmp_path])
+
+    assert "Found-Q4_K_M" in found
+    assert "Too-Deep-Q4_K_M" not in found
+
+
+def test_discovery_skips_dot_directories(tmp_path: Path):
+    """`.git`, `.cache`, `.venv` under a home directory are cost with no payoff."""
+    hidden = tmp_path / ".cache" / "repo"
+    hidden.mkdir(parents=True)
+    (hidden / "Hidden-Q4_K_M.gguf").write_text("", encoding="utf-8")
+
+    assert llama_server.discover_models([tmp_path]) == {}
+
+
+def test_lmstudio_roots_are_read_from_its_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Guessing LM Studio's default folder is not good enough.
+
+    Anyone with a small system drive relocates their models. Measured on the
+    machine this was written on: ~/.lmstudio/models was EMPTY while 22 models
+    sat on another drive, so the default guess would have asked a question
+    whose answer was already on disk.
+    """
+    internal = tmp_path / ".lmstudio" / ".internal"
+    internal.mkdir(parents=True)
+    (internal / "model-index-cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"concreteModelDirAbsolutePath": "D:/AI/models/pub/Repo-A"},
+                    {"concreteModelDirAbsolutePath": "D:/AI/models/pub/Repo-B"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llama_server.Path, "home", classmethod(lambda _cls: tmp_path))
+
+    roots = llama_server._lmstudio_model_roots()
+
+    # The publisher folder, deduplicated -- one root for a whole library
+    # rather than an entry per model.
+    assert roots == [Path("D:/AI/models/pub")]
+
+
+def test_a_broken_lmstudio_index_costs_a_fallback_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Another application's private file. A format change must not break us."""
+    internal = tmp_path / ".lmstudio" / ".internal"
+    internal.mkdir(parents=True)
+    (internal / "model-index-cache.json").write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(llama_server.Path, "home", classmethod(lambda _cls: tmp_path))
+
+    assert llama_server._lmstudio_model_roots() == []

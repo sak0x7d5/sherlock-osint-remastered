@@ -563,3 +563,79 @@ async def test_the_model_picker_starts_a_server_instead_of_asking_you_to(
         await pilot.pause()
 
     assert stopped == ["stopped"]
+
+
+async def test_the_models_folder_row_opens_a_browser_not_a_blank_box(
+    tmp_path: Path,
+):
+    """Typing an absolute path from memory is not a reasonable ask.
+
+    The row is `kind="folder"` so the pane opens a tree; `kind="text"` would
+    give the empty Input this replaced.
+    """
+    from sherlock_project.tui.settings_pane import FolderPickerScreen
+
+    field = next(f for f in SETTING_FIELDS if f.key == "ai.models_dir")
+    assert field.kind == "folder"
+
+    path = tmp_path / "config.toml"
+    _seed(path)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("ai.models_dir")):
+            await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, FolderPickerScreen)
+        app.screen.action_cancel()
+        await pilot.pause()
+
+
+async def test_the_folder_browser_counts_models_under_the_cursor(
+    tmp_path: Path,
+):
+    """The count is why the screen beats a text box.
+
+    "Is this the right folder" is unanswerable from a path alone, and it is
+    computed with the same recursive search the server will use, so what it
+    reports is what would actually be served.
+    """
+    from sherlock_project.tui.settings_pane import FolderPickerScreen
+
+    models = tmp_path / "models" / "Some-Repo"
+    models.mkdir(parents=True)
+    (models / "Some-Model-Q4_K_M.gguf").write_text("", encoding="utf-8")
+    (models / "mmproj-Some-Model-F16.gguf").write_text("", encoding="utf-8")
+
+    screen = FolderPickerScreen(str(tmp_path / "models"))
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+        await screen._count(tmp_path / "models")
+        rendered = screen.query_one("#folder-path", Static).render().plain
+
+        # One model, not two: the projector is not a chat model.
+        assert "1 model" in rendered
+        assert "2 model" not in rendered
+
+        screen.action_cancel()
+        await pilot.pause()
+
+
+async def test_the_folder_browser_opens_somewhere_real_when_the_path_is_gone(
+    tmp_path: Path,
+):
+    """A stored folder on a drive that is not mounted today.
+
+    Walking up beats falling back to the filesystem root: the parent is a place
+    the user recognises, the drive root is not.
+    """
+    from sherlock_project.tui.settings_pane import FolderPickerScreen
+
+    screen = FolderPickerScreen(str(tmp_path / "gone" / "deeper" / "still-gone"))
+
+    assert screen._root == tmp_path

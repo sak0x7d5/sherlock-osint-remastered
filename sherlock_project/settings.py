@@ -168,7 +168,10 @@ def resolve_runtime_settings(
 # nobody can write a test for.
 # --------------------------------------------------------------------------
 
-FieldKind = Literal["spin", "toggle", "text", "model"]
+# "folder" is "text" that knows it is a path: same stored value, but the TUI
+# opens a browser on it instead of a blank input, because nobody should have
+# to type an absolute path from memory to use an optional feature.
+FieldKind = Literal["spin", "toggle", "text", "folder", "model"]
 
 # A field this build ships no value for. Distinct from None, which IS the
 # shipped value of `scan.proxy` -- "no proxy" is an answer, while "no model"
@@ -235,7 +238,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "ai", "base_url", "endpoint", "text",
         default=DEFAULT_LLAMACPP_BASE_URL,
     ),
-    SettingField("ai", "models_dir", "models folder", "text"),
+    SettingField("ai", "models_dir", "models folder", "folder"),
     SettingField(
         "ai", "temperature", "temperature", "spin",
         tuple(round(step / 10, 1) for step in range(11)),
