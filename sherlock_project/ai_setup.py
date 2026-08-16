@@ -24,12 +24,7 @@ from sherlock_project.ai_config import (
     try_load_ai_settings,
 )
 from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LlamaCppProvider
-from sherlock_project.llama_server import (
-    LlamaServerError,
-    ManagedLlamaServer,
-    default_model_roots,
-    discover_models,
-)
+from sherlock_project.llama_server import LlamaServerError, ManagedLlamaServer
 
 
 def discover_setup_base_url(
@@ -130,29 +125,20 @@ def _ask_for_models_folder(
     console: Console,
     error: LlamaServerError,
 ) -> str | None:
-    """Ask where the models are, offering anything already found.
+    """Ask where the models are. One question, no searching.
 
     Reached only when discovery came up empty, and only when someone is there
     to answer. The alternative -- printing `sherlock setup ai --models-dir
     <folder>` and exiting -- ends the session by handing back a command,
     which is the thing the whole flow is meant to avoid.
 
-    Folders that already hold models come first as numbered choices, because
-    picking a number beats recalling an absolute path. Typing one stays
-    available, since a CLI cannot browse; the TUI's `models folder` row can,
-    and that is the better door for anyone who has it.
+    Nothing is guessed. Sherlock does not search a machine for models it was
+    never told about -- that was overhead and coupling to other tools' private
+    files, for a question one line answers. A CLI cannot browse, so this asks;
+    the TUI picker has a folder row that opens a real browser, which is the
+    better door for anyone who has it.
     """
     console.print(f"[yellow]\\[!] {error}[/yellow]")
-    candidates = [root for root in default_model_roots() if discover_models([root])]
-    if candidates:
-        console.print("Folders that look like they hold models:")
-        for index, root in enumerate(candidates, start=1):
-            found = len(discover_models([root]))
-            console.print(
-                Text(f"  {index}. {root} ", style="none").append(
-                    f"({found} model{'' if found == 1 else 's'})", style="dim"
-                )
-            )
     try:
         answer = Prompt.ask(
             "Path to your models folder (blank to give up)",
@@ -166,8 +152,6 @@ def _ask_for_models_folder(
         return None
     if not answer:
         return None
-    if answer.isdigit() and 1 <= int(answer) <= len(candidates):
-        return str(candidates[int(answer) - 1])
     return answer
 
 

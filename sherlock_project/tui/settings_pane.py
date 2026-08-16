@@ -30,6 +30,7 @@ that takes over a CI log is worse than the crash it replaces.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -276,8 +277,35 @@ class FolderPickerScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ModelPickerScreen(ModalScreen[str | None]):
+@dataclass(frozen=True, slots=True)
+class ModelChoice:
+    """What the picker comes back with.
+
+    Two values because the screen can change two things. Someone who arrives
+    with their models in the wrong place changes the folder AND then picks from
+    it, and returning only the model key would silently drop the folder they
+    just chose -- so the next open would show the old list again.
+    """
+
+    model: str | None = None
+    models_dir: str | None = None
+
+
+# Row key for the "change folder" entry. A DataTable row rather than a Button
+# below the table: this TUI is keyboard-only, new ctrl+ bindings are banned
+# (TODO records a test enforcing it) and function keys are unreliable, so a row
+# needs no new binding, reuses the "enter select" hint already on screen, and
+# cannot be tabbed past unnoticed the way a button under a long list can.
+FOLDER_ROW_KEY = "__change_models_folder__"
+
+
+class ModelPickerScreen(ModalScreen[ModelChoice]):
     """Enter on `model`: every model that can be used, as a real table.
+
+    The folder lives HERE, as the first row, because choosing where models are
+    and choosing which one to use are one task, not two features. Someone who
+    downloads a model somewhere new, or who has never set a folder at all,
+    fixes it without leaving the screen they are already looking at.
 
     A table rather than one line per model, because the fields are the whole
     point of the screen -- size against quantisation against context window is
@@ -350,12 +378,37 @@ class ModelPickerScreen(ModalScreen[str | None]):
         # model actually chosen, when a scan starts.
         self.run_worker(self._load(), exclusive=True)
 
+    def _add_folder_row(self) -> None:
+        """First row, always, whatever else happened.
+
+        Added before anything that can fail, so the way to fix a wrong or
+        missing folder is on screen even when the listing errored -- which is
+        exactly the moment it is needed.
+        """
+        table = self.query_one("#models", DataTable)
+        table.add_row(
+            Text("▸" if self._models_dir is None else " ", style="bold cyan"),
+            Text("Change models folder…", style="bold"),
+            Text(self._models_dir or "not set", style="dim"),
+            Text(""),
+            Text(""),
+            key=FOLDER_ROW_KEY,
+        )
+
     async def _load(self) -> None:
         status = self.query_one("#picker-status", Static)
         table = self.query_one("#models", DataTable)
         table.clear()
+        self._add_folder_row()
 
         from sherlock_project.ai_config import AISettings
+
+        if not self._models_dir:
+            status.update(
+                "No models folder set — press enter on the first row to choose one."
+            )
+            table.focus()
+            return
 
         try:
             settings = AISettings(
@@ -386,12 +439,6 @@ class ModelPickerScreen(ModalScreen[str | None]):
             return
         finally:
             await provider.close()
-
-        if not models:
-            status.update(
-                "No models found. Set the models folder, then press ^R."
-            )
-            return
 
         models.sort(key=lambda item: (item.display_name.casefold(), item.key))
         for model in models:
@@ -435,12 +482,38 @@ class ModelPickerScreen(ModalScreen[str | None]):
 
     @on(DataTable.RowSelected)
     def choose(self, event: DataTable.RowSelected) -> None:
+        if event.row_key.value == FOLDER_ROW_KEY:
+            self._change_folder()
+            return
         self.run_worker(self._release_server())
-        self.dismiss(event.row_key.value)
+        self.dismiss(ModelChoice(model=event.row_key.value, models_dir=self._models_dir))
+
+    def _change_folder(self) -> None:
+        """Open the folder browser, then relist without leaving the screen.
+
+        The old server is stopped first: it was started against the previous
+        folder and its preset names models from there, so keeping it would show
+        the old list under the new folder's name.
+        """
+        def chosen(folder: str | None) -> None:
+            if not folder or folder == self._models_dir:
+                return
+            self._models_dir = folder
+            self.run_worker(self._reload_for_new_folder(), exclusive=True)
+
+        self.app.push_screen(FolderPickerScreen(self._models_dir), chosen)
+
+    async def _reload_for_new_folder(self) -> None:
+        await self._release_server()
+        self.query_one("#picker-status", Static).update("Looking for models...")
+        await self._load()
 
     def action_cancel(self) -> None:
         self.run_worker(self._release_server())
-        self.dismiss(None)
+        # The folder still comes back on cancel. Someone who set it and then
+        # decided against the models they saw has still told us something
+        # true, and making them set it twice would be the screen forgetting.
+        self.dismiss(ModelChoice(model=None, models_dir=self._models_dir))
 
 
 class SettingsPane(Vertical):
@@ -618,7 +691,7 @@ class SettingsPane(Vertical):
                     current=self._values.get("ai.model"),
                     models_dir=str(models_dir) if models_dir else None,
                 ),
-                lambda chosen: self._accept(field, chosen),
+                self._accept_model_choice,
             )
             return
         if field.kind == "folder":
@@ -639,6 +712,22 @@ class SettingsPane(Vertical):
     def _accept(self, field: SettingField, value: Any) -> None:
         if value is not None or field.kind == "text":
             self._values[field.key] = value
+        self._redraw()
+
+    def _accept_model_choice(self, choice: ModelChoice | None) -> None:
+        """Take back both values the picker can change.
+
+        The folder is applied even when no model was chosen: someone who fixed
+        a wrong folder and then backed out has still told us where their models
+        are, and asking again next time would be the screen forgetting.
+        """
+        if choice is None:
+            self._redraw()
+            return
+        if choice.models_dir:
+            self._values["ai.models_dir"] = choice.models_dir
+        if choice.model:
+            self._values["ai.model"] = choice.model
         self._redraw()
 
     def action_reset(self) -> None:
