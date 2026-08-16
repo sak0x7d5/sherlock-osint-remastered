@@ -185,6 +185,60 @@ async def test_router_with_an_empty_directory_is_reported():
         await provider.ensure_model_loaded()
 
 
+async def test_reasoning_probe_detects_a_model_that_cannot_stop_thinking():
+    """The only signal there is. llama-server publishes no capability block.
+
+    Measured against b9837: an always-thinking model accepts
+    `enable_thinking: false` with HTTP 200 and thinks anyway, with nothing in
+    the response admitting it. Behaviour is the only thing that tells them
+    apart, and getting it wrong sends an always-thinking model down the
+    canonical Pass 1 path where its thinking eats the answer's token budget.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(
+            200,
+            json=_chat_response(reasoning_content="thought anyway"),
+        )
+
+    model = await _provider(handler).ensure_model_loaded()
+
+    assert model.reasoning_options == ("on",)
+    assert model.supports_reasoning_off is False
+    assert model.requires_native_reasoning is True
+
+
+async def test_reasoning_probe_clears_a_model_that_honours_the_switch():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(200, json=_chat_response())
+
+    model = await _provider(handler).ensure_model_loaded()
+
+    assert model.reasoning_options == ("off", "on")
+    assert model.requires_native_reasoning is False
+
+
+async def test_a_failed_probe_leaves_the_model_usable():
+    """An unknown capability must not cost the run.
+
+    Falling back to the canonical pair is the documented degraded path; raising
+    here would turn "could not measure" into "cannot scan".
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(503)
+
+    model = await _provider(handler).ensure_model_loaded()
+
+    assert model.key == "Qwen3-8B-Q4_K_M.gguf"
+    assert model.reasoning_options == ()
+    assert model.requires_native_reasoning is False
+
+
 async def test_schema_is_enforced_through_response_format():
     """The schema goes on the wire, not into the prompt.
 
@@ -213,7 +267,9 @@ async def test_schema_is_enforced_through_response_format():
         json_schema=schema,
     )
 
-    response_format = bodies[0]["response_format"]
+    # bodies[0] would be the reasoning probe that ensure_model_loaded fires
+    # lazily on the first generate. The call under test is the last one.
+    response_format = bodies[-1]["response_format"]
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["schema"] == schema
     assert response_format["json_schema"]["strict"] is True
@@ -284,7 +340,9 @@ async def test_reasoning_on_leaves_thinking_alone():
         reasoning_off=False,
     )
 
-    assert "chat_template_kwargs" not in bodies[0]
+    # Last, not first: the reasoning probe runs ahead of it and always sets
+    # enable_thinking, which is the whole point of the probe.
+    assert "chat_template_kwargs" not in bodies[-1]
 
 
 async def test_native_reasoning_is_split_away_from_the_answer():

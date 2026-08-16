@@ -59,6 +59,7 @@ from sherlock_project.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
 )
+from sherlock_project.llama_server import ManagedLlamaServer
 from sherlock_project.notify import (
     INTERRUPTION_MESSAGE,
     QueryNotify,
@@ -560,6 +561,18 @@ async def _close_ai_service_and_db(
         if isinstance(error, asyncio.CancelledError):
             cleanup_cancellation = error
 
+    # Last, and only ever servers this process started. Attempted for every one
+    # of them even if an earlier stop raised, or a failure on the first would
+    # leave the rest running and holding their ports against the next run.
+    while _MANAGED_SERVERS:
+        server = _MANAGED_SERVERS.pop()
+        try:
+            await server.stop()
+        except BaseException as error:
+            cleanup_error = error
+            if isinstance(error, asyncio.CancelledError):
+                cleanup_cancellation = error
+
     return cleanup_error, cleanup_cancellation
 
 
@@ -663,6 +676,14 @@ async def _drain_deferred_ai_jobs(
             ai_queue.task_done()
 
 
+# llama-server processes THIS run started, awaiting shutdown. Module level
+# because `run_ai_pipeline` returns the service while the server must outlive
+# it -- Pass 2 synthesis still needs the model after the worker returns -- and
+# threading a handle through every caller would touch far more of the
+# signature surface than one list justifies.
+_MANAGED_SERVERS: list[ManagedLlamaServer] = []
+
+
 async def run_ai_pipeline(
     ai_queue: asyncio.Queue[int],
     sherlock_db: SherlockDB,
@@ -670,17 +691,40 @@ async def run_ai_pipeline(
     ai_settings: AISettings | None = None,
 ) -> AIService | None:
     """Load the local model, then own pass-one processing until shutdown."""
+    # Start llama-server if nothing is listening and a models directory is
+    # stored. Adopts a running one untouched, and only ever stops a process it
+    # started itself -- someone running their own server, possibly with quite
+    # different flags, has made a decision worth leaving alone.
+    server = (
+        ManagedLlamaServer(ai_settings) if ai_settings is not None else None
+    )
+    if server is not None:
+        try:
+            await server.ensure_running()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Not fatal on its own: the endpoint may still answer, and if it
+            # does not, AIService.create reports it in the same place every
+            # other model failure is reported.
+            if reporter is not None:
+                reporter.ai_model_failed(error)
+
     try:
         ai_service = await AIService.create(
             settings=ai_settings,
             trace_callback=(reporter.ai_trace if reporter is not None else None),
         )
     except asyncio.CancelledError:
+        if server is not None:
+            await server.stop()
         raise
     except Exception as error:
         if reporter is not None:
             reporter.ai_model_failed(error)
         await _drain_deferred_ai_jobs(ai_queue, reporter)
+        if server is not None:
+            await server.stop()
         return None
 
     if reporter is not None:
@@ -695,8 +739,15 @@ async def run_ai_pipeline(
         )
     except BaseException:
         await ai_service.close()
+        if server is not None:
+            await server.stop()
         raise
 
+    # Deliberately left running for the caller: synthesis (Pass 2) still needs
+    # the model after the worker returns. Stopped by `_close_ai_service_and_db`
+    # once the whole pipeline is finished with it.
+    if server is not None:
+        _MANAGED_SERVERS.append(server)
     return ai_service
 
 

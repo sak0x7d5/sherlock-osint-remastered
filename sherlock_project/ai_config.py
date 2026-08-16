@@ -28,7 +28,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # behaviour left behind the setting. It is stripped on read rather than
 # rejected: extra="forbid" would otherwise meet every config file written by
 # builds 4 and earlier with a pydantic dump, for a key that now does nothing.
-CONFIG_VERSION = 5
+# 6 added ai.models_dir and ai.server_binary, so Sherlock can start
+# llama-server itself. `--models-dir` is a LAUNCH flag with no runtime
+# equivalent -- POST /props is per-model routing, not server configuration --
+# so storing the directory is the only way a user can choose where their
+# models live without retyping a command every time.
+CONFIG_VERSION = 6
 DEFAULT_LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
@@ -57,6 +62,19 @@ class AISettings(BaseModel):
     # against extractions so results say which model produced them, and it is
     # what `setup ai` stores after adopting the running server's model.
     model: str
+    # Where the user keeps their GGUFs. Passed to `llama-server --models-dir`
+    # when Sherlock starts the server itself; ignored entirely when a server is
+    # already listening, because that one's directory was decided at its launch
+    # and cannot be changed from here.
+    #
+    # Layout is `<models_dir>/<repo>/*.gguf` -- ONE level. A deeper tree loads
+    # zero models and llama-server says so only in its own stdout, which from
+    # the API is indistinguishable from an empty machine.
+    models_dir: str | None = None
+    # Absolute path to the llama-server executable. Left unset means "find it
+    # on PATH", which covers the winget/apt/brew installs; it exists for people
+    # who keep a build somewhere of their own.
+    server_binary: str | None = None
     temperature: float = Field(
         default=DEFAULT_AI_TEMPERATURE,
         ge=0,
