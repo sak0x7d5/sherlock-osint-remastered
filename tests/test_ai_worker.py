@@ -1122,6 +1122,7 @@ async def test_sherlock_forces_ai_refresh_for_fresh_targeted_result():
         url = "https://example.com/blue"
 
     class FakeEngine:
+        fixed_transport = None
         def get_request_fn(self, _method: str) -> object:
             return object()
 

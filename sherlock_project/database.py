@@ -70,6 +70,23 @@ class StoredUsernameOverview:
     last_scanned_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class StoredUsernameListing:
+    """One line of "what is in this database", for a picker.
+
+    Carries `has_profile` rather than the profile itself: the list exists to be
+    chosen from, and pass-two summaries are large enough that loading every one
+    of them to draw a sidebar would read the whole table off disk to show a
+    column of names.
+    """
+
+    username: str
+    total_sites: int
+    claimed_sites: int
+    last_scanned_at: str | None
+    has_profile: bool
+
+
 class SherlockDB:
     def __init__(self, database_path: str) -> None:
         self.database_path = database_path
@@ -200,6 +217,18 @@ class SherlockDB:
             column_name="confidence",
             definition="TEXT",
         )
+        # HOW the site was fetched: "browser", "api", or "http". Evidence
+        # provenance, not telemetry -- a hit found without a browser is weaker
+        # than one found with it, because a plain request runs no JavaScript and
+        # a client-rendered profile arrives without the marker the rule looks
+        # for. Months later this column is the only record of which it was.
+        # It also stops a cheap answer from silently satisfying the resume
+        # filter for a later browser scan. NULL means the row predates it.
+        await self._ensure_column(
+            table_name="results",
+            column_name="transport",
+            definition="TEXT",
+        )
 
         await db.commit()
 
@@ -215,9 +244,22 @@ class SherlockDB:
             columns = await cur.fetchall()
         if any(row["name"] == column_name for row in columns):
             return
-        await db.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
-        )
+        try:
+            await db.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+            )
+        except aiosqlite.OperationalError as error:
+            # Losing the race is success. The check above and the ALTER below
+            # are two statements, so two connections opening the same database
+            # at once can both find the column missing and both try to add it --
+            # the second one fails with "duplicate column name" even though the
+            # column now exists, which is exactly the state this method wanted.
+            #
+            # Not hypothetical: the UI opens a connection for the results list
+            # while a scan holds its own, and on a database created fresh that
+            # raced on the first run and took the scan down with it.
+            if "duplicate column name" not in str(error).lower():
+                raise
 
     async def clear_tables(self) -> None:
         db = self._require_db()
@@ -277,6 +319,7 @@ class SherlockDB:
         ai_extraction_contract_hash: str | None = None,
         force_ai_extraction: bool = False,
         confidence: str | None = None,
+        transport: str | None = None,
     ) -> int:
         db = self._require_db()
 
@@ -297,9 +340,10 @@ class SherlockDB:
                         response_text,
                         ai_extraction,
                         ai_extraction_contract_hash,
-                        confidence
+                        confidence,
+                        transport
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(username_id, site_name) DO UPDATE SET
                         site_url = excluded.site_url,
                         status = excluded.status,
@@ -308,6 +352,10 @@ class SherlockDB:
                         error_context = excluded.error_context,
                         response_text = excluded.response_text,
                         confidence = excluded.confidence,
+                        -- Overwritten rather than preserved on purpose: the
+                        -- column describes the row that is being written, so a
+                        -- re-check over a different transport must say so.
+                        transport = excluded.transport,
                         ai_extraction = CASE
                             WHEN excluded.ai_extraction IS NOT NULL
                                 THEN excluded.ai_extraction
@@ -357,6 +405,7 @@ class SherlockDB:
                             else None
                         ),
                         confidence,
+                        transport,
                         force_ai_extraction,
                         force_ai_extraction,
                         force_ai_extraction,
@@ -746,6 +795,84 @@ class SherlockDB:
             last_scanned_at=row["last_scanned_at"],
         )
 
+    async def list_usernames(self) -> list[StoredUsernameListing]:
+        """Every username with stored results, most recently scanned first.
+
+        Scan date comes from `MAX(results.scanned_at)` for the same reason
+        `get_username_overview` uses it: `usernames.last_scanned_at` is written
+        once on insert and never updated, so it answers "first seen", and a
+        list sorted by it would put a username scanned this morning below one
+        first seen last year and never touched since.
+
+        A username row with no results is excluded by the join. That is
+        deliberate -- one can exist after an interrupted scan, and offering a
+        name whose detail view is empty is worse than not offering it.
+        """
+        db = self._require_db()
+
+        async with db.execute(
+            """
+            SELECT
+                u.username AS username,
+                COUNT(r.id) AS total_sites,
+                SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS claimed_sites,
+                MAX(r.scanned_at) AS last_scanned_at,
+                u.profile_summary IS NOT NULL AS has_profile
+            FROM usernames u
+            JOIN results r
+                ON u.id = r.username_id
+            GROUP BY u.id, u.username, u.profile_summary
+            ORDER BY MAX(r.scanned_at) DESC, u.username ASC
+            """,
+            (str(QueryStatus.CLAIMED),),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        return [
+            StoredUsernameListing(
+                username=row["username"],
+                total_sites=int(row["total_sites"] or 0),
+                claimed_sites=int(row["claimed_sites"] or 0),
+                last_scanned_at=row["last_scanned_at"],
+                has_profile=bool(row["has_profile"]),
+            )
+            for row in rows
+        ]
+
+    async def delete_username(self, username: str) -> int:
+        """Erase everything stored for one username. Returns rows removed.
+
+        Both tables, in one transaction. Deleting the results and leaving the
+        `usernames` row would keep the name, its first-seen date and its stored
+        pass-two profile on disk -- which for a tool whose subject is people is
+        not a tidy-up detail: someone asking to remove a person's record means
+        the record, not most of it.
+
+        Returns the number of RESULT rows removed, because that is the figure
+        the caller showed the user when asking them to confirm.
+        """
+        db = self._require_db()
+
+        async with db.execute(
+            "SELECT id FROM usernames WHERE username = ?", (username,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return 0
+
+        username_id = int(row["id"])
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM results WHERE username_id = ?",
+            (username_id,),
+        ) as cur:
+            counted = await cur.fetchone()
+        removed = int(counted["n"]) if counted is not None else 0
+
+        await db.execute("DELETE FROM results WHERE username_id = ?", (username_id,))
+        await db.execute("DELETE FROM usernames WHERE id = ?", (username_id,))
+        await db.commit()
+        return removed
+
     async def get_saved_results(self, username: str) -> dict[str, dict[str, Any]]:
         """Return stored results for a username, keyed by site name.
 
@@ -769,6 +896,7 @@ class SherlockDB:
                 r.query_time_ms,
                 r.error_context,
                 r.confidence,
+                r.transport,
                 r.scanned_at
             FROM results r
             JOIN usernames u

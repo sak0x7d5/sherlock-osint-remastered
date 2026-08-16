@@ -18,12 +18,24 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # build is refused with an explanation rather than a pydantic validation dump,
 # because extra="forbid" would otherwise turn "you upgraded elsewhere" into an
 # unreadable error.
-CONFIG_VERSION = 2
+# 3 added scan.webbrowser. The bump is not optional bookkeeping: extra="forbid"
+# means a build that predates the key rejects any file containing it, so
+# without the version the older build reports a validation dump instead of
+# "this was written by a newer version".
+# 4 added ai.unload_after_minutes, for the same reason.
+CONFIG_VERSION = 4
 DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
+# Minutes the model may sit idle before LM Studio unloads it. Small on purpose:
+# the only thing this buys is a warm start for a FOLLOW-UP scan, and the model
+# holds multiple GB of memory for the whole window while it waits for one that
+# may never come. Missing it is cheap -- the weights are still in the OS file
+# cache minutes later, so the reload is nothing like the first load from disk.
+DEFAULT_AI_UNLOAD_AFTER_MINUTES = 5
 DEFAULT_SCAN_CONCURRENCY = 30
 DEFAULT_SCAN_TIMEOUT = 60
+DEFAULT_SCAN_WEBBROWSER = True
 
 
 class AIConfigError(RuntimeError):
@@ -46,6 +58,15 @@ class AISettings(BaseModel):
     context_length: int = Field(
         default=DEFAULT_AI_CONTEXT_LENGTH,
         ge=512,
+    )
+    # 0 means "never unload", which is what LM Studio does on its own for a
+    # model loaded through its API: the 60-minute default it documents applies
+    # to models it loads ITSELF, on demand, and never to ours. So without this
+    # the model sits in memory until the user ejects it by hand, long after
+    # Sherlock has exited and with nothing on screen to say so.
+    unload_after_minutes: int = Field(
+        default=DEFAULT_AI_UNLOAD_AFTER_MINUTES,
+        ge=0,
     )
 
     @field_validator("base_url")
@@ -80,6 +101,12 @@ class ScanSettings(BaseModel):
     timeout: int = Field(default=DEFAULT_SCAN_TIMEOUT, ge=1)
     proxy: str | None = None
     nsfw: bool = False
+    # Fetch sites with a real browser (default) or with plain HTTPS requests.
+    # This is the setting in this file with the largest effect on what a scan
+    # FINDS: off means no JavaScript runs, so sites that build their profile
+    # page in the browser can report a real account as absent. Default True,
+    # and it stays True -- the browser is not overhead, it is the accuracy.
+    webbrowser: bool = DEFAULT_SCAN_WEBBROWSER
 
 
 class OutputSettings(BaseModel):
@@ -154,6 +181,26 @@ def load_settings(
     return _read_settings(path or ai_config_path(environment))
 
 
+def load_settings_or_default(
+    path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[SherlockSettings, str | None]:
+    """Read the config, and say so when it could not be read.
+
+    Same fallback as `try_load_settings` -- stored preferences must never stop
+    a scan -- but the reason comes back with it instead of vanishing. Silence
+    was wrong in exactly the case a version bump makes reachable: a file
+    written by a newer build fails validation, every setting reverts to its
+    default, and the scan echo stays quiet because it only reports
+    config-sourced values and nothing is config-sourced any more. The run is
+    then not the run the user configured, with nothing on screen saying so.
+    """
+    try:
+        return load_settings(path=path, environ=environ), None
+    except AIConfigError as error:
+        return SherlockSettings(), str(error)
+
+
 def try_load_settings(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
@@ -164,11 +211,13 @@ def try_load_settings(
     config means "no stored preferences", not "refuse to run". AI settings keep
     the strict loader, because there the file is the only source and a silent
     default would point at the wrong endpoint.
+
+    Prefer `load_settings_or_default` anywhere there is a surface to report on:
+    this one discards WHY the file was unusable, which is fine for a screen
+    that is about to show the defaults it fell back to, and not fine for a scan
+    whose behaviour just changed without saying so.
     """
-    try:
-        return load_settings(path=path, environ=environ)
-    except AIConfigError:
-        return SherlockSettings()
+    return load_settings_or_default(path=path, environ=environ)[0]
 
 
 def load_ai_settings(

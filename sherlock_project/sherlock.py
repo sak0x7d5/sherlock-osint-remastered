@@ -23,6 +23,7 @@ from json import dumps as json_dumps
 from json import loads as json_loads
 from time import perf_counter
 
+import httpx
 import requests
 from playwright.async_api import APIResponse, Response
 from playwright.async_api import Error as PlaywrightError
@@ -38,7 +39,7 @@ from sherlock_project.ai_config import (
     AISettings,
     ai_config_path,
     load_ai_settings,
-    try_load_settings,
+    load_settings_or_default,
 )
 from sherlock_project.ai_engine import (
     AIService,
@@ -49,6 +50,11 @@ from sherlock_project.ai_setup import run_ai_setup
 from sherlock_project.content_extraction import extract_profile_content
 from sherlock_project.database import SherlockDB, default_database_path
 from sherlock_project.detection import QueryConfidence, evaluate
+from sherlock_project.http_engine import (
+    SUPPORTED_PROXY_SCHEMES,
+    HttpEngine,
+    normalize_proxy,
+)
 from sherlock_project.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
@@ -103,6 +109,49 @@ async def await_response(completed_task: asyncio.Task) -> tuple[APIResponse | Re
             error_context = "Parse Error (WAF?)"
         else:
             error_context = "Playwright Error"
+
+    except httpx.HTTPError as err:
+        # The browser-free transport raises its own exception family, and these
+        # reasons are read by a human in `show --unresolved`. Left to the safety
+        # net below, every failure on that transport would read "Unknown Error"
+        # -- turning the one mode that produces MORE unresolved results into the
+        # one that explains them least.
+        exception_text = f"{type(err).__name__}: {err}"
+
+        if isinstance(err, httpx.TooManyRedirects):
+            error_context = "Redirect Loop"
+        elif isinstance(err, httpx.TimeoutException):
+            error_context = "Timeout Error"
+        elif isinstance(err, httpx.ProxyError):
+            # Checked before ConnectError: when a proxy is configured it is the
+            # most actionable thing that can be wrong, and "Connection Error"
+            # sends the reader looking at the target site instead.
+            error_context = "Proxy Error"
+        elif isinstance(err, httpx.ConnectError):
+            error_msg = str(err).lower()
+            if any(
+                x in error_msg
+                for x in ["getaddrinfo", "name or service not known", "nodename"]
+            ):
+                error_context = "DNS Error"
+            elif any(x in error_msg for x in ["ssl", "tls", "certificate"]):
+                error_context = "Network / TLS Error"
+            else:
+                error_context = "Connection Error"
+        elif isinstance(err, httpx.ProtocolError):
+            # A malformed HTTP response, which is not a TLS failure -- naming it
+            # one points the reader at a certificate problem that is not there.
+            error_context = "Protocol Error"
+        else:
+            error_context = "HTTP Error"
+
+    except httpx.InvalidURL as err:
+        # NOT an httpx.HTTPError -- it inherits from Exception directly -- so
+        # without its own clause a malformed probe URL lands in the safety net
+        # below and is stored as "Unknown Error", which is the outcome this
+        # whole block exists to prevent.
+        error_context = "Invalid URL"
+        exception_text = f"{type(err).__name__}: {err}"
 
     except Exception as err:          # Final safety net
         error_context = "Unknown Error"
@@ -291,6 +340,32 @@ def expand_usernames(usernames: list[str]) -> list[str]:
     return expanded
 
 
+def is_resumable(row: dict, *, using_browser: bool) -> bool:
+    """Whether a stored row lets the scan skip re-checking that site.
+
+    Without this rule the fast transport is CONTAMINATING rather than merely
+    risky: it answers 680 sites cheaply, the resume filter then skips every one
+    of them forever, and a later browser scan silently inherits answers a
+    browser never gave. `--fresh` would be the only way back, and nothing on
+    screen would suggest it was needed.
+
+    So a browser run re-checks anything the fast transport failed to confirm. A
+    CLAIMED row is kept: the marker proving the account exists was actually
+    found, and finding it without JavaScript does not make it less found. The
+    failure mode being defended against is the opposite one -- an empty page
+    read as a confident absence.
+
+    A run that is itself browser-free skips whatever is stored, whichever
+    transport produced it. Re-fetching a browser-grade answer with something
+    weaker would replace good evidence with worse.
+    """
+    if not using_browser:
+        return True
+    if row.get("transport") != "http":
+        return True
+    return row.get("status") == str(QueryStatus.CLAIMED)
+
+
 def restore_saved_results(
     username: str,
     saved_rows: dict[str, dict],
@@ -339,6 +414,10 @@ def restore_saved_results(
             ),
             "http_status": row.get("status_code") or "",
             "response_text": "",
+            # Carried so the scan's own report can qualify a stored hit the way
+            # `show` does. Live entries set this too, so the two shapes stay
+            # identical and the exporters cannot tell them apart.
+            "transport": row.get("transport"),
         }
 
     return restored
@@ -635,7 +714,7 @@ def _cancel_ai_pipeline_now(
 
 async def sherlock(
     username: str,
-    engine: PlaywrightEngine,
+    engine: PlaywrightEngine | HttpEngine,
     db: SherlockDB,
     site_data: dict[str, dict[str, str]],
     query_notify: QueryNotify,
@@ -723,6 +802,10 @@ async def sherlock(
             results_site["url_user"] = ""
             results_site["http_status"] = ""
             results_site["response_text"] = ""
+            # Nothing was fetched, so no transport produced this. Present, and
+            # None, because restored entries must keep the same keys as live
+            # ones -- see restore_saved_results.
+            results_site["transport"] = None
             query_notify.update(results_site["status"])
             results_total[social_network] = results_site
         else:
@@ -757,15 +840,24 @@ async def sherlock(
                 'timeout': timeout * 1000,
             }
 
-            if proxy is not None:
-                base_kwargs['proxy'] = {"http": proxy, "https": proxy}
+            # NOTE: no per-request proxy. Neither engine's fetch methods take
+            # one, and passing it here raised TypeError inside every site task
+            # -- caught by await_response's safety net and stored as "Unknown
+            # Error", so `--proxy` printed "Using proxy ..." and then returned
+            # an inconclusive result for all 680 sites with no hint why. The
+            # proxy belongs to the connection, so it is configured once on the
+            # engine instead.
 
             # Every rule needs a response body -- a two-sided rule is decided by
             # its markers, and a marker cannot be matched against a HEAD. The
             # legacy manifest's status-only rules were fetched with HEAD, which
             # is why 54% of confirmed hits reached the AI pipeline with nothing
             # in them.
-            transport = preferred_transport(net_info)
+            #
+            # An engine with a fixed transport overrides the per-site choice:
+            # the browser-free engine has no browser to prefer, so every site
+            # it touches is labelled "http" whichever branch below runs it.
+            transport = engine.fixed_transport or preferred_transport(net_info)
 
             # page.goto can only issue a GET, so a rule needing another method
             # stays on the API transport. Test the method, not whether the key
@@ -773,12 +865,12 @@ async def sherlock(
             # check silently routed every single site to the API and left the
             # browser path dead -- which is exactly how client-rendered sites
             # like Threads and Instagram came back with their markers missing.
-            if transport == "browser" and (request_method or "GET") == "GET":
+            if transport != "api" and (request_method or "GET") == "GET":
                 task = asyncio.create_task(_probe_site(
                     engine=engine,
                     net_info=net_info,
                     site_username=site_username,
-                    transport="browser",
+                    transport=transport,
                     timeout=timeout,
                     wants_profile_body=enqueue_ai is not None,
                     fetch=engine.fetch_with_page,
@@ -789,7 +881,7 @@ async def sherlock(
                 # explicit method stays on the API transport regardless.
                 if request is None:
                     request = engine.get_request_fn('GET')
-                transport = "api"
+                transport = engine.fixed_transport or "api"
                 task = asyncio.create_task(_probe_site(
                     engine=engine,
                     net_info=net_info,
@@ -983,6 +1075,10 @@ async def sherlock(
                 force_ai_extraction=(
                     force_ai_extraction and should_run_ai
                 ),
+                # Recorded per result, not per run: a scan can mix transports,
+                # and how a given site was reached is part of what its answer is
+                # worth.
+                transport=transport,
             )
             if should_run_ai:
                 await enqueue_ai(site_id)
@@ -993,6 +1089,7 @@ async def sherlock(
             # Save results from request
             results_site["http_status"] = http_status
             results_site["response_text"] = response_text
+            results_site["transport"] = transport
 
             # Add this site's results into final dictionary with all of the other results.
             results_total[social_network] = results_site
@@ -1040,6 +1137,35 @@ def timeout_check(value):
     return float_value
 
 
+def proxy_check(value):
+    """Check Proxy Argument.
+
+    Normalises a bare `host:port` to an http:// URL and rejects a scheme no
+    transport can route through.
+
+    Return Value:
+    The proxy URL the engines will actually be given.
+
+    NOTE:  Mandatory rather than cosmetic, for the same reason as
+    concurrency_check. httpx refuses a schemeless proxy by raising ValueError
+    from inside its client constructor, which surfaced as a raw traceback and
+    exit 1 -- while the browser transport accepted the identical string. A flag
+    must not mean two different things depending on the transport.
+    """
+    normalized = normalize_proxy(value)
+    if normalized is None:
+        return None
+
+    scheme = normalized.split("://", 1)[0].lower()
+    if scheme not in SUPPORTED_PROXY_SCHEMES:
+        raise ArgumentTypeError(
+            f"Invalid proxy: {value}. Expected one of "
+            f"{', '.join(SUPPORTED_PROXY_SCHEMES)}."
+        )
+
+    return normalized
+
+
 def concurrency_check(value):
     """Check Concurrency Argument.
 
@@ -1083,6 +1209,15 @@ async def main() -> int:
     # `setup ai` would have been the more confusing trade.
     if len(sys.argv) >= 2 and sys.argv[1] == "settings":
         return await run_settings(sys.argv[2:])
+    # Fourth reserved word, same trade a fourth time: a username literally
+    # called "ui" cannot be scanned as a bare argument. Imported here rather
+    # than at module scope because the UI pulls in Textual and all three panes,
+    # and a plain `sherlock <username>` run should not pay for a screen it will
+    # never draw.
+    if len(sys.argv) >= 2 and sys.argv[1] == "ui":
+        from sherlock_project.tui import run_ui
+
+        return await run_ui(sys.argv[2:])
     parser = ArgumentParser(
         formatter_class=RawDescriptionHelpFormatter,
         description=f"{__longname__} (Version {__version__})",
@@ -1102,6 +1237,10 @@ async def main() -> int:
             "output and AI.\n"
             "                            A flag still wins for one run. See\n"
             "                            `sherlock settings --help`.\n"
+            "  sherlock ui               Open the full-screen interface: "
+            "scan, results and\n"
+            "                            settings in one place. Needs a "
+            "terminal.\n"
         ),
     )
     parser.add_argument(
@@ -1146,6 +1285,7 @@ async def main() -> int:
         metavar="PROXY_URL",
         action="store",
         dest="proxy",
+        type=proxy_check,
         default=None,
         help="Make requests over a proxy. e.g. socks5://127.0.0.1:1080",
     )
@@ -1237,6 +1377,37 @@ async def main() -> int:
         action="store_true",
         default=None,
         help="Include checking of NSFW sites from default list.",
+    )
+
+    # Both directions, in a mutually exclusive group. The negative alone would
+    # be a one-way door: once `webbrowser = false` is stored, every later scan
+    # is degraded and no command line could restore accuracy for a single run,
+    # which is exactly the reproducibility the flag layer exists to give.
+    transport_flags = parser.add_mutually_exclusive_group()
+    transport_flags.add_argument(
+        "--no-webbrowser",
+        action="store_true",
+        dest="no_webbrowser",
+        default=None,
+        help=(
+            "Fetch sites with plain HTTPS requests instead of a browser. "
+            "Much faster, and less accurate: only what the server sends back "
+            "is read, so a site that assembles its profile page in the browser "
+            "can report a real account as absent. Results are stored with the "
+            "transport that found them, and a later browser scan re-checks "
+            "anything this mode did not confirm."
+        ),
+    )
+    transport_flags.add_argument(
+        "--webbrowser",
+        action="store_true",
+        dest="webbrowser",
+        default=None,
+        help=(
+            "Fetch sites with the stealth browser for this run, overriding a "
+            "stored setting that turned it off. This is the accurate mode and "
+            "the default."
+        ),
     )
 
     parser.add_argument(
@@ -1352,12 +1523,20 @@ async def main() -> int:
     # defaults when the file is absent or unreadable. The AI settings above use
     # the strict loader on purpose: there the file is the only source, and a
     # silent default would quietly point at the wrong endpoint.
+    #
+    # The reason comes back with the settings so the fallback can be REPORTED
+    # (below, once the reporter exists). An unreadable config silently reverting
+    # every stored preference is the one case the scan echo cannot catch, since
+    # it only names config-sourced values and by then there are none.
+    stored_settings, stored_settings_error = load_settings_or_default()
     settings = resolve_runtime_settings(
-        stored=try_load_settings(),
+        stored=stored_settings,
         concurrency=args.concurrency,
         timeout=args.timeout,
         proxy=args.proxy,
         nsfw=args.nsfw,
+        webbrowser=args.webbrowser,
+        no_webbrowser=args.no_webbrowser,
         no_color=args.no_color,
         verbose=args.verbose,
     )
@@ -1370,6 +1549,14 @@ async def main() -> int:
         no_color=not settings.color.value,
     )
     query_notify.debug("Verbose diagnostics enabled")
+    if stored_settings_error is not None:
+        query_notify.warning(
+            f"Stored settings could not be read: {stored_settings_error}"
+        )
+        query_notify.hint(
+            "This run uses built-in defaults for every setting, including the "
+            "web browser transport."
+        )
     query_notify.settings_from_config(
         settings.from_config(),
         config_path=ai_config_path(),
@@ -1427,8 +1614,19 @@ async def main() -> int:
             f"Sherlock update check failed ({type(error).__name__})"
         )
 
+    # Validated here as well as at the parser, because a proxy can also arrive
+    # from the stored config, which argparse never sees. Both engines are given
+    # it at construction and httpx reports a bad one by raising out of its
+    # constructor -- a raw traceback from inside `async with`, where nothing is
+    # left in a position to turn it into a message.
+    scan_proxy: str | None = None
     if settings.proxy.value is not None:
-        query_notify.info(f"Using proxy {settings.proxy.value}")
+        try:
+            scan_proxy = proxy_check(settings.proxy.value)
+        except ArgumentTypeError as error:
+            query_notify.fatal(str(error))
+            return 2
+        query_notify.info(f"Using proxy {scan_proxy}")
 
     # Check if both output methods are entered as input.
     if args.output is not None and args.folderoutput is not None:
@@ -1581,12 +1779,29 @@ async def main() -> int:
 
             enqueue_ai_callback = enqueue_ai_result
 
-        async with PlaywrightEngine(
-            concurrency=settings.concurrency.value,
-            headless=True,
-            status_callback=query_notify.browser_status,
-            cancellation_callback=cancel_ai_pipeline if args.ai else None,
-        ) as engine:
+        # Which engine runs the scan is the user's choice, and it changes what
+        # the scan can see -- so it is announced here rather than inferred later
+        # from a database column. The browser engine is not constructed at all
+        # in the fast mode: not starting Chromium is most of the win.
+        if settings.webbrowser.value:
+            scan_engine = PlaywrightEngine(
+                concurrency=settings.concurrency.value,
+                headless=True,
+                # Playwright wants {"server": url}; the engine has accepted
+                # this since it was written and main() never passed it.
+                proxy={"server": scan_proxy} if scan_proxy else None,
+                status_callback=query_notify.browser_status,
+                cancellation_callback=cancel_ai_pipeline if args.ai else None,
+            )
+        else:
+            query_notify.browserless_transport()
+            scan_engine = HttpEngine(
+                concurrency=settings.concurrency.value,
+                proxy=scan_proxy,
+                cancellation_callback=cancel_ai_pipeline if args.ai else None,
+            )
+
+        async with scan_engine as engine:
             for username in all_usernames:
                 # Before anything is scanned, because this explains why a scan
                 # that follows a model change produces identical AI output.
@@ -1603,7 +1818,17 @@ async def main() -> int:
                 # re-checks everything.
                 restored_results: dict = {}
                 if not args.site_list and not args.fresh:
-                    saved_rows = await db.get_saved_results(username=username)
+                    stored_rows = await db.get_saved_results(username=username)
+                    # A row the browser must re-check is dropped from the
+                    # restored set as well as added back to the scan, or the
+                    # report would carry the stale answer beside the fresh one.
+                    saved_rows = {
+                        site_name: row
+                        for site_name, row in stored_rows.items()
+                        if is_resumable(
+                            row, using_browser=settings.webbrowser.value
+                        )
+                    }
                     site_data = {
                         site_name: site_data_all[site_name]
                         for site_name in site_data_all

@@ -92,6 +92,7 @@ async def test_schema_is_created(db: SherlockDB):
         "ai_extraction",
         "ai_extraction_contract_hash",
         "confidence",
+        "transport",
         "scanned_at",
     }
 
@@ -326,6 +327,74 @@ async def test_save_result_updates_confidence_on_rescan(
 
     row = await _get_result_row(db, user_data["username"], user_data["site_name"])
     assert row["confidence"] == "Probable"
+
+
+async def test_save_result_persists_transport(db: SherlockDB, user_data: dict[str, Any]):
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        transport="http",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row["transport"] == "http"
+
+
+async def test_save_result_updates_transport_on_rescan(
+    db: SherlockDB, user_data: dict[str, Any]
+):
+    """A re-check over a different transport must not keep the old label.
+
+    The column describes how THIS row was fetched. Leaving "http" on a row a
+    browser has since re-checked would understate evidence that is now good,
+    and leaving "browser" on one answered cheaply would overstate it -- the
+    direction that actually costs an investigation something.
+    """
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        transport="http",
+    )
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Claimed",
+        transport="browser",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row["transport"] == "browser"
+
+
+async def test_get_saved_results_reports_transport(
+    db: SherlockDB, user_data: dict[str, Any]
+):
+    """The scan reads this to decide whether a stored row may be resumed."""
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Available",
+        transport="http",
+    )
+
+    saved = await db.get_saved_results(user_data["username"])
+    assert saved[user_data["site_name"]]["transport"] == "http"
+
+
+async def test_save_result_transport_defaults_to_unrecorded(
+    db: SherlockDB, user_data: dict[str, Any]
+):
+    """NULL means "written before the column existed", not "no browser"."""
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status="Available",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row["transport"] is None
 
 
 async def test_save_result_upserts_same_username_site(db: SherlockDB, user_data: dict[str, Any]):

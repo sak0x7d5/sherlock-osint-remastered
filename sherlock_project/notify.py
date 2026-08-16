@@ -23,11 +23,16 @@ from rich.progress import (
 from rich.table import Column, Table
 from rich.text import Text
 
+from sherlock_project.profile_synthesis import (
+    AGGREGATE_ANCHOR_WARNING,
+    IdentityAnchor,
+)
 from sherlock_project.result import QueryResult, QueryStatus
+from sherlock_project.settings import TRANSPORT_DOC_URL
 
 if TYPE_CHECKING:
     from sherlock_project.ai_engine import AIRequestTrace, StructuredResponseError
-    from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
+    from sherlock_project.profile_synthesis import ProfileSynthesis
 
 
 AIOutcome = Literal["with_facts", "no_facts", "pending", "skipped"]
@@ -92,18 +97,36 @@ def _format_sources(names: list[str], *, limit: int = 2) -> str:
     return f"{len(names)} {noun}: {listed}"
 
 
-def _format_anchor(anchor: IdentityAnchor) -> str:
-    """Render one anchor as the user typed it, plus what qualifies it.
+# Sources that say only "you typed it here". Real provenance -- a case file, an
+# investigation note -- is worth printing; an internal token is noise dressed as
+# information, and `(from user_interface)` beside every anchor is what made the
+# old one-line form read like debug output.
+INTERNAL_ANCHOR_SOURCES = frozenset({"command_line", "user_interface"})
 
-    Trust is only shown when it is not the default, so the common case stays
-    as short as the `--anchor field=value` the user actually wrote.
+# Read off the model rather than restated, so "is this the default" cannot drift
+# from what the default actually is.
+DEFAULT_ANCHOR_TRUST = str(IdentityAnchor.model_fields["trust"].default)
+
+
+def _anchor_qualifier(anchor: IdentityAnchor) -> str:
+    """What qualifies this anchor, when anything does.
+
+    Trust is named only when it is not the default. It no longer influences
+    anything the operator can observe -- it never reaches the model, and nothing
+    branches on it -- so the UI stopped offering it as a choice; printing
+    "strong" beside every anchor would restate a value nobody chose. A
+    non-default level still shows, because then somebody did choose it, on the
+    command line, and hiding their input would be worse.
+
+    Source likewise: real provenance prints, an internal entry-point label does
+    not.
     """
-    rendered = f"{anchor.field}={anchor.value}"
-    if anchor.trust != "strong":
-        rendered += f" [{anchor.trust}]"
-    if anchor.source:
-        rendered += f" (from {anchor.source})"
-    return rendered
+    parts: list[str] = []
+    if str(anchor.trust) != DEFAULT_ANCHOR_TRUST:
+        parts.append(str(anchor.trust))
+    if anchor.source and anchor.source not in INTERNAL_ANCHOR_SOURCES:
+        parts.append(str(anchor.source))
+    return " · ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +170,9 @@ class QueryNotify:
         configured_model: str,
         counts: Mapping[str | None, int],
     ) -> None:
+        pass
+
+    def browserless_transport(self) -> None:
         pass
 
     def settings_from_config(
@@ -472,8 +498,12 @@ class TerminalReporter(QueryNotify):
         if not results:
             return
 
+        # The transport rides along with the result, because a stored hit that
+        # no browser ever saw is weaker evidence and this is the surface the
+        # person acting on it right now is reading. `show` already qualifies
+        # the identical rows; leaving it out here told the wrong reader.
         claimed = [
-            entry["status"]
+            (entry["status"], entry.get("transport"))
             for entry in results.values()
             if entry["status"].status is QueryStatus.CLAIMED
         ]
@@ -491,13 +521,16 @@ class TerminalReporter(QueryNotify):
                 f"--fresh"
             )
 
-        for result in sorted(claimed, key=lambda item: item.site_name.lower()):
+        for result, transport in sorted(
+            claimed, key=lambda item: item[0].site_name.lower()
+        ):
             qualifier = ""
             if result.confidence is not None and str(result.confidence) != "Confirmed":
                 qualifier = f" [{result.confidence}]"
+            detail = "stored, no browser" if transport == "http" else "stored"
             self.success(
                 f"{result.site_name}: {result.site_url_user}{qualifier}",
-                detail="stored",
+                detail=detail,
             )
             if self.browse:
                 webbrowser.open(result.site_url_user, 2)
@@ -707,11 +740,45 @@ class TerminalReporter(QueryNotify):
         if not settings:
             return
 
+        # on/off, not True/False. The settings screen made that choice for the
+        # same reason -- one setting must not read as `True` on one surface and
+        # `on` on another -- and this line names the same settings that screen
+        # edits.
         rendered = ", ".join(
-            f"{name} {value}" for name, value in settings.items()
+            f"{name} {'on' if value else 'off'}"
+            if isinstance(value, bool)
+            else f"{name} {value}"
+            for name, value in settings.items()
         )
         self.info(f"Using saved settings: {rendered}")
         self.hint(f"From {config_path} — a flag overrides them for one run.")
+
+    def browserless_transport(self) -> None:
+        """Say, before the scan, that this run cannot see JavaScript.
+
+        The settings screen already warns when the browser is switched off, and
+        this repeats it here on purpose. The two warnings answer different
+        questions: the one in the editor informs the CHOICE, this one informs
+        the READING of the results, which may happen days later, from a saved
+        file, by someone who did not make the choice.
+
+        Not silent-on-default in the usual way -- it prints whenever the mode is
+        on, because unlike the settings echo this is not a preference, it is a
+        limit on what the output can mean.
+        """
+        self.warning("Fast transport: sites are fetched without a browser")
+        self.hint(
+            "Only what the server sends back is read. A profile page that is "
+            "assembled in the browser arrives as an empty shell, so a real "
+            'account can read as "not found".'
+        )
+        self.hint(
+            "Expect more inconclusive results. Every row records the transport "
+            "that produced it; a later browser scan re-checks what this one "
+            "did not confirm."
+        )
+        # Printed plainly, not as a terminal hyperlink -- see TRANSPORT_DOC_URL.
+        self.hint(f"Why: {TRANSPORT_DOC_URL}")
 
     def ai_extractions_from_other_models(
         self,
@@ -753,10 +820,16 @@ class TerminalReporter(QueryNotify):
             f"from {configured_model}",
             detail=breakdown,
         )
-        self.hint(
-            "They are kept as they are. Redo them with the configured model: "
-            f"sherlock {username} --ai --fresh"
-        )
+        self.hint(f"They are kept as they are. {self._redo_extractions_hint(username)}")
+
+    def _redo_extractions_hint(self, username: str) -> str:
+        """How THIS surface redoes an extraction with the configured model.
+
+        The command line has a command; a running app has a control. Naming the
+        flag on both was the same defect as recommending `--verbose` and
+        `--unresolved` inside the UI -- advice for a place the reader is not.
+        """
+        return f"Redo them with the configured model: sherlock {username} --ai --fresh"
 
     def ai_cached_evidence(
         self,
@@ -932,7 +1005,13 @@ class TerminalReporter(QueryNotify):
 
         renderables: list[RenderableType] = []
         if trace.native_reasoning or (trace.stats.reasoning_tokens or 0) > 0:
-            if trace.phase == "pass_one":
+            # Pass 1 asks for reasoning-off unless the model cannot honour it,
+            # in which case its thinking is the plan, not a surprise. Only the
+            # surprise is worth a warning.
+            unexpected = (
+                trace.phase == "pass_one" and not trace.native_reasoning_expected
+            )
+            if unexpected:
                 self.warning(
                     f"{trace.site_name}: LM Studio returned native reasoning "
                     "despite reasoning-off mode",
@@ -944,20 +1023,26 @@ class TerminalReporter(QueryNotify):
                         Text(trace.native_reasoning),
                         title=(
                             "Unexpected native reasoning"
-                            if trace.phase == "pass_one"
+                            if unexpected
                             else "Native reasoning (transient)"
                         ),
-                        border_style=(
-                            "yellow" if trace.phase == "pass_one" else "cyan"
-                        ),
+                        border_style="yellow" if unexpected else "cyan",
                     )
                 )
         if trace.structured_reasoning:
+            # On the native-reasoning variant the response was asked NOT to
+            # carry this field, so its presence means the prompt did not land
+            # and the model is still narrating the same work twice.
+            ignored_field = trace.native_reasoning_expected
             renderables.append(
                 Panel(
                     Text(trace.structured_reasoning),
-                    title="Manual reasoning (transient)",
-                    border_style="cyan",
+                    title=(
+                        "Reasoning field returned despite the no-reasoning prompt"
+                        if ignored_field
+                        else "Manual reasoning (transient)"
+                    ),
+                    border_style="yellow" if ignored_field else "cyan",
                 )
             )
 
@@ -1222,12 +1307,18 @@ class TerminalReporter(QueryNotify):
         profile: ProfileSynthesis,
         *,
         show_sources: bool = False,
+        notes_hint: str | None = "run with --verbose to read them.",
     ) -> None:
         """Render a synthesised profile.
 
         Presentation only: values keep the order synthesis produced and nothing
         is dropped. `show_sources` swaps the compact "3 sites: A, B +1" summary
         for the full site URLs.
+
+        `notes_hint` is how this surface lets someone read the diagnostic
+        notes. It defaults to the command-line answer because that is where
+        this function has always been called from; a surface with a different
+        route passes its own, and one with none passes None.
         """
         site_names = {
             decision.site_id: decision.site_name
@@ -1312,15 +1403,29 @@ class TerminalReporter(QueryNotify):
         blocks: list[RenderableType] = []
 
         if profile.anchors:
-            # Text(), not a bare string: Rich parses markup in table cells and
-            # would silently swallow the "[context]" trust marker as a style
-            # tag. Anchor values are user data and may contain brackets too.
+            # ANCHORS is a SECTION, drawn exactly like CONFIDENT and MATCHING:
+            # a bold heading over `_profile_table`, field in the first column,
+            # value in the second, whatever qualifies it dim in the third. An
+            # anchor is a field and a value about this person, which is what
+            # every other section on this panel holds -- giving it a shape of
+            # its own made it read as an aside rather than as the evidence the
+            # rest of the profile was built against.
+            #
+            # It was a single comma-joined line of `field=value [trust] (from
+            # source)` before that, which did not align, did not scale past two
+            # anchors, and spent its most visible characters on an internal
+            # token.
+            #
+            # Text(), not bare strings: Rich parses markup in table cells, and
+            # anchor fields and values are user data that may contain brackets.
             anchors = self._profile_table()
-            anchors.add_row(
-                Text("anchored to"),
-                Text(", ".join(_format_anchor(a) for a in profile.anchors)),
-                Text(""),
-            )
+            for anchor in profile.anchors:
+                anchors.add_row(
+                    Text(str(anchor.field)),
+                    Text(str(anchor.value)),
+                    Text(_anchor_qualifier(anchor)),
+                )
+            blocks.append(Text("ANCHORS", style="bold"))
             blocks.append(anchors)
 
         for heading, table in rendered_sections:
@@ -1342,12 +1447,21 @@ class TerminalReporter(QueryNotify):
                 self.warning(warning)
             return
 
-        # Only two things earn space above the values: the caveat that changes
-        # how they should be read, and an honest note that some sites are
-        # missing. Everything else the synthesis records is diagnostic -- site
-        # ids, token counts, validation codes -- and belongs behind --verbose.
+        # Two positions, decided by what a note is FOR.
+        #
+        # Above the values goes anything that changes how they should be read:
+        # the anchor caveat, and the key to the match colouring. A caveat placed
+        # after the values arrives too late to be a caveat -- by then they have
+        # been read as fact.
+        #
+        # Below goes everything that describes how the profile was BUILT --
+        # pending site ids, invalid JSON, model failures. That is provenance,
+        # not a reading instruction, and stacked on top it pushed the values
+        # themselves down the panel behind a wall of numbers nobody scans for.
         notes: list[Text] = []
-        if profile.mode != "anchored" and rendered_sections:
+        footnotes: list[Text] = []
+        caveat_stated = profile.mode != "anchored" and rendered_sections
+        if caveat_stated:
             notes.append(
                 Text(
                     "[!] No anchors used, so these values may describe "
@@ -1355,22 +1469,38 @@ class TerminalReporter(QueryNotify):
                     style="yellow",
                 )
             )
-        if profile.warnings:
+
+        # The stored warnings begin with the same anchor caveat the line above
+        # already makes, so expanding them printed it twice, one line under
+        # itself in slightly different words. The caveat is the one that stays:
+        # it is shown whether or not anyone asks for the diagnostics, and it is
+        # the only note here that changes how the VALUES should be read rather
+        # than describing how they were gathered.
+        shown_warnings = [
+            warning
+            for warning in profile.warnings
+            if not (caveat_stated and warning == AGGREGATE_ANCHOR_WARNING)
+        ]
+        if shown_warnings:
             if self.verbose:
-                notes.extend(
+                footnotes.extend(
                     Text(f"[!] {warning}", style="yellow")
-                    for warning in profile.warnings
+                    for warning in shown_warnings
                 )
             else:
-                count = len(profile.warnings)
+                # Counts what expanding will actually show, not what is stored.
+                # Promising two notes and then revealing one is the same defect
+                # as the duplicate, just delayed until someone presses the key.
+                count = len(shown_warnings)
                 noun = "note" if count == 1 else "notes"
-                notes.append(
-                    Text(
-                        f"[!] {count} {noun} about how this was built; "
-                        f"run with --verbose to read them.",
-                        style="yellow",
-                    )
-                )
+                # HOW to reveal the notes is the caller's business, not this
+                # function's. The count is true everywhere; "run with
+                # --verbose" is only true of a command line, and printed into
+                # the TUI it advised a flag there is no way to type. Callers
+                # that offer no such route pass None and get the count alone.
+                line = f"[!] {count} {noun} about how this was built"
+                line += f"; {notes_hint}" if notes_hint else "."
+                footnotes.append(Text(line, style="yellow"))
         if color_matches and rendered_sections:
             legend = Text("Match key: ", style="bold")
             legend.append("strong identity match", style="green")
@@ -1380,6 +1510,8 @@ class TerminalReporter(QueryNotify):
 
         if notes:
             blocks = [*notes, Text(""), *blocks]
+        if footnotes:
+            blocks = [*blocks, Text(""), *footnotes]
 
         self._write(
             Panel(

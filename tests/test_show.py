@@ -17,6 +17,7 @@ from sherlock_project.show import (
     _claimed_accounts,
     _describe_extraction_models,
     _load_profile,
+    _transport_note,
     _unresolved_sites,
     run_show,
 )
@@ -86,6 +87,74 @@ def test_claimed_accounts_filters_and_sorts():
     accounts = _claimed_accounts(rows)
 
     assert [item["site_name"] for item in accounts] == ["GitHub", "Zulip"]
+
+
+def test_transport_note_marks_only_the_browserless_case():
+    """Marking every result would make the one that matters invisible.
+
+    NULL is a row written before the column existed. "Unknown" must not be
+    reported as "no browser" -- that would put a warning on evidence that was
+    very likely collected with one.
+    """
+    assert _transport_note("http") == "no browser"
+    assert _transport_note("browser") is None
+    assert _transport_note("api") is None
+    assert _transport_note(None) is None
+
+
+def test_claimed_accounts_carry_their_transport():
+    rows = {
+        "GitHub": {
+            "status": "Claimed",
+            "site_url": "https://github.com/blue",
+            "transport": "http",
+        },
+    }
+
+    assert _claimed_accounts(rows)[0]["transport"] == "http"
+
+
+async def test_show_marks_accounts_found_without_a_browser(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A hit found without a browser is weaker evidence, and must say so.
+
+    Once the row is stored, this is the only surface that can still tell the
+    reader how the answer was obtained.
+    """
+    database = tmp_path / "sherlock.db"
+    db = await SherlockDB.create(str(database))
+    try:
+        await db.save_result(
+            username="blue",
+            site_name="GitHub",
+            site_url="https://github.com/blue",
+            status=str(QueryStatus.CLAIMED),
+            status_code=200,
+            transport="http",
+        )
+        await db.save_result(
+            username="blue",
+            site_name="Zulip",
+            site_url="https://z.example/blue",
+            status=str(QueryStatus.CLAIMED),
+            status_code=200,
+            transport="browser",
+        )
+    finally:
+        await db.close()
+    monkeypatch.setenv("SHERLOCK_DB", str(database))
+
+    exit_code = await run_show(["blue", "--accounts"])
+
+    assert exit_code == 0
+    lines = capsys.readouterr().out.splitlines()
+    github = next(line for line in lines if "GitHub" in line)
+    zulip = next(line for line in lines if "Zulip" in line)
+    assert "no browser" in github
+    assert "no browser" not in zulip
 
 
 def test_load_profile_returns_none_for_unreadable_summary():
@@ -361,9 +430,12 @@ async def test_show_displays_the_anchors_a_profile_was_built_from(
     await run_show(["blue", "--profile", "--no-color"])
 
     out = capsys.readouterr().out
-    assert "anchored to" in out
-    assert "name=Avery Stone" in out
-    assert "roles=Hacker [context]" in out
+    # Its own section, headed and shaped like CONFIDENT beside it.
+    assert "ANCHORS" in out
+    assert "anchored to" not in out
+    assert "name=Avery Stone" not in out
+    for text in ("name", "Avery Stone", "roles", "Hacker", "context"):
+        assert text in out
 
 
 async def test_show_sources_flag_switches_to_full_urls(

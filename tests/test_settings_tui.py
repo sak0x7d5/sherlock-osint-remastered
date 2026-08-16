@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from textual.widgets import Static
 
 from sherlock_project.ai_config import (
     AISettings,
@@ -24,6 +25,7 @@ from sherlock_project.settings import SETTING_FIELDS
 from sherlock_project.settings_tui import (
     SettingsApp,
     format_context,
+    plain_value,
     render_value,
     run_settings,
     thinking_label,
@@ -112,9 +114,76 @@ async def test_escape_warns_before_discarding_unsaved_changes(tmp_path: Path):
     assert load_settings(path=path, environ={}).scan.concurrency == 30
 
 
-async def test_reset_restores_the_saved_value_not_the_builtin_default(
+def _rendered(app: SettingsApp, selector: str) -> str:
+    """The visible text of one widget.
+
+    Textual 8 returns a Content object from render(); `.plain` is the text
+    without its styling, which is what these assertions are about.
+    """
+    return app.query_one(selector, Static).render().plain
+
+
+def _help_text(app: SettingsApp) -> str:
+    return _rendered(app, "#help")
+
+
+async def test_the_help_line_describes_whatever_row_the_cursor_is_on(
     tmp_path: Path,
 ):
+    """The keyboard's answer to a hover tooltip.
+
+    Textual does have real tooltips, but they only appear on mouse hover, and
+    this screen is driven entirely from the keyboard -- the explanation would
+    sit behind the one input device nobody here is using.
+    """
+    path = tmp_path / "config.toml"
+    _seed(path)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        assert "LM Studio has downloaded" in _help_text(app)
+
+        for _ in range(_index_of("scan.timeout")):
+            await pilot.press("down")
+        assert "inconclusive" in _help_text(app)
+
+
+async def test_toggling_the_browser_changes_the_flag_and_the_explanation(
+    tmp_path: Path,
+):
+    """Two surfaces, one keypress: a terse flag that survives the cursor
+    moving away, and the prose for the person deciding right now."""
+    path = tmp_path / "config.toml"
+    _seed(path, webbrowser=True)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("scan.webbrowser")):
+            await pilot.press("down")
+        assert "can be trusted" in _help_text(app)
+
+        await pilot.press("left")
+
+        assert app._values["scan.webbrowser"] is False
+        assert "reported as absent" in _help_text(app)
+        # The flag rides on the row itself, so it is still there once the
+        # cursor moves on.
+        await pilot.press("down")
+        assert "faster; inaccurate" in _rendered(
+            app, f"#row-{_index_of('scan.webbrowser')}"
+        )
+
+
+async def test_reset_restores_the_builtin_default_not_the_saved_value(
+    tmp_path: Path,
+):
+    """Deliberate reversal of the earlier behaviour, on the user's call.
+
+    Restoring the SAVED value duplicated Esc, which already discards unsaved
+    edits -- so the key did nothing that leaving the screen would not. Restoring
+    what the tool ships is the thing no other key offers, and it is the way back
+    out of a config someone has edited into a corner.
+    """
     path = tmp_path / "config.toml"
     _seed(path, concurrency=75)
     app = SettingsApp(config_path=path)
@@ -125,7 +194,51 @@ async def test_reset_restores_the_saved_value_not_the_builtin_default(
         await pilot.press("left")
         await pilot.press("r")
 
-        assert app._values["scan.concurrency"] == 75
+        assert app._values["scan.concurrency"] == 30
+        assert "back to the default (30)" in app._status
+        # Reset is an EDIT, not an undo: it leaves the screen dirty so ^S is
+        # still what commits it, and Esc still walks away from it.
+        assert app.dirty is True
+
+    assert load_settings(path=path, environ={}).scan.concurrency == 75
+
+
+async def test_reset_says_so_when_a_field_has_nothing_to_restore(tmp_path: Path):
+    """Which model is right depends on what the user downloaded, so there is
+    no shipped answer -- and blanking the field would be worse than refusing."""
+    path = tmp_path / "config.toml"
+    _seed(path)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("ai.model")):
+            await pilot.press("down")
+        await pilot.press("r")
+
+        assert app._values["ai.model"] == "vendor/m"
+        assert "no default" in app._status
+        assert app.dirty is False
+
+
+async def test_reset_restores_the_conventional_endpoint(tmp_path: Path):
+    """The schema marks the endpoint required, but "put it back to the usual
+    LM Studio address" is still a real thing to want."""
+    path = tmp_path / "config.toml"
+    save_settings(
+        SherlockSettings(
+            ai=AISettings(base_url="http://10.0.0.5:9999", model="vendor/m"),
+        ),
+        path=path,
+        environ={},
+    )
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("ai.base_url")):
+            await pilot.press("down")
+        await pilot.press("r")
+
+        assert app._values["ai.base_url"] == "http://127.0.0.1:1234"
 
 
 async def test_toggles_flip_and_persist(tmp_path: Path):
@@ -165,6 +278,30 @@ def test_render_marks_which_rows_respond_to_arrows():
     assert "‹" in render_value(spin, 30)
     assert "‹" not in render_value(text, None)
     assert render_value(text, None) == "not set"
+
+
+def test_idle_unload_row_says_what_its_number_means():
+    """`‹ 5 ›` does not say five of what, and `‹ 0 ›` says the opposite of never.
+
+    Asserted on both surfaces because they are the thing that must not drift:
+    the row and the plain listing read the same value out of one place.
+    """
+    field = next(f for f in SETTING_FIELDS if f.key == "ai.unload_after_minutes")
+
+    assert "5 min" in render_value(field, 5)
+    assert "never" in render_value(field, 0)
+    assert "0" not in render_value(field, 0)
+    assert plain_value(field, 30) == "30 min"
+    assert plain_value(field, 0) == "never"
+
+
+def test_units_stay_off_the_rows_that_never_asked_for_one():
+    """The unit is opt-in per field; every other spinner renders as it did."""
+    concurrency = next(f for f in SETTING_FIELDS if f.key == "scan.concurrency")
+    webbrowser = next(f for f in SETTING_FIELDS if f.key == "scan.webbrowser")
+
+    assert plain_value(concurrency, 30) == "30"
+    assert plain_value(webbrowser, False) == "off"
 
 
 async def test_settings_refuses_to_draw_without_a_terminal(tmp_path: Path):
