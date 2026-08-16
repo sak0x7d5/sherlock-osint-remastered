@@ -1,16 +1,27 @@
-"""Start `llama-server` when nothing is already listening.
+"""Make a llama-server exist, without the user having to think about one.
 
-`--models-dir` is a LAUNCH flag. There is no runtime equivalent -- `POST /props`
-in router mode is per-model routing and answers "model name is missing from the
-request" to anything else -- so a user cannot choose where their models live
-unless something launches the server for them. That is the only reason this
-module exists.
+Running a model server is llama.cpp's problem, not the user's. Nobody should
+have to learn a command, a flag set, or a directory convention to get an
+optional feature working, so this module owns all of it: find the binary, find
+the models wherever they already are, start the server, stop it afterwards.
+
+Two llama.cpp details are hidden here on purpose, because both leak
+implementation at the user:
+
+- `--models-dir` demands `<dir>/<repo>/*.gguf` EXACTLY. One level too high
+  serves zero models, exits 0, and reports it only in the server's own stdout,
+  which from the API is indistinguishable from an empty machine. Unknowable
+  from outside, so a generated `--models-preset` is used instead -- it takes
+  absolute paths, so any layout works and the rule never surfaces.
+- `--models-dir` is launch-only. `POST /props` in router mode is per-model
+  routing and rejects anything else, so a directory cannot be changed on a
+  running server. Choosing one therefore means owning the process.
 
 The rule it keeps, everywhere: **never touch a server it did not start.**
 Somebody running their own llama-server has made a decision, possibly with
-flags and a directory quite unlike ours, and adopting it is right while
-restarting or stopping it is not. `stop()` therefore no-ops unless `start()`
-actually spawned something in this process.
+flags and models quite unlike ours, and adopting it is right while restarting
+or stopping it is not. `stop()` therefore no-ops unless this process spawned
+something.
 """
 
 from __future__ import annotations
@@ -18,17 +29,28 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 
-from sherlock_project.ai_config import AISettings
+from sherlock_project.ai_config import AISettings, ai_config_path
 
 SERVER_EXECUTABLE = "llama-server"
+MODEL_SUFFIX = ".gguf"
+# How deep to walk a models root. Deep enough for publisher/repo/file and the
+# HuggingFace cache's blobs layout, shallow enough that pointing this at a home
+# directory by mistake does not turn into a full disk crawl.
+MAX_SCAN_DEPTH = 6
+# GGUFs that are not standalone chat models. Multimodal projectors and vocoders
+# ship beside the model they belong to and cannot answer a chat request, so
+# offering them in the picker only produces a confusing failure later.
+_NON_CHAT_MARKERS = ("mmproj", "vocoder", "-embed", "embedding")
 # How long to wait for a freshly spawned server to answer /health. A cold start
 # reads the model index and can be slow on a spinning disk or a big directory;
 # it does not load any weights yet, so this is not the model-load wait.
@@ -49,6 +71,84 @@ class ServerStatus:
     running: bool
     started_by_us: bool
     detail: str
+
+
+def default_model_roots() -> list[Path]:
+    """Where GGUFs usually already are, so first run needs no answer.
+
+    Every entry is somewhere another tool put models. Nothing is downloaded and
+    nothing is moved -- they are read where they lie.
+    """
+    home = Path.home()
+    roots = [
+        home / ".lmstudio" / "models",
+        home / ".cache" / "llama.cpp",
+        home / ".cache" / "huggingface" / "hub",
+        Path.cwd() / "models",
+    ]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        roots.append(Path(local_appdata) / "llama.cpp")
+    return [root for root in roots if root.is_dir()]
+
+
+def _is_chat_model(path: Path) -> bool:
+    name = path.name.casefold()
+    return not any(marker in name for marker in _NON_CHAT_MARKERS)
+
+
+def discover_models(roots: Sequence[Path]) -> dict[str, Path]:
+    """Every usable GGUF under these roots, keyed by a stable display name.
+
+    Recursive and layout-agnostic ON PURPOSE. `--models-dir` demands
+    `<dir>/<repo>/*.gguf` exactly, which is a rule about llama.cpp's internals
+    that a user has no reason to know and no way to discover -- getting it
+    wrong serves zero models and says so only in the server's own stdout. A
+    generated preset accepts absolute paths, so nothing about where a file sits
+    has to reach the user at all.
+
+    Keyed on the filename stem rather than the parent directory: it is stable
+    across rescans, unique in practice, and carries the quantization, which is
+    the thing people actually want to tell two copies of one model apart by.
+    """
+    found: dict[str, Path] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        root_depth = len(root.parts)
+        for path in sorted(root.rglob(f"*{MODEL_SUFFIX}")):
+            if len(path.parts) - root_depth > MAX_SCAN_DEPTH:
+                continue
+            if not path.is_file() or not _is_chat_model(path):
+                continue
+            name = path.stem
+            # First root wins, so an explicitly configured directory beats an
+            # auto-detected one holding the same file.
+            found.setdefault(name, path)
+    return found
+
+
+def write_preset(models: Mapping[str, Path], destination: Path) -> Path:
+    """Write the INI llama-server reads with `--models-preset`.
+
+    `jinja` and `reasoning-format` are per-model here rather than global
+    process flags, because in router mode each model is launched as its own
+    instance from this preset -- flags passed to the parent are not inherited.
+    Both are load-bearing: jinja is what makes `chat_template_kwargs` work at
+    all, and deepseek is what routes thinking into `reasoning_content` instead
+    of leaving it inline where it would break the JSON parse.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sections = []
+    for name, path in sorted(models.items()):
+        sections.append(
+            f"[{name}]\n"
+            "jinja = 1\n"
+            f"reasoning-format = {REASONING_FORMAT}\n"
+            f"model = {path.as_posix()}\n"
+        )
+    destination.write_text("\n".join(sections), encoding="utf-8", newline="\n")
+    return destination
 
 
 def resolve_binary(settings: AISettings) -> str | None:
@@ -82,49 +182,57 @@ async def is_listening(base_url: str, *, timeout: float = 2.0) -> bool:
 class ManagedLlamaServer:
     """Owns a llama-server process, but only one it started itself."""
 
-    def __init__(self, settings: AISettings) -> None:
+    def __init__(
+        self,
+        settings: AISettings,
+        *,
+        preset_path: Path | None = None,
+    ) -> None:
         self._settings = settings
         self._process: asyncio.subprocess.Process | None = None
+        # Beside the config rather than in the models folder: that folder may
+        # be read-only, on a network share, or shared with another tool, and
+        # this file is Sherlock's bookkeeping rather than the user's data.
+        self._preset_path = preset_path or (
+            ai_config_path().parent / "llama-models.ini"
+        )
 
     @property
     def started_by_us(self) -> bool:
         return self._process is not None
 
-    def _command(self, binary: str) -> list[str]:
+    def search_roots(self) -> list[Path]:
+        """The configured models folder, or the usual places if none is set."""
+        configured = self._settings.models_dir
+        if configured:
+            return [Path(configured).expanduser()]
+        return default_model_roots()
+
+    def _command(self, binary: str, preset: Path) -> list[str]:
         host, port = _host_and_port(self._settings.base_url)
-        models_dir = str(Path(self._settings.models_dir or "").expanduser())
         return [
             binary,
-            "--models-dir", models_dir,
+            "--models-preset", str(preset),
             "--host", host,
             "--port", str(port),
-            "--jinja",
-            "--reasoning-format", REASONING_FORMAT,
         ]
 
     async def ensure_running(self) -> ServerStatus:
-        """Adopt a running server, or start one from the configured directory.
+        """Make a server exist, without the user having to think about one.
 
-        Returns WITHOUT AWAITING when no models directory is stored. That is
-        not just an optimisation: `run_ai_pipeline` is supposed to get model
-        loading under way before the browser opens, and it only wins that race
-        because nothing between the task starting and the load yields control.
-        A health probe here would hand the loop to the scan, and the two would
-        stop overlapping for every user who never configured a directory --
-        which is everyone running their own server.
+        Order matters and each step is cheap before the expensive one:
+
+        1. Something already listening is adopted untouched.
+        2. Otherwise every GGUF under the configured folder -- or the usual
+           places, when nothing is configured -- is found recursively and
+           written into a preset file, so layout never matters.
+        3. llama-server is started from that preset.
+
+        The first check is the only await on the "nothing to do" path, and
+        `run_ai_pipeline` depends on that: it gets model loading under way
+        before the browser opens only because nothing yields first. Discovery
+        touches the filesystem, so it runs off-thread.
         """
-        if not self._settings.models_dir:
-            return ServerStatus(
-                running=False,
-                started_by_us=False,
-                detail=(
-                    "No models directory is set, so llama-server is left to "
-                    "the user. Set one with "
-                    "`sherlock setup ai --models-dir <folder>` to have "
-                    "Sherlock start it."
-                ),
-            )
-
         if await is_listening(self._settings.base_url):
             return ServerStatus(
                 running=True,
@@ -132,27 +240,40 @@ class ManagedLlamaServer:
                 detail="Using the llama-server already listening.",
             )
 
-        models_dir = Path(self._settings.models_dir).expanduser()
-        if not models_dir.is_dir():
-            raise LlamaServerError(
-                f"Models directory does not exist: {models_dir}"
-            )
-
         binary = resolve_binary(self._settings)
         if binary is None:
             raise LlamaServerError(
-                f"Could not find {SERVER_EXECUTABLE} on PATH. Install llama.cpp, "
-                "or set the path with `sherlock setup ai --server-binary <path>`."
+                f"Could not find {SERVER_EXECUTABLE}. Install llama.cpp and "
+                "make sure it is on your PATH, or point Sherlock at it with "
+                "`sherlock setup ai --server-binary <path>`."
             )
 
-        await self._spawn(binary)
+        roots = self.search_roots()
+        configured = self._settings.models_dir
+        if configured and not Path(configured).expanduser().is_dir():
+            raise LlamaServerError(f"Models folder does not exist: {configured}")
+
+        models = await asyncio.to_thread(discover_models, roots)
+        if not models:
+            looked_in = ", ".join(str(root) for root in roots) or "the usual places"
+            raise LlamaServerError(
+                f"No .gguf models found in {looked_in}. Point Sherlock at your "
+                "models with `sherlock setup ai --models-dir <folder>` -- any "
+                "layout works, it searches inside."
+            )
+
+        preset = write_preset(models, self._preset_path)
+        await self._spawn(binary, preset)
         return ServerStatus(
             running=True,
             started_by_us=True,
-            detail=f"Started llama-server on {self._settings.base_url}.",
+            detail=(
+                f"Started llama-server with {len(models)} model"
+                f"{'' if len(models) == 1 else 's'}."
+            ),
         )
 
-    async def _spawn(self, binary: str) -> None:
+    async def _spawn(self, binary: str, preset: Path) -> None:
         # Its own process group, so a Ctrl-C in the terminal reaches Sherlock
         # and lets the ordered shutdown stop the child, rather than killing the
         # server first and leaving the scan talking to a corpse.
@@ -164,7 +285,7 @@ class ManagedLlamaServer:
 
         try:
             self._process = await asyncio.create_subprocess_exec(
-                *self._command(binary),
+                *self._command(binary, preset),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -182,9 +303,8 @@ class ManagedLlamaServer:
                 code = self._process.returncode
                 self._process = None
                 raise LlamaServerError(
-                    f"llama-server exited immediately (code {code}). The most "
-                    "likely cause is the models directory layout: it needs one "
-                    "directory per model, each holding its .gguf file."
+                    f"llama-server exited immediately (code {code}). Its "
+                    f"preset is at {preset} if you need to look."
                 )
             if await is_listening(self._settings.base_url):
                 return
@@ -196,18 +316,40 @@ class ManagedLlamaServer:
         )
 
     async def stop(self) -> None:
-        """Stop the server, if and only if we are the ones who started it."""
+        """Stop the server AND its model instances, if we started them.
+
+        The tree matters, not just the process. In router mode llama-server is
+        a supervisor: each model it loads runs as its OWN llama-server child,
+        which is what `status.args` in `/v1/models` is showing. Terminating
+        only the parent leaves those children resident -- measured once as a
+        multi-gigabyte model still in memory after Sherlock had exited and
+        reported a clean shutdown, which is exactly the leak LM Studio's idle
+        TTL used to cover.
+        """
         process = self._process
         if process is None:
             return
         self._process = None
         if process.returncode is not None:
             return
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            # Already gone between the check above and here.
-            return
+
+        if sys.platform == "win32":
+            # No process-group signal reaches a Windows child tree, so ask the
+            # OS to walk it. /T is the whole point of this call.
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(process.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        else:
+            # start_new_session put the parent in its own group, so the
+            # children are in it too and one signal reaches all of them.
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         try:
             await asyncio.wait_for(process.wait(), timeout=10)
         except TimeoutError:

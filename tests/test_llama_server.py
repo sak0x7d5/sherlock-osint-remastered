@@ -21,25 +21,60 @@ def _settings(**overrides) -> AISettings:
     return AISettings(**{**base, **overrides})
 
 
-async def test_no_models_dir_returns_without_awaiting_anything(
+async def test_no_models_dir_falls_back_to_the_usual_places(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
-    """Load-order guarantee, not an optimisation.
+    """An unconfigured install should still find models somebody else put there.
 
-    `run_ai_pipeline` only gets model loading started before the browser opens
-    because nothing between the task starting and the load yields control. A
-    health probe here would hand the loop to the scan and stop the two
-    overlapping for everyone running their own server.
+    Asking the user where their models are is a question the tool can usually
+    answer itself, and every question is a step between "installed" and
+    "working".
     """
-    def explode(*_args, **_kwargs):
-        raise AssertionError("must not probe when it cannot start anything")
+    monkeypatch.setattr(
+        llama_server, "default_model_roots", lambda: [tmp_path / "auto"]
+    )
+    server = ManagedLlamaServer(_settings())
 
-    monkeypatch.setattr(llama_server, "is_listening", explode)
-    status = await ManagedLlamaServer(_settings()).ensure_running()
+    assert server.search_roots() == [tmp_path / "auto"]
 
-    assert status.running is False
-    assert status.started_by_us is False
-    assert "models directory" in status.detail
+
+def test_discovery_is_recursive_and_ignores_non_chat_ggufs(tmp_path: Path):
+    """Layout must never reach the user, and projectors are not chat models.
+
+    `--models-dir` demands <dir>/<repo>/*.gguf exactly and fails silently
+    otherwise, which is unknowable from outside. Searching recursively and
+    writing absolute paths into a preset removes the rule entirely.
+    """
+    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "c" / "Deep-Model-Q4_K_M.gguf").write_text("", encoding="utf-8")
+    (tmp_path / "Flat-Model-Q8_0.gguf").write_text("", encoding="utf-8")
+    # Ships beside a multimodal model and cannot answer a chat request.
+    (tmp_path / "mmproj-Deep-Model-F16.gguf").write_text("", encoding="utf-8")
+
+    found = llama_server.discover_models([tmp_path])
+
+    assert sorted(found) == ["Deep-Model-Q4_K_M", "Flat-Model-Q8_0"]
+
+
+def test_preset_carries_the_flags_each_instance_needs(tmp_path: Path):
+    """Per-model, not process-wide: router instances do not inherit our flags.
+
+    jinja is what makes chat_template_kwargs work at all, and deepseek is what
+    routes thinking into reasoning_content instead of leaving it inline where
+    it breaks the JSON parse.
+    """
+    destination = tmp_path / "cfg" / "llama-models.ini"
+    llama_server.write_preset(
+        {"Some-Model-Q4_K_M": tmp_path / "weird place" / "Some-Model-Q4_K_M.gguf"},
+        destination,
+    )
+    written = destination.read_text(encoding="utf-8")
+
+    assert "[Some-Model-Q4_K_M]" in written
+    assert "jinja = 1" in written
+    assert "reasoning-format = deepseek" in written
+    assert "weird place/Some-Model-Q4_K_M.gguf" in written
 
 
 async def test_a_server_already_listening_is_adopted_not_restarted(
@@ -76,7 +111,7 @@ async def test_stop_is_a_no_op_for_a_server_we_did_not_start(
     assert server.started_by_us is False
 
 
-async def test_a_missing_models_directory_is_reported(
+async def test_a_missing_models_folder_is_reported(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -84,11 +119,26 @@ async def test_a_missing_models_directory_is_reported(
         return False
 
     monkeypatch.setattr(llama_server, "is_listening", not_listening)
-    server = ManagedLlamaServer(
-        _settings(models_dir=str(tmp_path / "nope"))
-    )
+    monkeypatch.setattr(llama_server.shutil, "which", lambda _n: "llama-server")
+    server = ManagedLlamaServer(_settings(models_dir=str(tmp_path / "nope")))
 
     with pytest.raises(LlamaServerError, match="does not exist"):
+        await server.ensure_running()
+
+
+async def test_a_folder_with_no_models_says_how_to_fix_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Never "go start a server" -- the tool does that. Only "where are they"."""
+    async def not_listening(*_args, **_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(llama_server, "is_listening", not_listening)
+    monkeypatch.setattr(llama_server.shutil, "which", lambda _n: "llama-server")
+    server = ManagedLlamaServer(_settings(models_dir=str(tmp_path)))
+
+    with pytest.raises(LlamaServerError, match="No .gguf models found"):
         await server.ensure_running()
 
 
@@ -121,20 +171,16 @@ def test_configured_binary_wins_over_path(
     assert resolve_binary(_settings(server_binary=str(tmp_path / "absent"))) is None
 
 
-def test_the_launch_command_carries_the_load_bearing_flags(tmp_path: Path):
-    """`--reasoning-format deepseek` is not decoration.
-
-    It is what routes native thinking into `message.reasoning_content` instead
-    of leaving it inline in `content`, which the structured-output path depends
-    on. `--jinja` is what makes chat_template_kwargs work at all.
-    """
+def test_the_server_launches_from_a_generated_preset(tmp_path: Path):
+    """Preset, not directory: the layout rule must never reach the user."""
     server = ManagedLlamaServer(
         _settings(models_dir=str(tmp_path), base_url="http://127.0.0.1:9999")
     )
-    command = server._command("llama-server")
+    preset = tmp_path / "llama-models.ini"
+    command = server._command("llama-server", preset)
 
     assert command[0] == "llama-server"
-    assert "--models-dir" in command
+    assert command[command.index("--models-preset") + 1] == str(preset)
     assert command[command.index("--port") + 1] == "9999"
-    assert command[command.index("--reasoning-format") + 1] == "deepseek"
-    assert "--jinja" in command
+    # NOT --models-dir: that one imposes a directory layout on the user.
+    assert "--models-dir" not in command

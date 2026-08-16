@@ -375,16 +375,15 @@ async def run_ai_setup(
         highlight=False,
     )
 
-    # Start one if nothing is listening and a directory is stored, so that
-    # `setup ai --models-dir <folder>` is a single step rather than an
-    # instruction to go and run a command first. Stopped again below: setup is
-    # a configuration step, and in router mode startup only indexes the folder
-    # rather than loading any weights, so this costs about a second.
+    # Setup starts its own server rather than asking the user to. Stopped again
+    # below: this is a configuration step, and startup only indexes models
+    # rather than loading any weights, so it costs about a second.
     server = ManagedLlamaServer(provisional)
     try:
         status = await server.ensure_running()
     except LlamaServerError as error:
         output.print(f"[red]\\[x] {error}[/red]")
+        await server.stop()
         return 2
     if status.started_by_us:
         output.print(f"[dim]{status.detail}[/dim]")
@@ -397,24 +396,17 @@ async def run_ai_setup(
         models = await provider.list_models()
     except AIProviderError as error:
         output.print(f"[red]\\[x] {error}[/red]")
-        output.print(
-            "Either start llama-server yourself, or give Sherlock the folder "
-            "your models live in so it can:\n"
-            "  sherlock setup ai --models-dir <folder>\n"
-            "That folder holds one directory per model, each with its .gguf."
-        )
         return 2
     finally:
         await provider.close()
         await server.stop()
 
     if not models:
-        output.print("[red]\\[x] llama-server is serving no models.[/red]")
+        output.print("[red]\\[x] No models available.[/red]")
         output.print(
-            "With --models-dir, that folder needs ONE DIRECTORY PER MODEL, "
-            "each holding its .gguf -- a deeper tree finds nothing and the "
-            "server says so only in its own log. Otherwise restart it with "
-            "-m <file.gguf>."
+            "Point Sherlock at the folder your .gguf files are in:\n"
+            "  sherlock setup ai --models-dir <folder>\n"
+            "Any layout works -- it searches inside."
         )
         return 2
 

@@ -729,6 +729,10 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
     monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", fake_worker)
+    # Starting llama-server is not what this test is about, and letting it run
+    # would spawn a real process -- or fail on a machine with no models. Its
+    # own behaviour is covered in test_llama_server.py.
+    monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", FakeManagedServer)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
     monkeypatch.setattr(
         sherlock_module,
@@ -748,6 +752,19 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
     assert "Targeted AI mode" in output
     assert "profile synthesis skipped" in output
     assert "AI pass-one concurrency" not in output
+
+
+class FakeManagedServer:
+    """No-op stand-in for the llama-server launcher."""
+
+    def __init__(self, _settings, **_kwargs) -> None:
+        pass
+
+    async def ensure_running(self):
+        return SimpleNamespace(running=True, started_by_us=False, detail="stub")
+
+    async def stop(self) -> None:
+        return None
 
 
 async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
@@ -867,6 +884,10 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
     monkeypatch.setattr(sherlock_module, "synthesize_profiles", fake_synthesis)
     monkeypatch.setattr(sherlock_module, "QueryNotifyPrint", RecordingReporter)
+    # Starting llama-server is not what this test is about, and leaving it real
+    # would spawn a process -- or fail on a machine with no models. Its own
+    # behaviour lives in test_llama_server.py.
+    monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", FakeManagedServer)
 
     await sherlock_module.main()
 
