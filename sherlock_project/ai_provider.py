@@ -1,9 +1,22 @@
-"""Provider-neutral AI completions and the LM Studio REST implementation."""
+"""Provider-neutral AI completions and the llama.cpp implementation.
+
+`llama-server` serves ONE model, loaded at launch. There is no model catalogue
+to browse, nothing to load on demand, and no idle-unload TTL -- the lifecycle
+belongs to whoever started the process. So this provider adopts whatever the
+server already has rather than managing anything, and `AIModelInfo` is filled
+from `/props` plus the filename.
+
+Structured output is ENFORCED here, not requested. The JSON Schema rides in
+`response_format`, llama.cpp compiles it to a GBNF grammar, and the model
+physically cannot emit anything else. That replaces pasting the schema into the
+system prompt and hoping, which is what the LM Studio path did.
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol
@@ -14,6 +27,14 @@ from sherlock_project.ai_config import AISettings
 
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 600.0
+
+# Quantization is not in any llama-server response, but it is in the filename
+# every GGUF ships under. Worth recovering: the setup screen shows it, and
+# "which quant am I actually running" is the first question when quality drops.
+_QUANT_PATTERN = re.compile(
+    r"(?:^|[-_.])((?:IQ|Q)\d+(?:_[A-Z0-9]+)*|BF16|F16|F32|MXFP4)(?:[-_.]|$)",
+    re.IGNORECASE,
+)
 
 
 class AIProviderError(RuntimeError):
@@ -33,15 +54,14 @@ class AIProviderProtocolError(AIProviderError):
 
 
 class AIModelNotFoundError(AIProviderError):
-    """The configured model is not available from the provider."""
+    """The server is reachable but has no model loaded."""
 
 
 class AIModelCompatibilityError(AIProviderError):
-    """The configured model cannot run the pipeline at all.
+    """The loaded model cannot run the pipeline at all.
 
-    No longer raised for models that merely refuse to disable native thinking:
-    those are degraded but usable, and are warned about at selection instead.
-    Kept as the error for a genuine incompatibility.
+    Not raised for models that merely refuse to stop thinking: those are
+    degraded but usable. Kept as the error for a genuine incompatibility.
     """
 
 
@@ -69,9 +89,12 @@ class AIModelInfo:
     def requires_native_reasoning(self) -> bool:
         """True when the model thinks natively and cannot be told not to.
 
-        Distinct from `not supports_reasoning_off` only in intent: this one is
-        asked at request time to decide how much output budget to allow, not at
-        setup time to decide whether the model is usable at all.
+        llama-server exposes no capability block to read this from, so nothing
+        populates `reasoning_options` yet and this stays False. The honest
+        answer needs a live probe -- send `enable_thinking: false` once and see
+        whether `reasoning_content` comes back empty -- which is deferred.
+        Until then an always-thinking model runs the canonical Pass 1 pair,
+        which is the documented degraded path, not a broken one.
         """
         return bool(self.reasoning_options) and "off" not in self.reasoning_options
 
@@ -108,13 +131,20 @@ class AIProvider(Protocol):
         payload: dict[str, object],
         max_tokens: int,
         reasoning_off: bool = True,
+        json_schema: dict[str, Any] | None = None,
     ) -> AICompletion: ...
 
     async def close(self) -> None: ...
 
 
-class LMStudioProvider:
-    """LM Studio native REST v1 provider."""
+def _quantization_from_name(name: str) -> str | None:
+    stem = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].removesuffix(".gguf")
+    match = _QUANT_PATTERN.search(stem)
+    return match.group(1).upper() if match else None
+
+
+class LlamaCppProvider:
+    """llama.cpp `llama-server`, over its OpenAI-compatible route."""
 
     def __init__(
         self,
@@ -124,7 +154,7 @@ class LMStudioProvider:
         api_token: str | None = None,
     ) -> None:
         self.settings = settings
-        token = api_token if api_token is not None else os.getenv("LM_API_TOKEN")
+        token = api_token if api_token is not None else os.getenv("LLAMA_API_TOKEN")
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         timeout = httpx.Timeout(
             connect=CONNECT_TIMEOUT_SECONDS,
@@ -154,31 +184,31 @@ class LMStudioProvider:
         json_body: dict[str, object] | None = None,
     ) -> httpx.Response:
         try:
-            response = await self._client.request(
-                method,
-                path,
-                json=json_body,
-            )
+            response = await self._client.request(method, path, json=json_body)
         except httpx.TimeoutException as error:
             raise AIProviderUnavailableError(
-                f"LM Studio timed out while calling {path}."
+                f"llama-server timed out while calling {path}."
             ) from error
         except httpx.RequestError as error:
             raise AIProviderUnavailableError(
-                f"Unable to reach LM Studio at {self.settings.base_url}."
+                f"Unable to reach llama-server at {self.settings.base_url}."
             ) from error
 
         if response.status_code in {401, 403}:
             raise AIProviderAuthenticationError(
-                "LM Studio rejected the configured API token."
+                "llama-server rejected the configured API token."
             )
+        # 503 is llama-server's "still loading the model" answer, not a crash.
+        # It is the normal state for the first few seconds after launch and for
+        # the whole of a cold load off a slow disk, so it must read as "try
+        # again", never as a failure worth aborting a scan over.
         if response.status_code in {408, 429, 500, 502, 503, 504}:
             raise AIProviderUnavailableError(
-                f"LM Studio is temporarily unavailable (HTTP {response.status_code})."
+                f"llama-server is temporarily unavailable (HTTP {response.status_code})."
             )
         if response.is_error:
             raise AIProviderError(
-                f"LM Studio returned HTTP {response.status_code} for {path}."
+                f"llama-server returned HTTP {response.status_code} for {path}."
             )
         return response
 
@@ -188,126 +218,66 @@ class LMStudioProvider:
             payload = response.json()
         except (json.JSONDecodeError, ValueError) as error:
             raise AIProviderProtocolError(
-                "LM Studio returned a non-JSON response."
+                "llama-server returned a non-JSON response."
             ) from error
         if not isinstance(payload, dict):
             raise AIProviderProtocolError(
-                "LM Studio returned an invalid top-level response."
+                "llama-server returned an invalid top-level response."
             )
         return payload
 
-    @staticmethod
-    def _parse_model(raw: object) -> AIModelInfo | None:
-        if not isinstance(raw, dict) or raw.get("type") != "llm":
-            return None
-        key = raw.get("key")
-        if not isinstance(key, str) or not key:
-            return None
-        display_name = raw.get("display_name")
-        quantization = raw.get("quantization")
-        capabilities = raw.get("capabilities")
-        reasoning: object = None
-        if isinstance(capabilities, dict):
-            reasoning = capabilities.get("reasoning")
-        reasoning_options: tuple[str, ...] = ()
-        if isinstance(reasoning, dict):
-            options = reasoning.get("allowed_options")
-            if isinstance(options, list):
-                reasoning_options = tuple(
-                    option for option in options if isinstance(option, str)
-                )
-        quantization_name = (
-            quantization.get("name")
-            if isinstance(quantization, dict)
-            and isinstance(quantization.get("name"), str)
-            else None
-        )
-        loaded_instances = raw.get("loaded_instances")
-        max_context_length = raw.get("max_context_length")
-        return AIModelInfo(
-            key=key,
-            display_name=(
-                display_name if isinstance(display_name, str) else key
-            ),
-            quantization=quantization_name,
-            params=(
-                raw.get("params_string")
-                if isinstance(raw.get("params_string"), str)
-                else None
-            ),
-            loaded=isinstance(loaded_instances, list) and bool(loaded_instances),
-            max_context_length=(
-                max_context_length
-                if isinstance(max_context_length, int)
-                and not isinstance(max_context_length, bool)
-                else None
-            ),
-            reasoning_options=reasoning_options,
-        )
-
     async def list_models(self) -> list[AIModelInfo]:
-        response = await self._request("GET", "/api/v1/models")
-        payload = self._response_json(response)
-        models = payload.get("models")
-        if not isinstance(models, list):
-            raise AIProviderProtocolError(
-                "LM Studio model listing is missing the models array."
-            )
-        parsed = [self._parse_model(model) for model in models]
-        return [model for model in parsed if model is not None]
+        """Whatever this server has loaded -- one model, or none.
+
+        Kept plural to satisfy the Protocol and to keep the setup screen's
+        table code unchanged. It is not a catalogue: llama-server cannot load
+        anything it was not launched with.
+        """
+        model = await self._describe_loaded_model()
+        return [model] if model is not None else []
+
+    async def _describe_loaded_model(self) -> AIModelInfo | None:
+        props = self._response_json(await self._request("GET", "/props"))
+        raw_path = props.get("model_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+
+        name = raw_path.replace("\\", "/").rsplit("/", 1)[-1]
+        generation = props.get("default_generation_settings")
+        context_length = (
+            generation.get("n_ctx") if isinstance(generation, dict) else None
+        )
+        return AIModelInfo(
+            key=name,
+            display_name=name.removesuffix(".gguf"),
+            quantization=_quantization_from_name(name),
+            params=None,
+            loaded=True,
+            max_context_length=(
+                context_length
+                if isinstance(context_length, int)
+                and not isinstance(context_length, bool)
+                else None
+            ),
+            # llama-server publishes no reasoning capability block. Empty means
+            # "assume it can be turned off", which is the degraded-but-working
+            # default; see AIModelInfo.requires_native_reasoning.
+            reasoning_options=(),
+        )
 
     async def ensure_model_loaded(self) -> AIModelInfo:
-        models = await self.list_models()
-        model = next(
-            (item for item in models if item.key == self.settings.model),
-            None,
-        )
+        """Adopt the server's model. Nothing is loaded or unloaded here.
+
+        The configured `model` is advisory: it is recorded against extractions
+        so results say which model produced them, but it cannot select
+        anything. A mismatch is not an error -- the user may have relaunched
+        llama-server with a different GGUF, and refusing to run would be
+        obstruction, not safety.
+        """
+        model = await self._describe_loaded_model()
         if model is None:
             raise AIModelNotFoundError(
-                f"Configured LM Studio model {self.settings.model!r} is not downloaded."
-            )
-        # A model that cannot disable native reasoning used to be refused here.
-        # It is degraded, not incompatible: `generate` declares the reasoning it
-        # will actually get, LM Studio returns thinking as its own output item,
-        # and the structured reply still parses. Refusing at load time meant a
-        # model setup had accepted could never be used, so the check belongs
-        # where the user is warned -- at selection -- not here.
-        if not model.loaded:
-            load_body: dict[str, object] = {
-                "model": model.key,
-                "context_length": self.settings.context_length,
-                "echo_load_config": True,
-            }
-            # The key is `ttl_seconds`, and only on this endpoint. Verified
-            # against LM Studio 2026-08-12, because the documented spelling is
-            # a trap: the docs give `ttl` (seconds) for the OpenAI-compatible
-            # routes and `lms load --ttl`, and BOTH `/api/v1/models/load` and
-            # `/api/v1/chat` reject a `ttl` key outright -- HTTP 400,
-            # `unrecognized_keys`. Sending the documented name here does not
-            # degrade to "no TTL", it fails the load and takes the scan with
-            # it, so do not "correct" this to match the docs.
-            #
-            # Omitted entirely at 0 rather than sent as 0, which would be read
-            # as "unload immediately" rather than "never".
-            if self.settings.unload_after_minutes > 0:
-                load_body["ttl_seconds"] = self.settings.unload_after_minutes * 60
-            # Only reached when the model was not already loaded, so a model the
-            # user loaded themselves in the LM Studio UI keeps whatever
-            # lifetime they gave it. Sherlock sets a TTL on the instances it
-            # starts; it does not put a clock on someone else's.
-            await self._request(
-                "POST",
-                "/api/v1/models/load",
-                json_body=load_body,
-            )
-            model = AIModelInfo(
-                key=model.key,
-                display_name=model.display_name,
-                quantization=model.quantization,
-                params=model.params,
-                loaded=True,
-                max_context_length=model.max_context_length,
-                reasoning_options=model.reasoning_options,
+                f"llama-server at {self.settings.base_url} has no model loaded."
             )
         self._model_info = model
         return model
@@ -323,6 +293,27 @@ class LMStudioProvider:
             return None
         return expected(value)
 
+    def _build_stats(self, body: dict[str, Any]) -> AIGenerationStats:
+        raw_usage = body.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        raw_timings = body.get("timings")
+        timings = raw_timings if isinstance(raw_timings, dict) else {}
+
+        prompt_ms = self._number(timings, "prompt_ms", float)
+        return AIGenerationStats(
+            input_tokens=self._number(usage, "prompt_tokens", int),  # type: ignore[arg-type]
+            output_tokens=self._number(usage, "completion_tokens", int),  # type: ignore[arg-type]
+            # llama-server does not break reasoning out of the token count the
+            # way LM Studio did. Left None rather than guessed -- a fabricated
+            # number here would land in the -v trace looking measured.
+            reasoning_tokens=None,
+            tokens_per_second=self._number(timings, "predicted_per_second", float),  # type: ignore[arg-type]
+            time_to_first_token_seconds=(
+                prompt_ms / 1000.0 if prompt_ms is not None else None
+            ),
+            model_load_time_seconds=None,
+        )
+
     async def generate(
         self,
         *,
@@ -330,80 +321,71 @@ class LMStudioProvider:
         payload: dict[str, object],
         max_tokens: int,
         reasoning_off: bool = True,
+        json_schema: dict[str, Any] | None = None,
     ) -> AICompletion:
         model = self._model_info or await self.ensure_model_loaded()
         request_body: dict[str, object] = {
             "model": model.key,
-            "system_prompt": system_prompt,
-            "input": json.dumps(payload, ensure_ascii=False),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
             "stream": False,
-            "store": False,
             "temperature": self.settings.temperature,
-            "max_output_tokens": max_tokens,
-            "context_length": self.settings.context_length,
+            "max_tokens": max_tokens,
         }
-        if model.reasoning_options:
-            requested_reasoning = "off" if reasoning_off else "on"
-            if requested_reasoning not in model.reasoning_options:
-                # The model cannot honour what we asked for. Declaring the
-                # reasoning we are actually going to get beats omitting the key
-                # and leaving it to the model's default: LM Studio then emits
-                # thinking as a separate `reasoning` output item, which this
-                # parser routes away from `final_text`, so the structured reply
-                # stays clean JSON instead of risking inline think markers.
-                requested_reasoning = "on" if "on" in model.reasoning_options else ""
-            if requested_reasoning:
-                request_body["reasoning"] = requested_reasoning
+        if json_schema is not None:
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "sherlock_response",
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
+        if reasoning_off:
+            # The ONLY per-request reasoning switch llama-server honours.
+            # Measured 2026-08-16 against b9837 on Qwen3-8B: `reasoning: "off"`
+            # and `reasoning_budget: 0` are accepted with HTTP 200 and ignored,
+            # because those are launch flags whose request-body lookalikes are
+            # silently discarded. Do NOT reach for `reasoning_format: "none"`
+            # either -- it suppresses EXTRACTION, not thinking, so without a
+            # schema attached it returns raw `<think>` inline in content and
+            # breaks the JSON parse.
+            #
+            # This is a chat-template feature, so a model whose template has no
+            # such switch ignores it and keeps thinking, with nothing in the
+            # response saying so. Harmless here: thinking still arrives in
+            # `reasoning_content`, away from the JSON.
+            request_body["chat_template_kwargs"] = {"enable_thinking": False}
 
         started_at = perf_counter()
         response = await self._request(
             "POST",
-            "/api/v1/chat",
+            "/v1/chat/completions",
             json_body=request_body,
         )
         elapsed = perf_counter() - started_at
         body = self._response_json(response)
-        output = body.get("output")
-        if not isinstance(output, list):
+
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
             raise AIProviderProtocolError(
-                "LM Studio chat response is missing the output array."
+                "llama-server chat response is missing the choices array."
+            )
+        first = choices[0]
+        message = first.get("message") if isinstance(first, dict) else None
+        if not isinstance(message, dict):
+            raise AIProviderProtocolError(
+                "llama-server chat response is missing the message object."
             )
 
-        final_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content")
-            if not isinstance(content, str):
-                continue
-            if item.get("type") == "reasoning":
-                reasoning_parts.append(content)
-            elif item.get("type") == "message":
-                final_parts.append(content)
-
-        raw_stats = body.get("stats")
-        stats_payload = raw_stats if isinstance(raw_stats, dict) else {}
-        stats = AIGenerationStats(
-            input_tokens=self._number(stats_payload, "input_tokens", int),  # type: ignore[arg-type]
-            output_tokens=self._number(stats_payload, "total_output_tokens", int),  # type: ignore[arg-type]
-            reasoning_tokens=self._number(stats_payload, "reasoning_output_tokens", int),  # type: ignore[arg-type]
-            tokens_per_second=self._number(stats_payload, "tokens_per_second", float),  # type: ignore[arg-type]
-            time_to_first_token_seconds=self._number(
-                stats_payload,
-                "time_to_first_token_seconds",
-                float,
-            ),  # type: ignore[arg-type]
-            model_load_time_seconds=self._number(
-                stats_payload,
-                "model_load_time_seconds",
-                float,
-            ),  # type: ignore[arg-type]
-        )
+        content = message.get("content")
+        reasoning = message.get("reasoning_content")
         return AICompletion(
-            final_text="".join(final_parts).strip(),
-            native_reasoning="".join(reasoning_parts).strip(),
-            stats=stats,
+            final_text=content.strip() if isinstance(content, str) else "",
+            native_reasoning=reasoning.strip() if isinstance(reasoning, str) else "",
+            stats=self._build_stats(body),
             elapsed_seconds=elapsed,
         )
 

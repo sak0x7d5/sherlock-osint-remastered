@@ -21,7 +21,7 @@ from sherlock_project.ai_config import (
     save_settings,
 )
 from sherlock_project.ai_provider import AIModelInfo
-from sherlock_project.settings import SETTING_FIELDS
+from sherlock_project.settings import SETTING_FIELDS, SettingField
 from sherlock_project.settings_tui import (
     SettingsApp,
     format_context,
@@ -39,7 +39,7 @@ def _index_of(key: str) -> int:
 def _seed(path: Path, **scan) -> None:
     save_settings(
         SherlockSettings(
-            ai=AISettings(base_url="http://127.0.0.1:1234", model="vendor/m"),
+            ai=AISettings(base_url="http://127.0.0.1:8080", model="vendor/m"),
             scan=ScanSettings(**scan),
         ),
         path=path,
@@ -141,7 +141,7 @@ async def test_the_help_line_describes_whatever_row_the_cursor_is_on(
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
-        assert "LM Studio has downloaded" in _help_text(app)
+        assert "llama-server runs whatever GGUF" in _help_text(app)
 
         for _ in range(_index_of("scan.timeout")):
             await pilot.press("down")
@@ -238,7 +238,7 @@ async def test_reset_restores_the_conventional_endpoint(tmp_path: Path):
             await pilot.press("down")
         await pilot.press("r")
 
-        assert app._values["ai.base_url"] == "http://127.0.0.1:1234"
+        assert app._values["ai.base_url"] == "http://127.0.0.1:8080"
 
 
 async def test_toggles_flip_and_persist(tmp_path: Path):
@@ -280,13 +280,24 @@ def test_render_marks_which_rows_respond_to_arrows():
     assert render_value(text, None) == "not set"
 
 
-def test_idle_unload_row_says_what_its_number_means():
+def test_unit_and_zero_label_render_on_both_surfaces():
     """`‹ 5 ›` does not say five of what, and `‹ 0 ›` says the opposite of never.
 
     Asserted on both surfaces because they are the thing that must not drift:
     the row and the plain listing read the same value out of one place.
+
+    Built on a synthetic field rather than a real one. It used to run against
+    `ai.unload_after_minutes`, which the llama.cpp migration removed -- nothing
+    in SETTING_FIELDS opts into `unit`/`zero_label` any more. Deleting the test
+    with the setting would have left that rendering path live and unwatched
+    for whichever setting adopts it next.
     """
-    field = next(f for f in SETTING_FIELDS if f.key == "ai.unload_after_minutes")
+    field = SettingField(
+        "scan", "example", "example", "spin",
+        (0, 5, 30),
+        unit="min",
+        zero_label="never",
+    )
 
     assert "5 min" in render_value(field, 5)
     assert "never" in render_value(field, 0)
@@ -391,7 +402,7 @@ async def test_ai_settings_can_be_created_when_no_section_exists_yet(
         assert "Cannot save" in app._status
         assert load_settings(path=path, environ={}).ai is None
 
-        app._values["ai.base_url"] = "http://127.0.0.1:1234"
+        app._values["ai.base_url"] = "http://127.0.0.1:8080"
         await pilot.press("ctrl+s")
         assert "Saved" in app._status
 

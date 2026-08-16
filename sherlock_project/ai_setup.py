@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import sys
 from argparse import ArgumentParser
 from collections.abc import Mapping, Sequence
@@ -18,43 +16,14 @@ from rich.text import Text
 from sherlock_project.ai_config import (
     DEFAULT_AI_CONTEXT_LENGTH,
     DEFAULT_AI_TEMPERATURE,
-    DEFAULT_LM_STUDIO_BASE_URL,
+    DEFAULT_LLAMACPP_BASE_URL,
     AIConfigError,
     AISettings,
     ai_config_path,
     save_ai_settings,
     try_load_ai_settings,
 )
-from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LMStudioProvider
-
-
-def _lms_server_url() -> str | None:
-    try:
-        completed = subprocess.run(
-            ["lms", "server", "status", "--json"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return None
-    if completed.returncode != 0:
-        return None
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict) or payload.get("running") is not True:
-        return None
-    port = payload.get("port")
-    if (
-        not isinstance(port, int)
-        or isinstance(port, bool)
-        or not 1 <= port <= 65535
-    ):
-        return None
-    return f"http://127.0.0.1:{port}"
+from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LlamaCppProvider
 
 
 def discover_setup_base_url(
@@ -63,18 +32,25 @@ def discover_setup_base_url(
     existing: AISettings | None,
     environ: Mapping[str, str] | None = None,
 ) -> str:
+    """Where to look for llama-server, most specific source first.
+
+    There used to be a fourth source between the stored value and the default:
+    shelling out to `lms server status --json` to ask LM Studio which port it
+    had picked. llama.cpp has no such CLI -- the port is whatever `--port` was
+    passed at launch and nothing publishes it -- so discovery is gone and the
+    default is simply llama-server's own 8080.
+    """
     environment = os.environ if environ is None else environ
     return (
         explicit
-        or environment.get("LM_STUDIO_BASE_URL")
+        or environment.get("LLAMA_SERVER_BASE_URL")
         or (existing.base_url if existing is not None else None)
-        or _lms_server_url()
-        or DEFAULT_LM_STUDIO_BASE_URL
+        or DEFAULT_LLAMACPP_BASE_URL
     )
 
 
 def _model_table(models: Sequence[AIModelInfo]) -> Table:
-    table = Table(title="Downloaded LM Studio models")
+    table = Table(title="Model loaded by llama-server")
     table.add_column("#", justify="right", style="cyan")
     table.add_column("Model")
     table.add_column("Size")
@@ -152,7 +128,7 @@ def _select_model(
     if requested:
         selected = next((model for model in models if model.key == requested), None)
         if selected is None:
-            parser.error(f"LM Studio model {requested!r} is not downloaded")
+            parser.error(f"llama-server has not loaded model {requested!r}")
         _warn_native_reasoning(selected, console=console)
         return selected
 
@@ -209,11 +185,11 @@ def build_setup_parser() -> ArgumentParser:
     parser = ArgumentParser(prog="sherlock setup ai")
     parser.add_argument(
         "--base-url",
-        help="LM Studio server URL. Auto-detected when omitted.",
+        help="llama-server URL. Defaults to http://127.0.0.1:8080.",
     )
     parser.add_argument(
         "--model",
-        help="Exact downloaded LM Studio model key.",
+        help="Model key to record. Defaults to whatever llama-server loaded.",
     )
     parser.add_argument(
         "--temperature",
@@ -286,9 +262,9 @@ def _report_settings(
     # load_ai_settings has already applied the override, so the endpoint above
     # is the effective one, not necessarily what the file says. Saying so is
     # the difference between a useful readout and a misleading one.
-    if environ.get("LM_STUDIO_BASE_URL"):
+    if environ.get("LLAMA_SERVER_BASE_URL"):
         console.print(
-            "[yellow][!] Endpoint comes from LM_STUDIO_BASE_URL, which "
+            "[yellow][!] Endpoint comes from LLAMA_SERVER_BASE_URL, which "
             "overrides the config file.[/yellow]"
         )
     return 0
@@ -369,24 +345,29 @@ async def run_ai_setup(
         color_system=None if args.no_color else "auto",
         highlight=False,
     )
-    provider = LMStudioProvider(
+    provider = LlamaCppProvider(
         provisional,
-        api_token=environment.get("LM_API_TOKEN"),
+        api_token=environment.get("LLAMA_API_TOKEN"),
     )
     try:
         models = await provider.list_models()
     except AIProviderError as error:
         output.print(f"[red]\\[x] {error}[/red]")
         output.print(
-            "Start the LM Studio server, then run `sherlock setup ai` again."
+            "Start llama-server, then run `sherlock setup ai` again, e.g.\n"
+            "  llama-server -m model.gguf -c 8192 --port 8080 --jinja "
+            "--reasoning-format deepseek"
         )
         return 2
     finally:
         await provider.close()
 
     if not models:
-        output.print("[red]\\[x] LM Studio has no downloaded LLMs.[/red]")
-        output.print("Download a model in LM Studio, then run setup again.")
+        output.print("[red]\\[x] llama-server has no model loaded.[/red]")
+        output.print(
+            "It serves whatever GGUF it was launched with -- restart it "
+            "with -m pointing at a model file."
+        )
         return 2
 
     models.sort(key=lambda model: (model.display_name.casefold(), model.key))

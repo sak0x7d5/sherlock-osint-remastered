@@ -2,7 +2,7 @@
 
 Three layers, highest first: a command-line flag, the stored config file, the
 built-in default. (Environment variables sit between flag and config for the
-few settings that have them -- the database and config paths, and the LM Studio
+few settings that have them -- the database and config paths, and the llama-server
 endpoint -- but those are resolved where they are consumed, not here.)
 
 The resolver records WHERE each value came from, and that provenance is the
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from sherlock_project.ai_config import (
-    DEFAULT_LM_STUDIO_BASE_URL,
+    DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     OutputSettings,
     ScanSettings,
@@ -211,7 +211,7 @@ class SettingField:
     choices: tuple[Any, ...] = ()
     doc_url: str = ""
     # Only for fields the schema marks required but the tool still has a
-    # conventional starting value for -- the LM Studio endpoint is required
+    # conventional starting value for -- the llama-server endpoint is required
     # because there is nothing sane to fall back to at load time, yet
     # "put it back to the usual one" is a real thing to want.
     default: Any = NO_DEFAULT
@@ -233,7 +233,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField("ai", "model", "model", "model"),
     SettingField(
         "ai", "base_url", "endpoint", "text",
-        default=DEFAULT_LM_STUDIO_BASE_URL,
+        default=DEFAULT_LLAMACPP_BASE_URL,
     ),
     SettingField(
         "ai", "temperature", "temperature", "spin",
@@ -243,12 +243,9 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "ai", "context_length", "context length", "spin",
         (2048, 4096, 8192, 16384, 32768, 65536, 131072),
     ),
-    SettingField(
-        "ai", "unload_after_minutes", "unload after", "spin",
-        (0, 5, 15, 30, 60),
-        unit="min",
-        zero_label="never",
-    ),
+    # `ai.unload_after_minutes` used to sit here. It is gone with LM Studio:
+    # llama-server neither loads nor unloads, so the row would have offered a
+    # choice that changed nothing.
     # First in its section because it is the setting here with the largest
     # effect on what a scan finds -- everything below it changes how fast or
     # how broad the scan is, this one changes whether an answer is right.
@@ -393,26 +390,22 @@ def field_description(field: SettingField, value: Any) -> str:
 # than growing a paragraph per row.
 _STATIC_DESCRIPTIONS: dict[str, str] = {
     "ai.model": (
-        "Which local model runs both AI passes. The picker lists what LM "
-        "Studio has downloaded, so it needs the server running."
+        "Which local model produced a result, recorded against extractions. "
+        "llama-server runs whatever GGUF it was started with, so this reports "
+        "rather than chooses -- to change model, restart the server."
     ),
     "ai.base_url": (
-        "Where LM Studio is listening. The LM_STUDIO_BASE_URL environment "
-        "variable overrides this for a single run."
+        "Where llama-server is listening. The LLAMA_SERVER_BASE_URL "
+        "environment variable overrides this for a single run."
     ),
     "ai.temperature": (
         "How much the model varies its wording. Extraction is not a creative "
         "task, so low keeps it literal."
     ),
     "ai.context_length": (
-        "How much of a page the model can read at once. Larger sees more of a "
-        "long profile and costs proportionally more memory."
-    ),
-    "ai.unload_after_minutes": (
-        "How long the model may sit idle before LM Studio frees the memory it "
-        "is holding. Only worth raising if you tend to run another scan soon "
-        "after; the model is several GB, and it waits there either way. Set to "
-        "never to keep it loaded until you unload it yourself."
+        "How much of a page the model can read at once. llama-server fixes "
+        "this at launch with -c, so this describes how you started it rather "
+        "than changing it; raising it here does not widen the real window."
     ),
     "scan.concurrency": (
         "How many sites are checked at the same time. Higher is faster until "

@@ -23,16 +23,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # without the version the older build reports a validation dump instead of
 # "this was written by a newer version".
 # 4 added ai.unload_after_minutes, for the same reason.
-CONFIG_VERSION = 4
-DEFAULT_LM_STUDIO_BASE_URL = "http://127.0.0.1:1234"
+# 5 moved the provider from LM Studio to llama.cpp. `ai.unload_after_minutes`
+# is RETIRED -- llama-server does not load or unload anything, so there was no
+# behaviour left behind the setting. It is stripped on read rather than
+# rejected: extra="forbid" would otherwise meet every config file written by
+# builds 4 and earlier with a pydantic dump, for a key that now does nothing.
+CONFIG_VERSION = 5
+DEFAULT_LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
-# Minutes the model may sit idle before LM Studio unloads it. Small on purpose:
-# the only thing this buys is a warm start for a FOLLOW-UP scan, and the model
-# holds multiple GB of memory for the whole window while it waits for one that
-# may never come. Missing it is cheap -- the weights are still in the OS file
-# cache minutes later, so the reload is nothing like the first load from disk.
-DEFAULT_AI_UNLOAD_AFTER_MINUTES = 5
+# Keys accepted and discarded on read, newest first. A key belongs here once
+# nothing consumes it, so that upgrading never fails on a value that is merely
+# obsolete.
+RETIRED_AI_KEYS = ("unload_after_minutes",)
 DEFAULT_SCAN_CONCURRENCY = 30
 DEFAULT_SCAN_TIMEOUT = 60
 DEFAULT_SCAN_WEBBROWSER = True
@@ -47,26 +50,26 @@ class AISettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    provider: Literal["lmstudio"] = "lmstudio"
+    provider: Literal["llamacpp"] = "llamacpp"
     base_url: str
+    # Advisory. llama-server serves whatever GGUF it was launched with and
+    # cannot be told to switch, so this selects nothing -- it is recorded
+    # against extractions so results say which model produced them, and it is
+    # what `setup ai` stores after adopting the running server's model.
     model: str
     temperature: float = Field(
         default=DEFAULT_AI_TEMPERATURE,
         ge=0,
         le=1,
     )
+    # Also advisory now, and it did not use to be: LM Studio took a context
+    # length per request, llama-server fixes it at launch with `-c`. Kept
+    # because the Pass 1 budget arithmetic needs a number to reason against,
+    # but it DESCRIBES how the server was started rather than controlling it.
+    # Setting it higher than the server's real window does not widen anything.
     context_length: int = Field(
         default=DEFAULT_AI_CONTEXT_LENGTH,
         ge=512,
-    )
-    # 0 means "never unload", which is what LM Studio does on its own for a
-    # model loaded through its API: the 60-minute default it documents applies
-    # to models it loads ITSELF, on demand, and never to ours. So without this
-    # the model sits in memory until the user ejects it by hand, long after
-    # Sherlock has exited and with nothing on screen to say so.
-    unload_after_minutes: int = Field(
-        default=DEFAULT_AI_UNLOAD_AFTER_MINUTES,
-        ge=0,
     )
 
     @field_validator("base_url")
@@ -164,6 +167,11 @@ def _read_settings(path: Path) -> SherlockSettings:
             f"Unable to read AI configuration at {path}: {error}"
         ) from error
 
+    ai_section = payload.get("ai")
+    if isinstance(ai_section, dict):
+        for retired in RETIRED_AI_KEYS:
+            ai_section.pop(retired, None)
+
     try:
         return SherlockSettings.model_validate(payload)
     except ValidationError as error:
@@ -230,7 +238,7 @@ def load_ai_settings(
         raise AIConfigError(
             "AI is not configured. Run `sherlock setup ai` first."
         )
-    base_url_override = environment.get("LM_STUDIO_BASE_URL")
+    base_url_override = environment.get("LLAMA_SERVER_BASE_URL")
     if base_url_override:
         try:
             settings = settings.model_copy(
@@ -240,7 +248,7 @@ def load_ai_settings(
             )
         except ValueError as error:
             raise AIConfigError(
-                f"Invalid LM_STUDIO_BASE_URL: {error}"
+                f"Invalid LLAMA_SERVER_BASE_URL: {error}"
             ) from error
     return settings
 

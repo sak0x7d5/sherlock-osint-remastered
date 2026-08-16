@@ -51,7 +51,7 @@ from sherlock_project.ai_config import (
 from sherlock_project.ai_provider import (
     AIModelInfo,
     AIProviderError,
-    LMStudioProvider,
+    LlamaCppProvider,
 )
 from sherlock_project.database import default_database_path
 from sherlock_project.settings import (
@@ -185,7 +185,7 @@ def thinking_label(model: AIModelInfo) -> str:
 
 
 class ModelPickerScreen(ModalScreen[str | None]):
-    """Enter on `model`: the live list from LM Studio, as a real table.
+    """Enter on `model`: what llama-server has loaded, as a real table.
 
     A table rather than one line per model, because the fields are the whole
     point of the screen -- size against quantisation against context window is
@@ -211,7 +211,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Choose a model", classes="dialog-title")
-            yield Static("Asking LM Studio...", id="picker-status")
+            yield Static("Asking llama-server...", id="picker-status")
             yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
             yield Label(
                 "▸ will be used   ● already in memory (starts instantly)",
@@ -252,7 +252,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
 
         try:
             settings = AISettings(base_url=self._base_url, model="listing")
-            provider = LMStudioProvider(settings)
+            provider = LlamaCppProvider(settings)
         except ValueError as error:
             status.update(f"Endpoint is not usable: {error}")
             return
@@ -260,13 +260,13 @@ class ModelPickerScreen(ModalScreen[str | None]):
         try:
             models = await provider.list_models()
         except AIProviderError as error:
-            status.update(f"{error}\nStart LM Studio, then press ^R.")
+            status.update(f"{error}\nStart llama-server, then press ^R.")
             return
         finally:
             await provider.close()
 
         if not models:
-            status.update("LM Studio has no downloaded LLMs.")
+            status.update("llama-server has no model loaded.")
             return
 
         models.sort(key=lambda item: (item.display_name.casefold(), item.key))
@@ -297,7 +297,7 @@ class ModelPickerScreen(ModalScreen[str | None]):
         table.focus()
 
     def action_reload(self) -> None:
-        self.query_one("#picker-status", Static).update("Asking LM Studio...")
+        self.query_one("#picker-status", Static).update("Asking llama-server...")
         self.run_worker(self._load(), exclusive=True)
 
     @on(DataTable.RowSelected)

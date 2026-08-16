@@ -596,7 +596,7 @@ def _trace(*, valid: bool = True) -> AIRequestTrace:
         site_name="Threads",
         site_id=None,
         attempt=1,
-        provider="lmstudio",
+        provider="llamacpp",
         model_key="example/model",
         temperature=0.1,
         context_length=8192,
@@ -690,7 +690,7 @@ def test_verbose_ai_configuration_exposes_effective_nonsecret_settings() -> None
 
     reporter.ai_configuration(
         model="example/model",
-        base_url="http://localhost:1234",
+        base_url="http://localhost:8080",
         temperature=0.1,
         context_length=8192,
     )

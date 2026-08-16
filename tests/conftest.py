@@ -29,13 +29,13 @@ def isolated_user_state(tmp_path, monkeypatch):
 
     Resolution already honours these overrides -- default_database_path reads
     SHERLOCK_DB and ai_config_path reads SHERLOCK_CONFIG -- so this is isolation
-    rather than new machinery. LM_STUDIO_BASE_URL is cleared for the same
+    rather than new machinery. LLAMA_SERVER_BASE_URL is cleared for the same
     reason: it overrides the configured endpoint, and a developer who exported
     it should not thereby change what the suite tests.
     """
     monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
-    monkeypatch.delenv("LM_STUDIO_BASE_URL", raising=False)
+    monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
 
 
 def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:

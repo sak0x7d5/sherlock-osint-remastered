@@ -1398,7 +1398,7 @@ def _example_baseline_payload() -> dict[str, Any]:
             "max_output_tokens": DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
         },
         "model": {
-            "provider": "lmstudio",
+            "provider": "llamacpp",
             "key": "example/model",
             "temperature": 0.1,
             "context_length": 16_384,
@@ -1439,7 +1439,7 @@ def test_baseline_report_loader_keeps_comparison_metadata() -> None:
     assert baseline.warm_p50_seconds == 1.0
     assert baseline.input_p50_tokens == 1_000
     assert baseline.output_p50_tokens == 100
-    assert baseline.provider == "lmstudio"
+    assert baseline.provider == "llamacpp"
     assert baseline.model == "example/model"
     assert baseline.workload_fingerprint == "fixture-fingerprint"
 

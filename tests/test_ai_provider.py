@@ -5,244 +5,256 @@ import pytest
 
 from sherlock_project.ai_config import AISettings
 from sherlock_project.ai_provider import (
+    AIModelNotFoundError,
     AIProviderAuthenticationError,
     AIProviderProtocolError,
     AIProviderUnavailableError,
-    LMStudioProvider,
+    LlamaCppProvider,
 )
 
 pytestmark = pytest.mark.asyncio
 
+MODEL_PATH = "D:/models/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
 
-def _settings(model: str = "example/model") -> AISettings:
+
+def _settings(model: str = "Qwen3-8B-Q4_K_M.gguf") -> AISettings:
     return AISettings(
-        base_url="http://lmstudio.test",
+        base_url="http://llamacpp.test",
         model=model,
         temperature=0.1,
         context_length=8192,
     )
 
 
-def _model(
-    *,
-    key: str = "example/model",
-    reasoning: list[str] | None = None,
-    loaded: bool = False,
-) -> dict:
-    capabilities = {}
-    if reasoning is not None:
-        capabilities["reasoning"] = {
-            "allowed_options": reasoning,
-            "default": reasoning[-1],
-        }
+def _props(model_path: str = MODEL_PATH, n_ctx: int = 8192) -> dict:
     return {
-        "type": "llm",
-        "key": key,
-        "display_name": "Example Model",
-        "quantization": {"name": "Q4_K_M"},
-        "params_string": "8B",
-        "loaded_instances": ([{"id": key}] if loaded else []),
-        "max_context_length": 32768,
-        "capabilities": capabilities,
+        "model_path": model_path,
+        "default_generation_settings": {"n_ctx": n_ctx},
     }
 
 
-def _provider(handler, *, settings: AISettings | None = None) -> LMStudioProvider:
+def _chat_response(
+    *,
+    content: str = '{"reasoning":"brief","extraction":{}}',
+    reasoning_content: str | None = None,
+) -> dict:
+    message: dict[str, object] = {"role": "assistant", "content": content}
+    if reasoning_content is not None:
+        message["reasoning_content"] = reasoning_content
+    return {
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+        "timings": {"prompt_ms": 400.0, "predicted_per_second": 12.5},
+    }
+
+
+def _provider(handler, *, settings: AISettings | None = None) -> LlamaCppProvider:
     transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient(
-        transport=transport,
-        base_url="http://lmstudio.test",
-    )
-    return LMStudioProvider(settings or _settings(), client=client)
+    client = httpx.AsyncClient(transport=transport, base_url="http://llamacpp.test")
+    return LlamaCppProvider(settings or _settings(), client=client)
 
 
-async def test_list_models_filters_non_llms_and_parses_reasoning_capability():
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "models": [
-                    _model(reasoning=["off", "on"], loaded=True),
-                    {"type": "embedding", "key": "embed/model"},
-                ]
-            },
-        )
-
-    provider = _provider(handler)
+async def test_list_models_reports_what_the_server_loaded():
+    provider = _provider(lambda _request: httpx.Response(200, json=_props()))
     models = await provider.list_models()
 
     assert len(models) == 1
-    assert models[0].key == "example/model"
-    assert models[0].reasoning_options == ("off", "on")
-    assert models[0].supports_reasoning_off is True
+    assert models[0].key == "Qwen3-8B-Q4_K_M.gguf"
+    assert models[0].display_name == "Qwen3-8B-Q4_K_M"
+    assert models[0].quantization == "Q4_K_M"
+    assert models[0].max_context_length == 8192
     assert models[0].loaded is True
 
 
-async def test_ensure_model_loaded_posts_expected_configuration():
-    requests: list[httpx.Request] = []
+async def test_ensure_model_loaded_adopts_rather_than_loading():
+    """llama-server cannot load anything: it serves what it was launched with.
+
+    The whole LM Studio load/TTL dance is gone, so the only correct behaviour
+    is to look once and adopt. A second request would have nothing to ask for.
+    """
+    paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(200, json={"models": [_model(reasoning=["off", "on"])]})
-        return httpx.Response(
-            200,
-            json={"type": "llm", "instance_id": "example/model", "status": "loaded"},
-        )
+        paths.append(request.url.path)
+        return httpx.Response(200, json=_props())
 
     provider = _provider(handler)
     model = await provider.ensure_model_loaded()
 
     assert model.loaded is True
-    assert [request.url.path for request in requests] == [
-        "/api/v1/models",
-        "/api/v1/models/load",
-    ]
-    load_body = json.loads(requests[1].content)
-    assert load_body == {
-        "model": "example/model",
-        "context_length": 8192,
-        "echo_load_config": True,
-        "ttl_seconds": 300,
-    }
+    assert paths == ["/props"]
 
 
-async def _load_body(settings: AISettings) -> dict:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(200, json={"models": [_model()]})
-        bodies.append(json.loads(request.content))
-        return httpx.Response(200, json={"type": "llm", "status": "loaded"})
+async def test_configured_model_mismatch_is_not_an_error():
+    """The config records which model ran; it cannot select one.
 
-    bodies: list[dict] = []
-    await _provider(handler, settings=settings).ensure_model_loaded()
-    return bodies[0]
-
-
-async def test_idle_unload_is_sent_in_seconds_under_lm_studios_key():
-    """The config is minutes; the wire is `ttl_seconds`, and only that spelling.
-
-    `ttl` is what LM Studio documents, and both this endpoint and /api/v1/chat
-    reject it with HTTP 400 -- which fails the load rather than degrading to no
-    TTL, so the name is worth a test of its own.
+    Someone relaunching llama-server with a different GGUF has changed the
+    model, not made a mistake. Refusing to run would be obstruction.
     """
-    body = await _load_body(
-        AISettings(
-            base_url="http://lmstudio.test",
-            model="example/model",
-            unload_after_minutes=15,
-        )
+    provider = _provider(
+        lambda _request: httpx.Response(200, json=_props()),
+        settings=_settings(model="something-else.gguf"),
     )
+    model = await provider.ensure_model_loaded()
 
-    assert body["ttl_seconds"] == 900
-
-
-async def test_never_unloading_omits_the_key_rather_than_sending_zero():
-    """0 minutes means "keep it", and 0 seconds would mean "drop it at once"."""
-    body = await _load_body(
-        AISettings(
-            base_url="http://lmstudio.test",
-            model="example/model",
-            unload_after_minutes=0,
-        )
-    )
-
-    assert "ttl_seconds" not in body
+    assert model.key == "Qwen3-8B-Q4_K_M.gguf"
 
 
-async def test_loaded_model_is_reused_without_load_request():
-    paths: list[str] = []
+async def test_server_with_no_model_is_reported():
+    provider = _provider(lambda _request: httpx.Response(200, json={"model_path": ""}))
+
+    with pytest.raises(AIModelNotFoundError, match="no model loaded"):
+        await provider.ensure_model_loaded()
+
+
+async def test_schema_is_enforced_through_response_format():
+    """The schema goes on the wire, not into the prompt.
+
+    This is the whole point of the migration: llama.cpp compiles it to a
+    grammar, so a reply that does not match is unrepresentable rather than
+    merely discouraged.
+    """
+    bodies: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        return httpx.Response(200, json={"models": [_model(loaded=True)]})
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_chat_response())
 
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
     provider = _provider(handler)
-    await provider.ensure_model_loaded()
-
-    assert paths == ["/api/v1/models"]
-
-
-async def test_generate_disables_native_reasoning_and_parses_stats():
-    request_bodies: list[dict] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(
-                200,
-                json={"models": [_model(reasoning=["off", "on"], loaded=True)]},
-            )
-        request_bodies.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "output": [
-                    {"type": "reasoning", "content": "unexpected native thought"},
-                    {"type": "message", "content": '{"reasoning":"brief","extraction":{}}'},
-                ],
-                "stats": {
-                    "input_tokens": 100,
-                    "total_output_tokens": 20,
-                    "reasoning_output_tokens": 3,
-                    "tokens_per_second": 12.5,
-                    "time_to_first_token_seconds": 0.4,
-                },
-            },
-        )
-
-    provider = _provider(handler)
-    await provider.ensure_model_loaded()
-    completion = await provider.generate(
+    await provider.generate(
         system_prompt="system",
         payload={"input": "evidence"},
         max_tokens=1024,
+        json_schema=schema,
     )
 
-    request = request_bodies[0]
-    assert request["reasoning"] == "off"
-    assert request["temperature"] == 0.1
-    assert request["stream"] is False
-    assert request["store"] is False
-    assert request["max_output_tokens"] == 1024
-    assert completion.native_reasoning == "unexpected native thought"
-    assert completion.stats.reasoning_tokens == 3
-    assert completion.stats.tokens_per_second == 12.5
+    response_format = bodies[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["schema"] == schema
+    assert response_format["json_schema"]["strict"] is True
 
 
-async def test_generate_explicitly_enables_supported_native_reasoning():
-    request_bodies: list[dict] = []
+async def test_no_schema_means_no_response_format():
+    bodies: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(
-                200,
-                json={"models": [_model(reasoning=["off", "on"], loaded=True)]},
-            )
-        request_bodies.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "output": [
-                    {"type": "reasoning", "content": "compared the evidence"},
-                    {"type": "message", "content": '{"identity_status":"reject"}'},
-                ],
-                "stats": {"reasoning_output_tokens": 4},
-            },
-        )
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_chat_response())
 
     provider = _provider(handler)
-    await provider.ensure_model_loaded()
-    completion = await provider.generate(
+    await provider.generate(system_prompt="system", payload={}, max_tokens=10)
+
+    assert "response_format" not in bodies[0]
+
+
+async def test_reasoning_off_uses_the_only_switch_llama_server_honours():
+    """`enable_thinking` and nothing else.
+
+    Measured against llama-server b9837: `reasoning: "off"` and
+    `reasoning_budget: 0` are accepted with HTTP 200 and ignored, because they
+    are launch flags. `reasoning_format: "none"` is worse than useless -- it
+    stops thinking being EXTRACTED, so without a schema it lands inline in
+    content and breaks the JSON parse. Asserted negatively too, so a future
+    edit reintroducing one of them fails here rather than in a scan.
+    """
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_chat_response())
+
+    provider = _provider(handler)
+    await provider.generate(
         system_prompt="system",
-        payload={"input": "evidence"},
-        max_tokens=1024,
+        payload={},
+        max_tokens=10,
+        reasoning_off=True,
+    )
+
+    body = bodies[0]
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning" not in body
+    assert "reasoning_budget" not in body
+    assert "reasoning_format" not in body
+
+
+async def test_reasoning_on_leaves_thinking_alone():
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_chat_response())
+
+    provider = _provider(handler)
+    await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
         reasoning_off=False,
     )
 
-    assert request_bodies[0]["reasoning"] == "on"
-    assert completion.native_reasoning == "compared the evidence"
+    assert "chat_template_kwargs" not in bodies[0]
+
+
+async def test_native_reasoning_is_split_away_from_the_answer():
+    """Thinking must never reach the text that gets JSON-parsed."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(
+            200,
+            json=_chat_response(
+                content='{"identity_status":"reject"}',
+                reasoning_content="compared the evidence",
+            ),
+        )
+
+    provider = _provider(handler)
+    completion = await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
+        reasoning_off=False,
+    )
+
     assert completion.final_text == '{"identity_status":"reject"}'
-    assert completion.stats.reasoning_tokens == 4
+    assert completion.native_reasoning == "compared the evidence"
+
+
+async def test_stats_come_from_usage_and_timings():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(200, json=_chat_response())
+
+    provider = _provider(handler)
+    completion = await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
+    )
+
+    assert completion.stats.input_tokens == 100
+    assert completion.stats.output_tokens == 20
+    assert completion.stats.tokens_per_second == 12.5
+    assert completion.stats.time_to_first_token_seconds == 0.4
+    # llama-server does not separate reasoning tokens. None, never a guess --
+    # an invented number would read as measured in the -v trace.
+    assert completion.stats.reasoning_tokens is None
 
 
 async def test_api_token_is_sent_as_bearer_header():
@@ -251,79 +263,23 @@ async def test_api_token_is_sent_as_bearer_header():
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal authorization
         authorization = request.headers.get("Authorization")
-        return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json=_props())
 
     transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient(
-        transport=transport,
-        base_url="http://lmstudio.test",
-    )
-    provider = LMStudioProvider(
-        _settings(),
-        client=client,
-        api_token="secret-token",
-    )
+    client = httpx.AsyncClient(transport=transport, base_url="http://llamacpp.test")
+    provider = LlamaCppProvider(_settings(), client=client, api_token="secret-token")
 
     await provider.list_models()
 
     assert authorization == "Bearer secret-token"
 
 
-async def test_non_reasoning_model_omits_reasoning_parameter():
-    chat_body: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal chat_body
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(200, json={"models": [_model(loaded=True)]})
-        chat_body = json.loads(request.content)
-        return httpx.Response(200, json={"output": [], "stats": {}})
-
-    provider = _provider(handler)
-    await provider.ensure_model_loaded()
-    await provider.generate(system_prompt="system", payload={}, max_tokens=10)
-
-    assert "reasoning" not in chat_body
-
-
-async def test_reasoning_only_model_loads_and_declares_thinking_on():
-    """A model that always thinks is usable; the request says so explicitly.
-
-    It used to be refused at load time. Omitting the key instead would leave
-    the mode to the model's default; declaring it means LM Studio returns
-    thinking as its own output item, which keeps `final_text` clean JSON.
-    """
-    chat_body: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/models":
-            return httpx.Response(
-                200,
-                json={"models": [_model(reasoning=["on"])]},
-            )
-        if request.url.path == "/api/v1/chat":
-            chat_body.update(json.loads(request.content))
-            return httpx.Response(200, json={"output": [], "stats": {}})
-        return httpx.Response(200, json={})
-
-    provider = _provider(handler)
-
-    model = await provider.ensure_model_loaded()
-    await provider.generate(
-        system_prompt="system",
-        payload={},
-        max_tokens=10,
-        reasoning_off=True,
-    )
-
-    assert model.requires_native_reasoning is True
-    assert chat_body["reasoning"] == "on"
-
-
 @pytest.mark.parametrize(
     ("status", "error_type"),
     [
         (401, AIProviderAuthenticationError),
+        # 503 is llama-server still loading the model, which is the normal
+        # state for the first seconds after launch -- "try again", not "fail".
         (503, AIProviderUnavailableError),
     ],
 )
@@ -346,10 +302,20 @@ async def test_connection_failure_is_typed_and_safe():
     assert "private connection details" not in str(error_info.value)
 
 
-async def test_malformed_model_listing_is_rejected():
-    provider = _provider(
-        lambda _request: httpx.Response(200, json={"wrong": []})
-    )
+async def test_malformed_chat_response_is_rejected():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        return httpx.Response(200, json={"wrong": []})
 
-    with pytest.raises(AIProviderProtocolError, match="models array"):
+    provider = _provider(handler)
+
+    with pytest.raises(AIProviderProtocolError, match="choices array"):
+        await provider.generate(system_prompt="s", payload={}, max_tokens=10)
+
+
+async def test_non_json_response_is_rejected():
+    provider = _provider(lambda _request: httpx.Response(200, text="<html>"))
+
+    with pytest.raises(AIProviderProtocolError, match="non-JSON"):
         await provider.list_models()

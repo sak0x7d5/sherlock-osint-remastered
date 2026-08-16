@@ -15,7 +15,7 @@ from sherlock_project.ai_config import (
 def test_config_round_trip_and_environment_url_override(tmp_path: Path):
     path = tmp_path / "config.toml"
     original = AISettings(
-        base_url="http://localhost:1234",
+        base_url="http://localhost:8080",
         model="example/model",
         temperature=0.1,
         context_length=8192,
@@ -24,7 +24,7 @@ def test_config_round_trip_and_environment_url_override(tmp_path: Path):
     saved_to = save_ai_settings(original, path=path, environ={})
     loaded = load_ai_settings(
         path=path,
-        environ={"LM_STUDIO_BASE_URL": "http://localhost:8000/"},
+        environ={"LLAMA_SERVER_BASE_URL": "http://localhost:8000/"},
     )
 
     assert saved_to == path
@@ -67,13 +67,13 @@ def test_invalid_config_is_rejected(tmp_path: Path, content: str):
 def test_invalid_environment_url_is_rejected(tmp_path: Path):
     path = tmp_path / "config.toml"
     save_ai_settings(
-        AISettings(base_url="http://localhost:1234", model="example/model"),
+        AISettings(base_url="http://localhost:8080", model="example/model"),
         path=path,
         environ={},
     )
 
-    with pytest.raises(AIConfigError, match="LM_STUDIO_BASE_URL"):
+    with pytest.raises(AIConfigError, match="LLAMA_SERVER_BASE_URL"):
         load_ai_settings(
             path=path,
-            environ={"LM_STUDIO_BASE_URL": "not-a-url"},
+            environ={"LLAMA_SERVER_BASE_URL": "not-a-url"},
         )
