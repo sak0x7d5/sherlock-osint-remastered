@@ -12,6 +12,7 @@ from sherlock_project.database import SherlockDB
 from sherlock_project.llama_server import ServerStatus
 from sherlock_project.playwright_engine import PlaywrightEngine
 from sherlock_project.sites import SitesInformation
+from sherlock_project.tui import settings_pane as settings_pane_module
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +53,7 @@ def no_real_llama_server(monkeypatch):
     installed -- and it would adopt whatever server the developer had running,
     which is worse than slow because it silently passes.
 
-    Patched at the two integration points rather than on the class, so
+    Patched at each integration point rather than on the class, so
     `tests/test_llama_server.py` -- which imports it directly and is about this
     behaviour -- still exercises the real thing.
     """
@@ -70,7 +71,10 @@ def no_real_llama_server(monkeypatch):
         async def stop(self) -> None:
             return None
 
-    for module in (sherlock_module, ai_setup_module):
+    # Every module that starts a server. Missing one means that surface's
+    # tests quietly spawn real processes, which is how this was nearly shipped
+    # for the TUI picker.
+    for module in (sherlock_module, ai_setup_module, settings_pane_module):
         monkeypatch.setattr(module, "ManagedLlamaServer", _StubServer)
 
 

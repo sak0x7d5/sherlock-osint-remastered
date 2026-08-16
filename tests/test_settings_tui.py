@@ -24,6 +24,7 @@ from sherlock_project.ai_config import (
     save_settings,
 )
 from sherlock_project.ai_provider import AIModelInfo
+from sherlock_project.llama_server import ServerStatus
 from sherlock_project.settings import SETTING_FIELDS, SettingField
 from sherlock_project.settings_tui import (
     SettingsApp,
@@ -489,3 +490,76 @@ def test_thinking_column_distinguishes_three_states():
     assert thinking_label(model(())) == "none"
     assert thinking_label(model(("off", "on"))) == "optional"
     assert thinking_label(model(("on",))) == "always"
+
+
+async def test_the_model_picker_starts_a_server_instead_of_asking_you_to(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """The last surface that still told the user to run llama-server.
+
+    It said "Start llama-server, then press ^R" on exactly the first run where
+    the list matters most -- handing back a job the rest of the tool had
+    already taken over. The picker now starts one itself, and stops it again
+    when the screen closes.
+    """
+    from sherlock_project.tui import settings_pane as pane_module
+
+    started: list[str] = []
+    stopped: list[str] = []
+
+    class RecordingServer:
+        def __init__(self, settings, **_kwargs) -> None:
+            self._settings = settings
+
+        async def ensure_running(self):
+            started.append(self._settings.models_dir or "<auto>")
+            return ServerStatus(running=True, started_by_us=True, detail="ok")
+
+        async def stop(self) -> None:
+            stopped.append("stopped")
+
+    class FakeProvider:
+        def __init__(self, _settings, **_kwargs) -> None:
+            pass
+
+        async def list_models(self) -> list[AIModelInfo]:
+            return [
+                AIModelInfo(
+                    key="Some-Model-Q4_K_M",
+                    display_name="Some-Model",
+                    quantization="Q4_K_M",
+                    params="8B",
+                    loaded=False,
+                    max_context_length=8192,
+                    reasoning_options=(),
+                )
+            ]
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(pane_module, "ManagedLlamaServer", RecordingServer)
+    monkeypatch.setattr(pane_module, "LlamaCppProvider", FakeProvider)
+
+    screen = pane_module.ModelPickerScreen(
+        "http://127.0.0.1:8080",
+        current=None,
+        models_dir=str(tmp_path),
+    )
+    app = SettingsApp(config_path=tmp_path / "config.toml")
+
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+        status = screen.query_one("#picker-status", Static).render().plain
+
+        # Never an instruction to go and run something.
+        assert "Start llama-server" not in status
+        assert "1 available" in status
+        assert started == [str(tmp_path)]
+
+        screen.action_cancel()
+        await pilot.pause()
+
+    assert stopped == ["stopped"]
