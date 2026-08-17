@@ -9,6 +9,7 @@ from sherlock_project.ai_engine import (
     PASS_TWO_MAX_OUTPUT_TOKENS,
     AIRequestTrace,
     AIService,
+    NativeReasoningOSINTResponse,
     OSINTResponse,
     PassOneKeyRegistry,
     StructuredResponseError,
@@ -166,10 +167,20 @@ async def test_extract_profile_validates_complete_json_and_emits_trace():
         reasoning_schema["description"]
     )
     extraction_schema = schema["properties"]["extraction"]
-    assert extraction_schema["additionalProperties"] is False
-    assert list(extraction_schema["patternProperties"]) == [
-        "^[a-z][a-z0-9_]{0,63}$"
-    ]
+    # `patternProperties` must NOT come back. llama.cpp's grammar compiler does
+    # not implement it, drops it silently, and then reads the leftover
+    # `additionalProperties: false` as "no keys are legal" -- compiling a
+    # grammar whose only representable value is `{}`. That emptied every
+    # extraction on every site and every model, and read as a thin model
+    # because an empty extraction is valid and the metadata `full_name`
+    # fallback filled the hole. The key pattern is enforced in
+    # `_clean_extraction` instead.
+    assert "patternProperties" not in extraction_schema
+    assert extraction_schema["additionalProperties"] == {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "minItems": 1,
+    }
     assert call["payload"] == {
         "searched_username_do_not_extract": "sample_handle",
         "site_name": "Example",
@@ -185,6 +196,37 @@ async def test_extract_profile_validates_complete_json_and_emits_trace():
     assert traces[0].stats.reasoning_tokens == 0
     assert traces[0].provider == "llamacpp"
     assert traces[0].context_length == 8192
+
+
+@pytest.mark.parametrize(
+    "response_model",
+    [OSINTResponse, NativeReasoningOSINTResponse],
+)
+async def test_unsafe_extraction_key_is_dropped_not_rejected(response_model: type):
+    """One bad key must not cost the facts beside it.
+
+    The grammar can no longer enforce the snake_case rule -- expressing it in
+    the schema is what emptied every extraction -- so a stray `Full Name` is
+    reachable again. Raising here would throw away a response that is otherwise
+    complete, which is the failure the open-key schema exists to avoid.
+    """
+    payload = {
+        "extraction": {
+            "full_name": ["Jane Doe"],
+            "Full Name": ["Jane Doe"],
+            "roles": ["Penetration Tester"],
+            "9lives": ["nope"],
+        },
+    }
+    if response_model is OSINTResponse:
+        payload["reasoning"] = "include Jane Doe as full_name."
+
+    validated = response_model.model_validate(payload)
+
+    assert validated.extraction == {
+        "full_name": ["Jane Doe"],
+        "roles": ["Penetration Tester"],
+    }
 
 
 @pytest.mark.parametrize(
