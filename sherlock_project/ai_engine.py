@@ -71,10 +71,9 @@ DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS = 1024
 NATIVE_REASONING_TOKEN_ALLOWANCE = 2048
 
 
-SafeExtractionKey = Annotated[
-    str,
-    StringConstraints(pattern=SAFE_EXTRACTION_KEY.pattern),
-]
+# No `SafeExtractionKey` type alias any more, deliberately. Annotating the dict
+# key with the pattern is what emitted `patternProperties` and killed the
+# grammar; `_clean_extraction` enforces `SAFE_EXTRACTION_KEY` instead.
 ProfileFact = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 ProfileFactList = Annotated[list[ProfileFact], Field(min_length=1)]
 
@@ -365,6 +364,41 @@ def _render_structured_reasoning(validated: BaseModel | None) -> str:
     return ""
 
 
+def _clean_extraction(
+    extraction: Mapping[str, Sequence[str]],
+) -> dict[str, list[str]]:
+    """Deduplicate values, and drop keys the schema can no longer constrain.
+
+    The snake_case rule lives here rather than in the schema because a grammar
+    cannot express it, and trying cost every fact in the pipeline.
+
+    `dict[SafeExtractionKey, ...]` makes Pydantic emit `patternProperties`,
+    which llama.cpp's JSON-Schema-to-GBNF compiler does not implement. It drops
+    the constraint silently, sees an object with `additionalProperties: false`
+    and no `properties`, and compiles a grammar whose only representable value
+    is `{}`. Every extraction came back empty -- every site, every model -- and
+    nothing reported it: an empty `extraction` is legal, the JSON parsed, and
+    `sanitize_pass_one_extraction` then filled in `full_name` from page
+    metadata. So each site produced exactly one plausible-looking name, and a
+    dead grammar read as a thin model.
+
+    Measured against llama-server b9837 on Qwen3-8B-Q4_K_M, one page, one
+    prompt: `patternProperties` gave 0 keys, `additionalProperties: <value
+    schema>` gave 4 -- matching what the model had already narrated in
+    `reasoning` and been unable to write down.
+
+    The schema therefore carries only what a grammar can hold: an object whose
+    values are nonempty string arrays, keys open. A stray `Full Name` is now
+    reachable, so it is dropped here instead of rejected -- losing one key
+    beats losing every fact beside it, which is what raising would do.
+    """
+    return {
+        key: list(dict.fromkeys(values))
+        for key, values in extraction.items()
+        if SAFE_EXTRACTION_KEY.fullmatch(key)
+    }
+
+
 class StrictResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -380,13 +414,15 @@ class OSINTResponse(StrictResponse):
             "arrays, objects, or JSON. Transient and never stored."
         )
     )
-    extraction: dict[SafeExtractionKey, ProfileFactList] = Field(
+    # Open `str` keys and no `additionalProperties` override, both deliberate
+    # and both load-bearing: see `_clean_extraction` for what enforcing the key
+    # pattern in the schema did to the grammar.
+    extraction: dict[str, ProfileFactList] = Field(
         description=(
             "Every value marked include in reasoning, under the key named "
             "there, and nothing else. Keys are snake_case; each value is a "
             "nonempty array of nonempty strings."
         ),
-        json_schema_extra={"additionalProperties": False},
     )
 
     @field_validator("extraction")
@@ -395,10 +431,7 @@ class OSINTResponse(StrictResponse):
         cls,
         extraction: dict[str, list[str]],
     ) -> dict[str, list[str]]:
-        return {
-            key: list(dict.fromkeys(values))
-            for key, values in extraction.items()
-        }
+        return _clean_extraction(extraction)
 
 
 class NativeReasoningOSINTResponse(BaseModel):
@@ -424,13 +457,12 @@ class NativeReasoningOSINTResponse(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    extraction: dict[SafeExtractionKey, ProfileFactList] = Field(
+    extraction: dict[str, ProfileFactList] = Field(
         description=(
             "Every fact the page states about the owner, under a snake_case "
             "key; each value is a nonempty array of nonempty strings. The only "
             "permitted field -- reason in your own thinking, not in here."
         ),
-        json_schema_extra={"additionalProperties": False},
     )
 
     @field_validator("extraction")
@@ -439,10 +471,7 @@ class NativeReasoningOSINTResponse(BaseModel):
         cls,
         extraction: dict[str, list[str]],
     ) -> dict[str, list[str]]:
-        return {
-            key: list(dict.fromkeys(values))
-            for key, values in extraction.items()
-        }
+        return _clean_extraction(extraction)
 
 
 PassOneResponse = OSINTResponse | NativeReasoningOSINTResponse
