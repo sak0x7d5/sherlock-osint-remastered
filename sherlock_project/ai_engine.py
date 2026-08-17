@@ -29,6 +29,7 @@ from sherlock_project.ai_provider import (
     ProviderWideError,
 )
 from sherlock_project.profile_synthesis import (
+    CANONICAL_PROFILE_FIELDS,
     IdentityStatus,
     InvalidExtraction,
     InvestigationContext,
@@ -180,6 +181,33 @@ _PASS_ONE_TELEMETRY_KEY_PARTS = frozenset(
         "visitors",
         "vouches",
         "xp",
+    }
+)
+# Names that describe WHERE a fact was read rather than WHAT it is. Every one of
+# these is a heading the content extractor itself prints, or a word a model
+# reaches for when it wants one bucket for a line carrying several kinds of
+# fact. They are barred from the hint list only, never from an extraction: a
+# freeform bio with no better home is a real fact and belongs under `bio`, and
+# dropping the key outright would take that with it.
+_GENERIC_CONTAINER_KEYS = frozenset(
+    {
+        "about",
+        "content",
+        "data",
+        "description",
+        "details",
+        "fact",
+        "facts",
+        "info",
+        "information",
+        "metadata",
+        "misc",
+        "notes",
+        "other",
+        "profile",
+        "summary",
+        "text",
+        "title",
     }
 )
 _PASS_ONE_PLACEHOLDER_VALUES = frozenset(
@@ -491,7 +519,25 @@ def validate_pass_one_extraction_payload(
 
 
 class PassOneKeyRegistry:
-    """Keep validated Pass 1 key names isolated by searched username."""
+    """Offer a stable naming vocabulary, plus what sites have added to it.
+
+    `CANONICAL_PROFILE_FIELDS` is on offer to EVERY site, including the first
+    one of a run. It used to start empty, and an empty hint list is what makes a
+    small model reach for the nearest available noun in its own input -- which
+    on a page whose metadata block is headed `Description:` is `description`,
+    the name of the CONTAINER a fact was read from rather than the kind of fact
+    it is.
+
+    Invented keys still propagate, because a genuinely new field is worth
+    reusing across sites and Pass 2 merges by name. Generic container names do
+    not, and that is the loop this closes: one site emitting `description` put
+    it in front of every site scanned after it, and it ended the run as the
+    most-used key of all -- 27 sites against 21 for `full_name`, over half of
+    them site furniture, an empty-state message, or another person entirely.
+
+    Keys stay isolated by searched username; two investigations must not teach
+    each other vocabulary.
+    """
 
     def __init__(self) -> None:
         self._keys_by_username: dict[str, dict[str, None]] = {}
@@ -508,11 +554,23 @@ class PassOneKeyRegistry:
     def add(self, username: str, extraction: Mapping[str, object]) -> None:
         registry = self._keys_by_username.setdefault(username, {})
         for key in extraction:
-            if SAFE_EXTRACTION_KEY.fullmatch(key):
-                registry.setdefault(key, None)
+            if not SAFE_EXTRACTION_KEY.fullmatch(key):
+                continue
+            if key in _GENERIC_CONTAINER_KEYS or key in CANONICAL_PROFILE_FIELDS:
+                continue
+            registry.setdefault(key, None)
 
     def names(self, username: str) -> list[str]:
-        return list(self._keys_by_username.get(username, {}))
+        """The canonical vocabulary first, then whatever this run has learned.
+
+        Canonical names lead deliberately. A small model reads this as a list
+        and weights the head of it, and the head is where the names Pass 2 can
+        actually merge on belong.
+        """
+        return [
+            *CANONICAL_PROFILE_FIELDS,
+            *self._keys_by_username.get(username, {}),
+        ]
 
 
 def _identity_token(value: str) -> str:

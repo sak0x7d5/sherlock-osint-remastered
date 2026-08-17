@@ -162,7 +162,37 @@ _FIELD_ALIASES = {
     "role": "roles",
     "city": "location",
     "country": "location",
+    "locations": "location",
+    "about": "bio",
+    "description": "bio",
+    "headline": "bio",
+    "summary": "bio",
+    "language": "languages",
 }
+
+# The naming vocabulary Pass 1 is offered as `known_profile_keys`, and the set
+# every alias above resolves into. It lives here, beside the aliases, because
+# two lists would drift: Pass 1 taught `other_usernames` and `locations` while
+# this map only ever canonicalised `usernames` and `location`, so a fact filed
+# under the name the prompt itself suggested became its own field and never
+# merged with the same fact from another site.
+#
+# Ordered by how often a profile page states each one, not alphabetically. It is
+# read as a hint list by a small model, and the head of a list carries more
+# weight than the tail.
+CANONICAL_PROFILE_FIELDS: tuple[str, ...] = (
+    "full_name",
+    "bio",
+    "roles",
+    "organizations",
+    "location",
+    "languages",
+    "usernames",
+    "aliases",
+    "url",
+    "email",
+    "phone",
+)
 
 _ORIGIN_ORDER: dict[ProfileOrigin, int] = {
     "anchor": 0,

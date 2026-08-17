@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -22,6 +23,7 @@ from sherlock_project.ai_provider import (
     AIProviderUnavailableError,
 )
 from sherlock_project.profile_synthesis import (
+    CANONICAL_PROFILE_FIELDS,
     IdentityAnchor,
     InvestigationContext,
     SiteExtraction,
@@ -563,8 +565,21 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
     prompt = service._extraction_prompt
     normalized_prompt = " ".join(prompt.split())
 
-    assert len(prompt) <= 4_500
-    assert prompt.count("## ") == 6
+    # Raised from 4,500 on 2026-08-17, deliberately and once. What bought it:
+    # the naming rules that stop a model filing every fact under the name of
+    # the input heading it read them from, the site-tagline and empty-state
+    # skips, and examples rewritten in the sectioned shape `extract_profile_
+    # content` actually emits -- the old ones showed bare text the model never
+    # receives. Measured cost is ~1,100 characters against a ceiling that
+    # predates all four rules.
+    # It is still a ceiling, and still low on purpose: this prompt is read by
+    # 4B models, where length costs instruction-following well before it costs
+    # context. Trim before raising it again.
+    assert len(prompt) <= 5_100
+    # Counted at line starts. A bare `count("## ")` also matches the
+    # `## Page metadata` and `## Main content` headings inside the examples'
+    # JSON, which are escaped `\n##` and not sections of this document.
+    assert len(re.findall(r"(?m)^## ", prompt)) == 6
     # Rules that `sanitize_pass_one_extraction` cannot enforce afterwards have
     # to survive in the prompt; the ones it does enforce are deliberately absent.
     for required_rule in (
@@ -577,7 +592,10 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "One line often carries several facts",
         "never drop one fact to keep another",
         "put it under `organizations`",
-        "Use `other_usernames` only",
+        # `usernames`, not `other_usernames`: the hint list offers the name
+        # `_FIELD_ALIASES` canonicalises into, and the prompt naming a second
+        # spelling for the same thing is the drift this pair exists to close.
+        "Use `usernames` only",
         "post, reply, quote, or comment",
         "It describes other people",
         "return an empty extraction",
@@ -585,6 +603,12 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "breach dumps",
         "Known keys are hints, never a checklist",
         "nonempty array of nonempty strings",
+        # The four rules the raised ceiling bought. Each one is a measured
+        # failure from the 0day run, not a precaution.
+        "Never name a key after where a fact was read",
+        "Never file a line carrying several kinds of fact under one key",
+        "the platform's own name, tagline and marketing",
+        "Empty states",
         "include VALUE as KEY",
         "skip: REASON",
         "one JSON object holding `reasoning` then `extraction`",
@@ -646,6 +670,14 @@ async def test_extract_profile_uses_only_explicit_known_keys_without_state():
 
 
 async def test_key_registry_is_open_unbounded_exact_and_per_username():
+    """Canonical names always lead; invented ones follow; containers never join.
+
+    The registry stays open and unbounded -- a genuinely new field is worth
+    reusing across sites, and Pass 2 merges by name. What it no longer does is
+    promote a name that says WHERE a fact was read. `description` propagating
+    from the first site that emitted it is how it ended a 155-site run as the
+    most-used key of all, ahead of `full_name`.
+    """
     registry = PassOneKeyRegistry()
     first_batch = {f"field_{index}": [str(index)] for index in range(40)}
     first_batch.update({"employer": ["Acme"], "websites": ["https://x.test"]})
@@ -660,16 +692,26 @@ async def test_key_registry_is_open_unbounded_exact_and_per_username():
     )
     registry.add("bob", {"full_name": ["Bob Example"]})
     registry.add("alice", {"Bad Key": ["ignored"], "_private": ["ignored"]})
+    # Emitted by a site, and deliberately NOT taught to the next one.
+    registry.add("alice", {"description": ["Habbo"], "title": ["Profile - x"]})
 
     assert registry.names("alice") == [
+        *CANONICAL_PROFILE_FIELDS,
         *(f"field_{index}" for index in range(40)),
         "employer",
         "websites",
         "conference_talks",
         "bug_bounty_programs",
     ]
-    assert registry.names("bob") == ["full_name"]
-    assert registry.names("carol") == []
+    # Every site starts from the canonical vocabulary, including the first one
+    # of a run. An empty hint list is what sent a model looking for a noun in
+    # its own input, and the input's own heading is `Description`.
+    assert registry.names("bob") == list(CANONICAL_PROFILE_FIELDS)
+    assert registry.names("carol") == list(CANONICAL_PROFILE_FIELDS)
+    assert "description" not in registry.names("alice")
+    assert "title" not in registry.names("alice")
+    # No canonical name is ever listed twice, however a site spells it back.
+    assert len(registry.names("bob")) == len(set(registry.names("bob")))
 
 
 async def test_pass_one_contract_hash_is_deterministic_and_model_independent(
