@@ -10,12 +10,24 @@ from rich.console import Console
 from sherlock_project.ai_engine import StructuredResponseError
 from sherlock_project.database import SherlockDB
 from sherlock_project.notify import QueryNotify, TerminalReporter
+from sherlock_project.profile_synthesis import CANONICAL_PROFILE_FIELDS
 from sherlock_project.result import QueryStatus
 from sherlock_project.sherlock import ai_worker, run_ai_pipeline, sherlock
 
 pytestmark = pytest.mark.asyncio
 
 PASS_ONE_CONTRACT_HASH = "pass-one-contract-v2"
+
+
+def _hints(*learned: str) -> list[str]:
+    """What one site is offered as `known_profile_keys`.
+
+    The canonical vocabulary leads every call, including the first of a run.
+    These lists used to start empty, and an empty hint list is what sends a
+    small model looking for a key name in its own input -- where the metadata
+    block is headed `Description`.
+    """
+    return [*CANONICAL_PROFILE_FIELDS, *learned]
 
 
 def _reporter(*, verbose: bool = False) -> tuple[TerminalReporter, StringIO]:
@@ -227,7 +239,7 @@ async def test_ai_worker_loads_joined_job_and_saves_valid_json(
             "username": "blue",
             "site_name": "instagram",
             "site_content": "cleaned: raw profile",
-            "known_profile_keys": [],
+            "known_profile_keys": _hints(),
         }
     ]
     saved = await _get_ai_extraction(db, site_id)
@@ -281,10 +293,12 @@ async def test_ai_worker_feeds_all_committed_key_names_to_later_sites(
         await queue.put(site_id)
     await _finish_worker(queue, worker_task)
 
+    # `full_name` is canonical, so it is on offer from the first call and is
+    # never appended a second time when a site emits it back.
     assert [call["known_profile_keys"] for call in service.calls] == [
-        [],
-        ["conference_talks", "full_name"],
-        ["conference_talks", "full_name", "bug_bounty_programs"],
+        _hints(),
+        _hints("conference_talks"),
+        _hints("conference_talks", "bug_bounty_programs"),
     ]
     assert all(
         "Avery Chen" not in call["known_profile_keys"]
@@ -330,9 +344,9 @@ async def test_ai_worker_keeps_key_feedback_isolated_by_username(
     await _finish_worker(queue, worker_task)
 
     assert [call["known_profile_keys"] for call in service.calls] == [
-        [],
-        [],
-        ["conference_talks"],
+        _hints(),
+        _hints(),
+        _hints("conference_talks"),
     ]
 
 
@@ -387,7 +401,10 @@ async def test_ai_worker_learns_keys_only_after_database_commit(
     await queue.put(second_id)
     await _finish_worker(queue, worker_task)
 
-    assert [call["known_profile_keys"] for call in service.calls] == [[], []]
+    assert [call["known_profile_keys"] for call in service.calls] == [
+        _hints(),
+        _hints(),
+    ]
     assert await _get_ai_extraction(db, first_id) is None
     assert await _get_ai_extraction(db, second_id) is not None
 
@@ -462,7 +479,7 @@ async def test_ai_worker_resume_hydration_matches_uninterrupted_hints(
         restart=True,
     )
 
-    assert uninterrupted == resumed == ["full_name", "conference_talks"]
+    assert uninterrupted == resumed == _hints("conference_talks")
 
 
 async def test_ai_worker_hydrates_only_valid_current_contract_keys(
@@ -518,7 +535,7 @@ async def test_ai_worker_hydrates_only_valid_current_contract_keys(
     await queue.put(pending_id)
     await _finish_worker(queue, worker)
 
-    assert service.calls[0]["known_profile_keys"] == ["conference_talks"]
+    assert service.calls[0]["known_profile_keys"] == _hints("conference_talks")
 
 
 async def test_ai_worker_continues_after_job_failure(

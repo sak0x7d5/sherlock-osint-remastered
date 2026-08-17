@@ -20,28 +20,40 @@ else a profile would list. One line often carries several facts. Extract each of
 them; never drop one fact to keep another.
 
 An `@mention` attached to a role, employer, or cause names an organization or
-associated account, so put it under `organizations`. Use `other_usernames` only
-when the page says the owner also posts under that handle.
+associated account, so put it under `organizations`. Use `usernames` only when
+the page says the owner also posts under that handle.
 
 ## Skip
 
 - Feed content: any line labelled post, reply, quote, or comment, plus the
-  people, places, and claims inside it. It describes other people. When only
-  feed content remains, return an empty extraction.
-- Site furniture: navigation, buttons, footers, legal, ads, support, platform
-  names, and the current profile URL.
+  people, places, and claims inside it. It describes other people.
+- Site furniture: navigation, buttons, footers, legal, ads, support, and the
+  current profile URL. Also the platform's own name, tagline and marketing
+  copy, which describe the site rather than its owner.
+- Empty states: the owner has written nothing, added nothing, or is `keeping
+  quiet for now`. That reports an absence.
 - Telemetry: counts, followers, ranks, scores, levels, points, streaks, join or
   last-seen dates, and online status.
 - Passwords, breach dumps, malware paths, and device identifiers.
 - The searched username in any spelling, placeholder or empty values, and
   anything you inferred rather than read.
 
+When all of it falls under Skip, return an empty extraction — a page stating
+nothing about its owner is a normal result, and an invented value is worse than
+none.
+
 ## Keys
 
-Reuse a `known_profile_keys` name only when it means exactly the same thing
-here; otherwise invent a short `snake_case` name. Known keys are hints, never a
-checklist — emit one only with evidence on this page. Each fact goes under one
-key, and every value is a nonempty array of nonempty strings.
+Prefer a `known_profile_keys` name whenever one means the same thing here;
+otherwise invent a short `snake_case` name for the KIND of fact. Known keys are
+hints, never a checklist — emit one only with evidence on this page. Each fact
+goes under one key, and every value is a nonempty array of nonempty strings.
+
+Never name a key after where a fact was read: `Description`, `Title` and
+`Profile biography` are headings, not kinds of fact — a name under any of them
+is still `full_name`, a job is still `roles`. Never file a line carrying several
+kinds of fact under one key; split it. Only freeform self-description, stating
+no single kind of fact, belongs under `bio`.
 
 ## Output
 
@@ -60,7 +72,7 @@ and nothing else.
 
 Input:
 
-{"searched_username_do_not_extract":"tallowbird","site_name":"Pinbase","known_profile_keys":["full_name","roles"],"site_content":"1.2K followers · 340 pins\nHana Okonkwo (@tallowbird)\n\"Ceramics teacher at Kiln & Co\nVolunteer archivist - (@stonebridgemuseum)\nSpeaks Igbo and Portuguese\""}
+{"searched_username_do_not_extract":"tallowbird","site_name":"Pinbase","known_profile_keys":["full_name","bio","roles","organizations","location"],"site_content":"## Page metadata\n- Title: Hana Okonkwo (@tallowbird) - Pinbase\n- Description: 1.2K followers, 340 pins - Hana Okonkwo (@tallowbird):\n- Profile biography:\n  - Ceramics teacher at Kiln & Co\n  - Volunteer archivist - (@stonebridgemuseum)\n  - Speaks Igbo and Portuguese"}
 
 Output:
 
@@ -68,7 +80,7 @@ Output:
 
 Input:
 
-{"searched_username_do_not_extract":"tallowbird","site_name":"Chirp","known_profile_keys":["full_name","languages"],"site_content":"@tallowbird\nReply: Great write-up by Dr. Yusuf Adeyemi, hydrologist at the Delta Water Board in Port Harcourt."}
+{"searched_username_do_not_extract":"tallowbird","site_name":"Chirp","known_profile_keys":["full_name","bio","roles","organizations","location"],"site_content":"## Page metadata\n- Title: tallowbird's Applets - Chirp\n- Description: Chirp - follow your favourite people\n\n## Main content\ntallowbird is keeping quiet for now\nReply: Great write-up by Dr. Yusuf Adeyemi, hydrologist at the Delta Water Board."}
 
 Output:
 
