@@ -565,17 +565,18 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
     prompt = service._extraction_prompt
     normalized_prompt = " ".join(prompt.split())
 
-    # Raised from 4,500 on 2026-08-17, deliberately and once. What bought it:
-    # the naming rules that stop a model filing every fact under the name of
-    # the input heading it read them from, the site-tagline and empty-state
-    # skips, and examples rewritten in the sectioned shape `extract_profile_
-    # content` actually emits -- the old ones showed bare text the model never
-    # receives. Measured cost is ~1,100 characters against a ceiling that
-    # predates all four rules.
-    # It is still a ceiling, and still low on purpose: this prompt is read by
-    # 4B models, where length costs instruction-following well before it costs
-    # context. Trim before raising it again.
-    assert len(prompt) <= 5_100
+    # 4,500 -> 5,100 on 2026-08-17 to admit a longer prompt, then back down to
+    # 4,100 on 2026-08-19 because that longer prompt was MEASURED WORSE. The
+    # acceptance benchmark, Qwen3-4B at temp 0.1, 48 generations per run:
+    #   3,815 chars  11 failures  96.4% critical facts
+    #   5,026 chars  20 failures  89.3%   <- the raised ceiling bought this
+    #   5,026 chars  21 failures  89.3%   <- rerun; noise is about +/-1
+    #   3,990 chars   6 failures 100.0%   <- current prompt
+    # So the ceiling was doing its job and was stepped over. Raising it again
+    # needs a benchmark run that beats 6 failures, not an argument.
+    # It is low on purpose: this prompt is read by 4B models, where length
+    # costs instruction-following well before it costs context.
+    assert len(prompt) <= 4_100
     # Counted at line starts. A bare `count("## ")` also matches the
     # `## Page metadata` and `## Main content` headings inside the examples'
     # JSON, which are escaped `\n##` and not sections of this document.
@@ -592,10 +593,14 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "One line often carries several facts",
         "never drop one fact to keep another",
         "put it under `organizations`",
-        # `usernames`, not `other_usernames`: the hint list offers the name
-        # `_FIELD_ALIASES` canonicalises into, and the prompt naming a second
-        # spelling for the same thing is the drift this pair exists to close.
-        "Use `usernames` only",
+        # `other_usernames` is the redundant spelling -- `_FIELD_ALIASES`
+        # canonicalises it to `usernames` -- and this assertion asked for the
+        # canonical one until 2026-08-19. It now follows the prompt rather than
+        # leading it: the benchmarked prompt says `other_usernames`, editing the
+        # file re-hashes `pass_one_contract_hash` and discards every cached
+        # extraction on disk, and the alias map makes the two behave alike. Fold
+        # the rename into the next prompt change that is worth that cost.
+        "Use `other_usernames` only",
         "post, reply, quote, or comment",
         "It describes other people",
         "return an empty extraction",
@@ -603,12 +608,16 @@ async def test_pass_one_prompt_preserves_compact_extraction_contract():
         "breach dumps",
         "Known keys are hints, never a checklist",
         "nonempty array of nonempty strings",
-        # The four rules the raised ceiling bought. Each one is a measured
-        # failure from the 0day run, not a precaution.
+        # Of the four rules the raised ceiling bought on 2026-08-17, only this
+        # one is still asserted. The other three -- "never file a line carrying
+        # several kinds of fact under one key", the site-tagline skip, and the
+        # named `Empty states` bullet -- were dropped on 2026-08-18 and the
+        # benchmark improved from 20 failures to 6. They were each written from
+        # a real 0day misfire, so the lesson is not that they were wrong: it is
+        # that spending ~1,000 characters to state them cost more accuracy than
+        # the misfires did. The empty-page instruction survives in compressed
+        # form, asserted below as "return an empty extraction".
         "Never name a key after where a fact was read",
-        "Never file a line carrying several kinds of fact under one key",
-        "the platform's own name, tagline and marketing",
-        "Empty states",
         "include VALUE as KEY",
         "skip: REASON",
         "one JSON object holding `reasoning` then `extraction`",
