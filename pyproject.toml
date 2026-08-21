@@ -8,7 +8,7 @@ source = "init"
 
 [tool.poetry]
 name = "sherlock-project"
-version = "0.16.0"
+version = "0.1.0"
 description = "Hunt down social media accounts by username across social networks, with local-model profile analysis"
 license = "MIT"
 # Independent derivative of the Sherlock Project; upstream authors and
@@ -21,7 +21,10 @@ readme = "docs/pyproject/README.md"
 packages = [ { include = "sherlock_project"} ]
 keywords = [ "osint", "reconnaissance", "information gathering" ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    # Was "5 - Production/Stable", inherited from upstream's 0.16.x line.
+    # This project's own line starts at 0.1.0 and has never been released, so
+    # claiming production stability was false in both directions.
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Natural Language :: English",
