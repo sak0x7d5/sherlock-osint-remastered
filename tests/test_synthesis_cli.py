@@ -169,6 +169,15 @@ async def test_fresh_disables_the_saved_site_resume_filter(
 
         closed = False
 
+        def __init__(self) -> None:
+            self.pruned: list[set[str]] = []
+
+        async def delete_retired_sites(
+            self, _username: str, known_site_names: object
+        ) -> int:
+            self.pruned.append(set(known_site_names))
+            return 0
+
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
             return {
                 "Saved": {
@@ -224,6 +233,14 @@ async def test_fresh_disables_the_saved_site_resume_filter(
 
     assert sorted(scanned_sites) == expected_sites
     assert database.closed is True
+
+    # Only --fresh prunes, and it prunes against the WHOLE manifest rather than
+    # what this run happens to check. A resume was not asked to be destructive,
+    # and its stored rows are the report it is about to print.
+    if "--fresh" in extra_args:
+        assert database.pruned == [{"Saved", "Unseen"}]
+    else:
+        assert database.pruned == []
 
 
 async def test_concurrency_option_reaches_the_fetch_engine(
@@ -2147,6 +2164,9 @@ async def test_fresh_redoes_extraction_and_silences_the_model_warning(
             _username: str,
         ) -> dict[str | None, int]:
             return {"other/model": 7}
+
+        async def delete_retired_sites(self, *_args: object) -> int:
+            return 0
 
         async def get_saved_results(self, **_kwargs: object) -> dict[str, dict]:
             return {}

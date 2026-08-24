@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -872,6 +872,87 @@ class SherlockDB:
         await db.execute("DELETE FROM usernames WHERE id = ?", (username_id,))
         await db.commit()
         return removed
+
+    async def delete_retired_sites(
+        self,
+        username: str,
+        known_site_names: Collection[str],
+    ) -> int:
+        """Drop stored results for sites the manifest no longer contains.
+
+        A username's record accumulates across manifests. When the site list
+        changed the old rows were never removed, so a name scanned under both
+        the legacy manifest and WMN ends up holding the union of the two -- and
+        because the two spell sites differently, the union carries duplicates
+        (`Threads` and `threads`, `CodePen` and `Codepen`) plus hundreds of
+        sites nothing checks any more. Every count downstream reads that union:
+        the scan summary, `show`, the exports.
+
+        Called on a full re-scan, which is the moment it is safe. A re-scan
+        rewrites every row for a site the manifest still has, so the only rows
+        this can reach are ones the run would leave untouched and stale.
+
+        WHY NOT DELETE THE WHOLE USERNAME instead, which is the obvious way to
+        start a scan over: for a completed re-scan the end state is identical,
+        and for everything else it is worse. Wiping the record takes the stored
+        pass-two profile and every AI extraction with it, and a re-scan without
+        analysis rebuilds neither -- so "start over" would silently cost work a
+        model spent minutes on. An interrupted re-scan would leave the record
+        emptied and only partly refilled, which is worse than the state it was
+        asked to improve.
+
+        `known_site_names` is the COMPLETE manifest, before the NSFW filter and
+        before any `--site` narrowing. Passing the filtered scan set would make
+        this delete the NSFW results of an earlier `--nsfw` run, and rows this
+        run merely did not look at are not retired.
+
+        An empty `known_site_names` is treated as "unknown", not "nothing is
+        known": a manifest that failed to load must not read as every site
+        having been retired. Returns the number of rows removed.
+        """
+        if not known_site_names:
+            return 0
+
+        db = self._require_db()
+
+        async with db.execute(
+            "SELECT id FROM usernames WHERE username = ?", (username,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return 0
+        username_id = int(row["id"])
+
+        async with db.execute(
+            "SELECT site_name FROM results WHERE username_id = ?",
+            (username_id,),
+        ) as cur:
+            stored = await cur.fetchall()
+
+        keep = set(known_site_names)
+        retired = [
+            (username_id, site["site_name"])
+            for site in stored
+            if site["site_name"] not in keep
+        ]
+        if not retired:
+            return 0
+
+        # One statement per row rather than a `NOT IN (...)` over the whole
+        # manifest: that would be 700+ bound parameters against a limit this
+        # code does not control, and the retired set is the small one anyway.
+        async with self._write_lock:
+            try:
+                await db.executemany(
+                    "DELETE FROM results WHERE username_id = ? AND site_name = ?",
+                    retired,
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+        return len(retired)
 
     async def get_saved_results(self, username: str) -> dict[str, dict[str, Any]]:
         """Return stored results for a username, keyed by site name.

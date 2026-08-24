@@ -172,6 +172,9 @@ class QueryNotify:
     ) -> None:
         pass
 
+    def retired_sites_removed(self, *, username: str, removed: int) -> None:
+        pass
+
     def browserless_transport(self) -> None:
         pass
 
@@ -752,6 +755,29 @@ class TerminalReporter(QueryNotify):
         )
         self.info(f"Using saved settings: {rendered}")
         self.hint(f"From {config_path} — a flag overrides them for one run.")
+
+    def retired_sites_removed(self, *, username: str, removed: int) -> None:
+        """Report stored rows dropped because the site list no longer has them.
+
+        Silent when there are none, which is every re-scan after the first.
+        It is not silent when there ARE some, even though the user did not ask
+        for a deletion: a re-scan that quietly removes several hundred stored
+        results owes them the number, and the count is also the explanation for
+        a total that just fell.
+        """
+        if removed <= 0:
+            return
+
+        result_word = "result" if removed == 1 else "results"
+        self.info(
+            f"Removed {removed} stored {result_word} for {username!r} from "
+            "sites the current site list no longer covers"
+        )
+        self.hint(
+            "Left behind by an earlier scan under a different site list. They "
+            "were never going to be re-checked, and they were still being "
+            "counted."
+        )
 
     def browserless_transport(self) -> None:
         """Say, before the scan, that this run cannot see JavaScript.

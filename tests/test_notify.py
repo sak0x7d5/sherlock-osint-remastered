@@ -1328,3 +1328,28 @@ def test_other_model_extractions_uses_singular_for_one():
     )
 
     assert "1 stored extraction for" in output.getvalue()
+
+
+def test_retired_sites_line_states_the_count_and_why():
+    """A re-scan that drops several hundred stored results owes them a number.
+
+    Nobody asked for a deletion, and the count is also the explanation for a
+    total that just fell -- without it the record simply shrinks unannounced.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.retired_sites_removed(username="0day", removed=336)
+
+    printed = output.getvalue()
+    assert "336" in printed
+    assert "0day" in printed
+    assert "different site list" in printed
+
+
+def test_retired_sites_line_is_silent_when_nothing_was_dropped():
+    """Every re-scan after the first. A line that always prints stops being read."""
+    reporter, output, _ = _reporter()
+
+    reporter.retired_sites_removed(username="0day", removed=0)
+
+    assert output.getvalue() == ""

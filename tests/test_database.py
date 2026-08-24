@@ -1179,3 +1179,91 @@ async def test_get_extraction_model_counts_ignores_sites_without_extractions(
 
     assert await db.get_extraction_model_counts("blue") == {}
     assert await db.get_extraction_model_counts("nobody") == {}
+
+
+async def _seed_mixed_manifest_history(db: SherlockDB) -> None:
+    """A username scanned under two different site lists.
+
+    The duplicate spelling is the point: the two manifests name the same
+    platform differently, so the record ends up holding both.
+    """
+    for site_name in ("Threads", "GitHub", "threads", "Ask.fm"):
+        await db.save_result(
+            username="0day",
+            site_name=site_name,
+            site_url=f"https://example.invalid/{site_name}",
+            status=str(QueryStatus.CLAIMED),
+            response_text="profile",
+        )
+
+
+async def test_delete_retired_sites_drops_only_what_the_manifest_lost(
+    db: SherlockDB,
+):
+    """The duplicate survives as one row, not two.
+
+    `Threads` and `threads` are one platform under two site lists, and exact
+    matching is what tells them apart -- the current list spells it one way, so
+    the other spelling is the retired one.
+    """
+    await _seed_mixed_manifest_history(db)
+
+    removed = await db.delete_retired_sites("0day", {"Threads", "GitHub"})
+
+    assert removed == 2
+    assert sorted(await db.get_saved_results("0day")) == ["GitHub", "Threads"]
+
+
+async def test_delete_retired_sites_keeps_the_profile_and_extractions(
+    db: SherlockDB,
+):
+    """The reason this is not `delete_username`.
+
+    A re-scan rewrites the rows it re-checks, but only an AI run rebuilds an
+    extraction and only synthesis rebuilds a profile. Wiping the record would
+    charge a scan without analysis for work a model already did.
+    """
+    await _seed_mixed_manifest_history(db)
+    await db.update_username_profile_summary(
+        username="0day",
+        profile_summary='{"username": "0day"}',
+        input_hash="h",
+    )
+    kept = await _get_result_row(db, "0day", "GitHub")
+    await db.update_result_ai_extraction(
+        site_id=int(kept["id"]),
+        ai_extraction='{"extraction": []}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    await db.delete_retired_sites("0day", {"Threads", "GitHub"})
+
+    assert await db.get_profile_summary_cache("0day") is not None
+    surviving = await _get_result_row(db, "0day", "GitHub")
+    assert surviving["ai_extraction"] == '{"extraction": []}'
+    assert surviving["ai_extraction_model"] == MODEL_KEY
+
+
+async def test_delete_retired_sites_treats_an_empty_manifest_as_unknown(
+    db: SherlockDB,
+):
+    """A manifest that failed to load must not read as "every site retired".
+
+    This is the difference between nothing being known and nothing existing,
+    and getting it wrong erases the record it was asked to tidy.
+    """
+    await _seed_mixed_manifest_history(db)
+
+    assert await db.delete_retired_sites("0day", set()) == 0
+    assert len(await db.get_saved_results("0day")) == 4
+
+
+async def test_delete_retired_sites_is_quiet_when_there_is_nothing_to_do(
+    db: SherlockDB,
+):
+    """Every re-scan after the first, and every username never scanned."""
+    await _seed_mixed_manifest_history(db)
+
+    assert await db.delete_retired_sites("0day", {"Threads", "GitHub", "threads", "Ask.fm"}) == 0
+    assert await db.delete_retired_sites("nobody", {"GitHub"}) == 0
