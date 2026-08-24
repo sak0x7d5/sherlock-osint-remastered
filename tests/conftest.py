@@ -16,7 +16,7 @@ from sherlock_project.tui import settings_pane as settings_pane_module
 
 
 @pytest.fixture(autouse=True)
-def isolated_user_state(tmp_path, monkeypatch):
+def isolated_user_state(request, tmp_path, monkeypatch):
     """Point every per-user state location at tmp_path for the whole suite.
 
     Settings and the database resolve to per-user locations, not to the working
@@ -37,9 +37,21 @@ def isolated_user_state(tmp_path, monkeypatch):
     reason: it overrides the configured endpoint, and a developer who exported
     it should not thereby change what the suite tests.
     """
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+    # THE ONE EXEMPTION is `local_ai_acceptance`, whose entire purpose is to
+    # measure the model the developer has actually configured. Isolating its
+    # config made it die on `AI is not configured. Run `sherlock setup ai`
+    # first.` before reaching a single generation -- the benchmark predates this
+    # fixture and had been silently unrunnable ever since. It is opt-in, marked,
+    # and deselected by default, so honouring real config here cannot leak into
+    # the push gate.
+    #
+    # The DATABASE stays isolated even there. The benchmark never touches it,
+    # and that is exactly why the isolation costs nothing and must stay: a
+    # future edit that did write would otherwise write to the real one.
+    if request.node.get_closest_marker("local_ai_acceptance") is None:
+        monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+        monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
     monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
-    monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
 
 
 @pytest.fixture(autouse=True)
