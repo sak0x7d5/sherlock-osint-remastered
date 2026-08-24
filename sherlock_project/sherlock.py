@@ -1729,6 +1729,12 @@ async def main() -> int:
         )
         sys.exit(1)
 
+    # Captured BEFORE the NSFW filter and before any --site narrowing, because
+    # this is what --fresh prunes a username's stored rows against. The
+    # filtered set would make an ordinary scan retire the results of an earlier
+    # --nsfw run, and sites this run merely did not look at are not retired.
+    known_site_names = {site.name for site in sites}
+
     if not settings.nsfw.value:
         sites.remove_nsfw_sites(do_not_remove=args.site_list)
 
@@ -1863,6 +1869,18 @@ async def main() -> int:
                         username=username,
                         configured_model=ai_settings.model,
                         counts=await db.get_extraction_model_counts(username),
+                    )
+
+                # A full re-scan is the one moment stale rows can be dropped
+                # safely: it rewrites every site the manifest still has, so the
+                # only rows this reaches are ones it would leave behind. Not on
+                # --site, where "the manifest" is a handful of names.
+                if args.fresh and not args.site_list:
+                    query_notify.retired_sites_removed(
+                        username=username,
+                        removed=await db.delete_retired_sites(
+                            username, known_site_names
+                        ),
                     )
 
                 # If no site list was provided, skip sites already in the
