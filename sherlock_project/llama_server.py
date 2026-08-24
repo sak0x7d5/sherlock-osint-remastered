@@ -60,6 +60,14 @@ HEALTH_POLL_SECONDS = 0.5
 # `message.reasoning_content` instead of leaving it inline in `content`, which
 # the whole structured-output path depends on. Do NOT pass `none` here.
 REASONING_FORMAT = "deepseek"
+# Offload every layer the card will take. Left unset, the number is whatever
+# the build defaults to -- recent llama.cpp fits layers to FREE VRAM at load
+# time, and Sherlock's own Playwright Chromium is competing for it on the same
+# GPU, so the count silently drops when a scan is running. Measured on an
+# RX 6600 XT with Qwen3-8B-Q4_K_M: 4.56 tok/s at 0 layers, 46.54 at all of
+# them. A model too big for the card still loads -- llama.cpp offloads what
+# fits and leaves the rest on the CPU rather than failing.
+GPU_LAYERS = 99
 
 
 class LlamaServerError(RuntimeError):
@@ -139,6 +147,7 @@ def write_preset(models: Mapping[str, Path], destination: Path) -> Path:
             f"[{name}]\n"
             "jinja = 1\n"
             f"reasoning-format = {REASONING_FORMAT}\n"
+            f"n-gpu-layers = {GPU_LAYERS}\n"
             f"model = {path.as_posix()}\n"
         )
     destination.write_text("\n".join(sections), encoding="utf-8", newline="\n")
