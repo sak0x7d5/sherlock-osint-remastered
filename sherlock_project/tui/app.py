@@ -35,6 +35,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 
 from sherlock_project.ai_config import ai_config_path, try_load_settings
@@ -132,14 +133,56 @@ class SherlockUI(App[None]):
         username you just finished scanning is missing from the tab whose entire
         job is showing what has been scanned -- and the only way to see it was a
         manual refresh nobody would know to press.
+
+        SCAN reloads for the same reason and it is the same class of bug. See
+        `_reload_settings`: arriving at that tab is the moment its answer has to
+        be current, whichever route was taken to get there.
         """
         if event.pane.id == RESULTS_TAB:
             self.query_one(ResultsPane).action_reload()
+        elif event.pane.id == SCAN_TAB:
+            self._reload_settings()
 
         for widget in event.pane.query("*"):
             if widget.focusable:
                 widget.focus()
                 return
+
+    def _reload_settings(self) -> None:
+        """Re-read the stored settings into the dict the scan pane runs on.
+
+        HUNG ON ARRIVING AT THE SCAN TAB, not on leaving the settings one, and
+        that is the fix rather than an implementation detail. The reload used to
+        live on `SettingsPane.Closed`, which is posted by ESCAPE alone -- so
+        changing a setting, saving it with ^S and then leaving by any other
+        route (alt+1, or clicking the SCAN tab) left the pane on the values it
+        was built with. Settings reach disk on save; the pane was told on close;
+        the two are different keystrokes and nothing connected them.
+
+        Not a display bug, which is how it was reported. The same dict is what
+        `run_scan_session` reads its transport, concurrency, timeout and proxy
+        from, and what `ai_is_configured` is asked about -- so a model chosen,
+        saved, and left behind with alt+1 produced a scan that warned "no model
+        is configured" and ran with analysis off while the model sat on disk.
+
+        Reading from disk, deliberately, rather than from the settings pane's
+        working copy: unsaved edits are not settings yet, and the scan must
+        describe what it will actually do.
+
+        Mutates in place. This dict is the SAME OBJECT handed to `ScanPane` at
+        construction, so rebinding it here would leave the pane holding the old
+        one and quietly undo the whole fix.
+        """
+        self._settings_values.update(field_values(try_load_settings()))
+        try:
+            self.query_one(ScanPane).refresh_settings(self._settings_values)
+        except NoMatches:
+            # The initial tab activates while its content is still mounting, so
+            # the pane's own widgets are not queryable yet. It draws itself from
+            # these same values in its `on_mount`, so there is nothing to do --
+            # and a startup crash to refresh a screen that is about to refresh
+            # itself would be a poor trade.
+            return
 
     @on(ScanPane.ShowStored)
     def _show_stored(self, event: ScanPane.ShowStored) -> None:
@@ -170,13 +213,14 @@ class SherlockUI(App[None]):
 
         The standalone `sherlock settings` exits on this message because exiting
         is what "done" means there. Here the same keystroke means "back to
-        work", so it re-reads the settings the scan pane runs on -- a
-        concurrency change that only took effect after a restart would be a
-        silent lie about what the next scan will do.
+        work".
+
+        The reload is NOT done here any more. It hangs off arriving at the scan
+        tab instead, which this switch triggers -- because Escape was only ever
+        one of the ways out of settings, and hanging the refresh on it meant
+        alt+1 and a mouse click both left the pane stale. One owner, reached by
+        every route. See `_reload_settings`.
         """
-        self._settings_values.update(field_values(try_load_settings()))
-        scan = self.query_one(ScanPane)
-        scan.refresh_settings(self._settings_values)
         self.action_show_tab(SCAN_TAB)
 
 

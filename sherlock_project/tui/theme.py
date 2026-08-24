@@ -133,6 +133,7 @@ def stat_row(
     *,
     muted: bool = False,
     struck: bool = False,
+    indent: int = 0,
 ) -> Text:
     """One counter line: label left, number right, both in fixed columns.
 
@@ -145,7 +146,20 @@ def stat_row(
     is how `absent` is de-emphasised while still being shown), and a hidden row
     would take the count with it -- the whole point is that the number stays
     readable while the rows behind it are filtered out.
+
+    `indent` marks a row as a BREAKDOWN of the row above it rather than a peer
+    of it -- ANALYSIS uses it for the three outcomes that sum to `extracted`.
+    It is taken out of the LABEL column, never added to the line, so an
+    indented row is exactly as wide as a top-level one and the numbers go on
+    stacking. Indenting by prefixing would push every sub-row's value two cells
+    right and break the one rule this file is least willing to break.
+
+    The indent itself is drawn unstyled. Folded into the label's span it would
+    carry `strike` through the gutter, drawing a rule in empty space.
     """
+    # Never at the cost of the whole label. A pathological indent would
+    # otherwise make the width negative and `format` would stop padding.
+    indent = max(0, min(indent, STAT_LABEL_WIDTH - 1))
     line = Text()
     # Empty string, not "none", for the default face. Rich parses "none" alone
     # but "none strike" fails -- it tries to read `none` as a colour -- so the
@@ -155,9 +169,65 @@ def stat_row(
     if struck:
         base = f"{base} strike".strip()
         number = f"{number} strike".strip()
-    line.append(f"{label:<{STAT_LABEL_WIDTH}}", style=base)
+    if indent:
+        line.append(" " * indent)
+    line.append(f"{label:<{STAT_LABEL_WIDTH - indent}}", style=base)
     line.append(f"{value:>{STAT_VALUE_WIDTH}}", style=number)
     return line
+
+
+def value_row(
+    label: str,
+    value: str,
+    *,
+    style: str = "",
+    muted: bool = False,
+) -> Text:
+    """A counter line whose value is a word rather than a number.
+
+    Same total width as `stat_row`, so the model block's right edge lands in the
+    same cell as the counters stacked above it -- the two read as one ruler
+    rather than as two panels that happen to share a column.
+
+    The value is measured FIRST and the label takes what is left, which is the
+    opposite of `stat_row`'s fixed split. It has to be: `38 tok/s` is wider than
+    the six cells a count needs, and a value that overflows its column would
+    push the right edge out on exactly the rows that are changing fastest. The
+    label is the half that can be truncated without losing the number.
+    """
+    room = max(0, STAT_LABEL_WIDTH + STAT_VALUE_WIDTH - len(value) - 1)
+    line = Text()
+    line.append(f"{_elide(label, room):<{room}} ", style="dim" if muted else "")
+    line.append(value, style="dim" if muted else style)
+    return line
+
+
+def model_name(key: str, width: int) -> str:
+    """A model key as a name someone recognises, in the width available.
+
+    Model keys are paths -- `unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q4_K_M.gguf`
+    is one string, and llama-server's router mode reports them in full. The part
+    that identifies the model is at the END, so plain truncation is exactly
+    backwards: it keeps the vendor and the repo, which are identical for every
+    model pulled from one place, and cuts the size and the quantisation, which
+    are what someone is choosing between. The directory prefix and the `.gguf`
+    suffix go first, and only what is left is elided.
+    """
+    name = key.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name.lower().endswith(".gguf"):
+        name = name[: -len(".gguf")]
+    return _elide(name or key, width)
+
+
+def throughput_label(tokens_per_second: float | None) -> str:
+    """Generation speed, at the precision the number is actually good to.
+
+    Whole tokens per second: this is an average over finished requests, and a
+    decimal place on an average of three would imply a measurement it is not.
+    """
+    if not tokens_per_second:
+        return ""
+    return f"{tokens_per_second:.0f} tok/s"
 
 
 # Spinner frames, advanced one per redraw. At REDRAW_INTERVAL that is a full
@@ -194,12 +264,25 @@ def phase_line(
     The elapsed time keeps running while `working` because that is the number
     someone is actually asking for at that moment: not "is it stuck" but "how
     much longer". It freezes at the total once the step lands.
+
+    USED FOR PASS 2 AS WELL as the two startup steps, which is why `building`
+    and `cached` are in the table. Synthesis is the same shape of event -- one
+    slow step, a spinner while it runs, an outcome and a duration when it lands
+    -- and the results pane already reuses this function for the rebuild path.
+    A second vocabulary for the third instance of one event is how two screens
+    start describing the same thing differently.
+
+    `cached` is a landed state, not a failure: the profile is there, the model
+    was never asked. It keeps the green dot and dims the word, because what
+    happened is worth reading once and is not worth the weight of `ready`.
     """
     # Keyed on the word that is actually printed, so the state a caller passes
     # and the state a reader sees cannot drift apart.
     glyph, glyph_style, word_style = {
         "loading": (spinner(tick), "bold cyan", "none"),
+        "building": (spinner(tick), "bold cyan", "none"),
         "ready": ("●", "bold green", "green"),
+        "cached": ("●", "green", "dim"),
         "failed": ("✕", "bold red", "red"),
         "waiting": ("·", "dim", "dim"),
     }.get(state, ("·", "dim", "dim"))
@@ -544,6 +627,23 @@ TabPane { padding: 0 2; }
    flush made the numbers look like one list. */
 #ai-block { height: auto; padding: 1 0 0 0; }
 
+/* Pass 2, set off from the Pass 1 tallies above it. `margin`, never `padding`
+   -- padding is drawn INSIDE the height, which on a one-row line leaves zero
+   rows for the text and the line simply vanishes. That trap has been paid for
+   twice on this screen already (the options hint, the target button).
+   `height: auto` rather than 1 so hiding the row takes its margin with it,
+   instead of leaving a gap where Pass 2 has not been reached. */
+#synthesis-line { height: auto; margin: 1 0 0 0; }
+
+/* What is doing the analysing, directly beneath what the analysis has produced.
+   Below rather than above the ANALYSIS counts on purpose: the counts are read
+   continuously during a run, the model's name and window are read once when
+   deciding whether to trust them, and the block nearer the top of a column is
+   the one the eye returns to. Hidden entirely when analysis is off, like the
+   ANCHORS block -- a readout describing work this run will not do is noise. */
+#model-block { height: auto; padding: 1 0 0 0; }
+#model-lines { height: auto; }
+
 /* The progress strip is drawn as text rather than with a `ProgressBar` widget.
    The widget is a compound of bar, percentage and ETA whose parts size
    themselves, and inside a one-row strip it collapsed to zero width -- the
@@ -668,6 +768,56 @@ ModalScreen { align: center middle; }
 }
 .dialog-title { text-style: bold; color: $accent; }
 #models { height: auto; max-height: 20; margin: 1 0; }
+
+/* ---- extractions panel ----------------------------------------------- */
+
+/* Master-detail inside one section: the site list left, the extraction right.
+   The list column is FIXED and the detail absorbs the slack -- the same rule
+   `#results-body` states one level up, and for the same reason. Its two columns
+   add up to a known 21 cells; at a fraction of a narrow terminal the total came
+   out under that and the site names clipped, while the reading beside it is
+   prose that reflows happily into whatever is left.
+
+   28 IS MEASURED, NOT PICKED. A `DataTable` pads every cell by one on each
+   side, so its two columns occupy (5+2) + (15+2) = 24 cells, and this container
+   spends 1 on its own right padding plus 1 on the border rule -- so anything
+   under 26 gives the table a HORIZONTAL scrollbar, which is what a too-narrow
+   column actually produces rather than the ellipsis one might expect. 28 leaves
+   two cells of headroom. Re-measure if either column width changes. */
+#sec-extractions {
+    layout: grid;
+    grid-size: 2 1;
+    grid-columns: 28 1fr;
+    grid-gutter: 0 2;
+    height: 1fr;
+}
+/* A rule rather than a gap, matching the two other master-detail splits in this
+   app. At this density whitespace alone stops reading as a division. */
+#extraction-list-col {
+    height: 1fr;
+    border-right: solid $panel-lighten-2;
+    padding: 0 1 0 0;
+}
+/* The list takes what is left after the summary, rather than the other way
+   round: the summary is three lines of known height and the list is the part
+   that should grow with the terminal. */
+#extraction-list { height: 1fr; }
+/* Set off from the list by a rule, because it is a statement ABOUT the list
+   rather than another row of it -- flush against the last site it read as one. */
+#extraction-summary {
+    height: auto;
+    border-top: solid $panel-lighten-2;
+    padding: 1 0 0 0;
+}
+/* The one scroller in this section besides the list, and deliberately so: the
+   reasoning is prose of unbounded length and has to be reachable. `overflow-x`
+   stays hidden -- these are sentences, and a horizontal bar under a paragraph is
+   unreadable. They wrap instead. */
+#extraction-detail-col {
+    height: 1fr;
+    overflow-x: hidden;
+}
+#extraction-detail { height: auto; }
 
 /* ---- anchor editor --------------------------------------------------- */
 
