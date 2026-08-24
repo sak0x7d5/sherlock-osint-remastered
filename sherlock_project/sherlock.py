@@ -644,6 +644,15 @@ async def ai_worker(
                 ),
                 contract_hash=contract_hash,
                 model_key=ai_service.model_key,
+                # `getattr`, not `response.reasoning`. Pass 1 has two response
+                # shapes: the canonical `OSINTResponse` carries the field, and
+                # `NativeReasoningOSINTResponse` -- sent to models whose native
+                # thinking cannot be turned off -- deliberately does not, since
+                # such a model already reasoned before starting the JSON. It
+                # allows extra fields, so one may emit `reasoning` from habit
+                # anyway; that is worth keeping when it happens and worth not
+                # crashing over when it does not.
+                reasoning=getattr(response, "reasoning", None),
             )
             key_registry.add(job.username, response.extraction)
             if reporter is not None:
