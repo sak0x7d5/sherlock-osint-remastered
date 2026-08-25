@@ -90,7 +90,21 @@ def no_real_llama_server(monkeypatch):
         monkeypatch.setattr(module, "ManagedLlamaServer", _StubServer)
 
 
-def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:
+# DEFAULTS TO FALSE, AND THE DEFAULT IS THE POINT. `honor_exclusions=True`
+# makes the LEGACY manifest path fetch upstream's false_positive_exclusions.txt
+# over the network -- a file a bot on their `exclusions` branch rewrites daily.
+# Every test using these fixtures therefore reached GitHub on a run that is
+# supposed to be hermetic, and a failed fetch is swallowed with a warning, so
+# the gate passed when the network was DOWN and failed when it was UP.
+#
+# It failed for real on 2026-08-25: their bot added `GitHub` to the list (it was
+# absent the previous day), 52 sites vanished from the manifest, and
+# `test_site_list_iterability[GitHub-status_code]` went red on a tree nobody had
+# touched. A third party could turn this project's push gate red at any time.
+#
+# Nothing here tests exclusions. These fixtures exist to read the shipped
+# manifest, so they read it as shipped.
+def fetch_local_manifest(honor_exclusions: bool = False) -> dict[str, dict[str, str]]:
     sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=honor_exclusions)
     sites_iterable: dict[str, dict[str, str]] = {site.name: site.information for site in sites_obj}
     return sites_iterable
@@ -110,7 +124,9 @@ async def db() -> SherlockDB:
 
 @pytest.fixture()
 def sites_obj():
-    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"))
+    # Explicit for the same reason as fetch_local_manifest above: the
+    # constructor's own default is True, which would fetch.
+    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=False)
     yield sites_obj
 
 @pytest.fixture(scope="session")
