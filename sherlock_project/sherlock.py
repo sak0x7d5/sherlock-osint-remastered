@@ -1425,12 +1425,18 @@ async def main() -> int:
         help="Browse to all results on default browser.",
     )
 
+    # The name is inherited. It meant "the local data.json rather than the
+    # remote one" upstream; here the bundled manifest is the default and no
+    # scan fetches a site list, so all the flag still does is override --json.
     parser.add_argument(
         "--local",
         "-l",
         action="store_true",
         default=False,
-        help="Force the use of the local data.json file.",
+        help=(
+            "Use the bundled site list, ignoring --json. It is already the "
+            "default, so this only guarantees it."
+        ),
     )
 
     parser.add_argument(
