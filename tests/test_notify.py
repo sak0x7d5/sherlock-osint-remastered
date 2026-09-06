@@ -607,6 +607,7 @@ def _trace(*, valid: bool = True) -> AIRequestTrace:
             output_tokens=30,
             reasoning_tokens=0,
             tokens_per_second=10,
+            generation_seconds=3.0,
             time_to_first_token_seconds=0.25,
         ),
         native_reasoning="",
@@ -658,7 +659,11 @@ def test_verbose_profile_metrics_are_separate_from_exact_outcome_line() -> None:
     rendered = output.getvalue()
     assert "Profile extraction diagnostics: requests 1" in rendered
     assert "tokens 120 in / 30 out" in rendered
+    # Both are reported, because they answer different questions: the round
+    # trip is what the scan waited, and the generation time is what the speed
+    # readout divides by.
     assert "request time 3.50s" in rendered
+    assert "generation time 3.00s" in rendered
     assert "wall time " in rendered
     assert (
         "[+] Profile extraction 1/1 · 1 with facts · 0 no facts\n"

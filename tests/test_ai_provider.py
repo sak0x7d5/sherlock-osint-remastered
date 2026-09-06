@@ -44,7 +44,11 @@ def _chat_response(
     return {
         "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 100, "completion_tokens": 20},
-        "timings": {"prompt_ms": 400.0, "predicted_per_second": 12.5},
+        "timings": {
+            "prompt_ms": 400.0,
+            "predicted_ms": 1600.0,
+            "predicted_per_second": 12.5,
+        },
     }
 
 
@@ -388,9 +392,59 @@ async def test_stats_come_from_usage_and_timings():
     assert completion.stats.output_tokens == 20
     assert completion.stats.tokens_per_second == 12.5
     assert completion.stats.time_to_first_token_seconds == 0.4
+    # Generation time is read straight off `predicted_ms`, and is deliberately
+    # NOT the round trip: the 0.4s the server spent on the prompt is excluded,
+    # because what divides an output-token count has to be the time those
+    # tokens were being produced.
+    assert completion.stats.generation_seconds == 1.6
     # llama-server does not separate reasoning tokens. None, never a guess --
     # an invented number would read as measured in the -v trace.
     assert completion.stats.reasoning_tokens is None
+
+
+async def test_generation_time_is_inverted_from_the_rate_when_unreported():
+    """`predicted_per_second` alone still pins the duration exactly.
+
+    It is `predicted_n` over `predicted_ms`, so this inverts a measurement
+    rather than estimating one. A response that reports neither leaves the
+    field None, and the request drops out of the speed average instead of
+    being charged its whole round trip.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        body = _chat_response()
+        body["timings"] = {"prompt_ms": 400.0, "predicted_per_second": 12.5}
+        return httpx.Response(200, json=body)
+
+    provider = _provider(handler)
+    completion = await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
+    )
+
+    assert completion.stats.generation_seconds == pytest.approx(20 / 12.5)
+
+
+async def test_a_response_with_no_timings_reports_no_generation_time():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=_props())
+        body = _chat_response()
+        body.pop("timings")
+        return httpx.Response(200, json=body)
+
+    provider = _provider(handler)
+    completion = await provider.generate(
+        system_prompt="system",
+        payload={},
+        max_tokens=10,
+    )
+
+    assert completion.stats.generation_seconds is None
+    assert completion.stats.output_tokens == 20
 
 
 async def test_api_token_is_sent_as_bearer_header():

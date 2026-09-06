@@ -286,6 +286,13 @@ class TerminalReporter(QueryNotify):
         self._ai_input_tokens = 0
         self._ai_output_tokens = 0
         self._ai_reasoning_tokens = 0
+        # Round-trip time, for the -v line that says so. NOT the denominator of
+        # a tok/s figure -- see `ai_trace`.
+        self._ai_request_seconds = 0.0
+        # The throughput pair: output tokens and the seconds the SERVER says it
+        # spent producing them, kept in step so the ratio covers one set of
+        # requests.
+        self._ai_generation_tokens = 0
         self._ai_generation_seconds = 0.0
         self._ai_verbose_warning_shown = False
         self._ai_cache_reasoning_notice_shown = False
@@ -1019,7 +1026,19 @@ class TerminalReporter(QueryNotify):
             self._ai_input_tokens += trace.stats.input_tokens or 0
             self._ai_output_tokens += trace.stats.output_tokens or 0
             self._ai_reasoning_tokens += trace.stats.reasoning_tokens or 0
-            self._ai_generation_seconds += trace.elapsed_seconds
+            self._ai_request_seconds += trace.elapsed_seconds
+            # Generation time only, and only from requests the server actually
+            # timed. `elapsed_seconds` is the wrong denominator twice over: it
+            # carries the prompt-processing time for a Pass 1 payload that is a
+            # whole scraped page, which halves the apparent speed of a model
+            # that is running at full rate, and a request that FAILED reports no
+            # tokens while still having taken its seconds -- one timeout would
+            # otherwise sink the average for the rest of the scan.
+            generation_seconds = trace.stats.generation_seconds
+            generated = trace.stats.output_tokens or 0
+            if generated > 0 and generation_seconds and generation_seconds > 0:
+                self._ai_generation_tokens += generated
+                self._ai_generation_seconds += generation_seconds
 
         if not self.verbose:
             return
@@ -1279,9 +1298,13 @@ class TerminalReporter(QueryNotify):
             )
         if self._ai_reasoning_tokens:
             metrics.append(f"native reasoning {self._ai_reasoning_tokens}")
+        if self._ai_request_seconds:
+            metrics.append(
+                f"request time {self._ai_request_seconds:.2f}s"
+            )
         if self._ai_generation_seconds:
             metrics.append(
-                f"request time {self._ai_generation_seconds:.2f}s"
+                f"generation time {self._ai_generation_seconds:.2f}s"
             )
         elapsed = self._elapsed_since(self._ai_started_at)
         if elapsed:
