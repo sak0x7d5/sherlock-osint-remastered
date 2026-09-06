@@ -736,20 +736,28 @@ class TuiReporter(TerminalReporter):
     def throughput(self) -> float | None:
         """Output tokens per second, averaged over the extractions so far.
 
-        Read off the totals the parent already accumulates from each request's
-        own reported timings, so this is the model's measured generation speed
-        rather than anything this screen times. An average over finished
-        requests rather than a live rate, because the requests are not streamed:
-        nothing is observable between sending one and getting the whole reply
-        back, so a "current" speed would be a guess dressed as a measurement.
+        Both halves come from the server's own timings, so this is the model's
+        generation rate and comparable to the figure llama.cpp prints: the
+        seconds it spent PREDICTING, not the seconds the request took. The
+        difference is not a rounding error on Pass 1, where the prompt is a
+        whole scraped page and prompt processing can cost as much again as the
+        generation -- dividing by the round trip put 22 tok/s on screen for a
+        model benchmarked at 46 on the same card (see `llama_server.py`).
+
+        An average over finished requests rather than a live rate, because the
+        requests are not streamed: nothing is observable between sending one and
+        getting the whole reply back, so a "current" speed would be a guess
+        dressed as a measurement. Weighted by tokens, since that is what summing
+        each side separately does -- a long generation counts for more than a
+        two-token one, which is the average someone reads a speed as.
 
         None until there is something to average -- a server that reports no
-        token usage leaves the totals at zero, and `0 tok/s` beside a model that
-        is visibly working reads as a fault rather than as a missing figure.
+        timings leaves the totals at zero, and `0 tok/s` beside a model that is
+        visibly working reads as a fault rather than as a missing figure.
         """
-        if not self._ai_output_tokens or self._ai_generation_seconds <= 0:
+        if not self._ai_generation_tokens or self._ai_generation_seconds <= 0:
             return None
-        return self._ai_output_tokens / self._ai_generation_seconds
+        return self._ai_generation_tokens / self._ai_generation_seconds
 
     def drain_pending(self) -> list[Finding]:
         """Hand over the findings not yet drawn, and forget them.

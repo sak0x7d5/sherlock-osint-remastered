@@ -646,7 +646,13 @@ def test_speed_reads_as_whole_tokens_per_second():
     assert throughput_label(0) == ""
 
 
-def _trace(*, output_tokens, elapsed, phase="pass_one"):
+def _trace(
+    *,
+    output_tokens,
+    elapsed,
+    generation_seconds=None,
+    phase="pass_one",
+):
     from sherlock_project.ai_engine import AIRequestTrace
     from sherlock_project.ai_provider import AIGenerationStats
 
@@ -662,7 +668,10 @@ def _trace(*, output_tokens, elapsed, phase="pass_one"):
         context_length=32768,
         max_tokens=1024,
         elapsed_seconds=elapsed,
-        stats=AIGenerationStats(output_tokens=output_tokens),
+        stats=AIGenerationStats(
+            output_tokens=output_tokens,
+            generation_seconds=generation_seconds,
+        ),
         native_reasoning="",
         final_text="{}",
         structured_reasoning="",
@@ -682,15 +691,62 @@ def test_speed_is_measured_by_the_model_not_by_the_screen():
     reporter = TuiReporter()
     assert reporter.throughput is None
 
-    reporter.ai_trace(_trace(output_tokens=300, elapsed=10.0))
-    reporter.ai_trace(_trace(output_tokens=300, elapsed=10.0))
-    assert reporter.throughput == pytest.approx(30.0)
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
 
     # A server that reports no token usage leaves this absent rather than zero:
     # `0 tok/s` beside a model that is visibly working reads as a fault.
     silent = TuiReporter()
     silent.ai_trace(_trace(output_tokens=None, elapsed=10.0))
     assert silent.throughput is None
+
+
+def test_speed_excludes_the_time_the_model_spent_reading_the_prompt():
+    """The denominator is generation time, not the round trip.
+
+    Pass 1 sends a whole scraped page, so prompt processing is a large and
+    VARIABLE share of each request -- large enough that dividing by the round
+    trip reported a model generating at 60 tok/s as doing 30, and variable
+    enough that the error moved with page size rather than with the model. The
+    number beside `speed` has to be the one llama.cpp would print, or it cannot
+    be compared against a benchmark, a driver change, or another machine.
+    """
+    reporter = TuiReporter()
+    # 300 tokens in 5s of generation; the other 5s went on the prompt.
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
+
+    # Weighted by tokens, which is what summing each side separately gives: a
+    # 30-token reply does not get an equal say with a 300-token one.
+    reporter.ai_trace(
+        _trace(output_tokens=30, elapsed=8.0, generation_seconds=1.0)
+    )
+    assert reporter.throughput == pytest.approx(330 / 6.0)
+
+
+def test_a_failed_request_does_not_drag_the_speed_down():
+    """A request that never produced tokens took no generation time either.
+
+    A timeout or a dropped connection still emits a trace, with its full
+    round trip and empty stats. Counted, one 120s failure would halve the
+    displayed speed for the rest of a scan and keep it there -- a metric that
+    reports the scan's bad luck as the model's slowness.
+    """
+    reporter = TuiReporter()
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    reporter.ai_trace(
+        _trace(output_tokens=None, elapsed=120.0, generation_seconds=None)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
 
 
 async def test_the_extraction_in_flight_is_a_stopwatch_not_a_snapshot():
@@ -862,7 +918,9 @@ async def test_the_live_rows_sit_with_the_analysis_they_describe():
         reporter.ai_pass_started()
         reporter.ai_scheduled()
         reporter.ai_job_started("Reddit")
-        reporter.ai_trace(_trace(output_tokens=300, elapsed=10.0))
+        reporter.ai_trace(
+            _trace(output_tokens=300, elapsed=10.0, generation_seconds=10.0)
+        )
         pane._reporter = reporter
         pane._scan_running = True
 
