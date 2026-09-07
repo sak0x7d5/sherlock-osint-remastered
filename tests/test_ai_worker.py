@@ -829,7 +829,7 @@ async def test_ai_worker_saves_empty_extraction_without_calling_model(
 ):
     monkeypatch.setattr(
         "sherlock_project.sherlock.extract_profile_content",
-        lambda content: "",
+        lambda content, **_kwargs: "",
     )
     site_id = await db.save_result(
         username="blue",

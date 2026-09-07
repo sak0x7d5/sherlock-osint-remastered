@@ -60,7 +60,7 @@ PASS_TWO_MAX_INPUT_BYTES = 12_000
 PASS_TWO_MAX_OUTPUT_TOKENS = 2_048
 SAFE_EXTRACTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 PASS_ONE_VALIDATION_POLICY_VERSION = "open-dynamic-profile-keys-v4"
-PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v3"
+PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v4"
 DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS = 1024
 # Extra output budget for models that cannot be told to stop thinking. Their
 # native reasoning is spent from the same `max_output_tokens` allowance as the
