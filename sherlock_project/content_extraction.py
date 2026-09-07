@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+from typing import TypeIs
 from urllib.parse import urlsplit, urlunsplit
 
 from trafilatura import extract, extract_metadata, html2txt
@@ -317,8 +319,366 @@ def _truncate_profile_content(content: str) -> str:
     return truncated.rstrip()
 
 
-def inspect_profile_content(response_text: str) -> ProfileContentDiagnostics:
-    """Extract Pass 1 input together with stage-level diagnostics."""
+# --- JSON responses -------------------------------------------------------
+#
+# A large share of the manifest checks an API endpoint rather than a rendered
+# page: `wmn-data.json` alone points dozens of Mastodon instances at
+# `/api/v1/accounts/lookup`. Those bodies are JSON, and running them through
+# the HTML path does not merely waste effort, it destroys evidence. Trafilatura
+# finds the `<p>` tags inside a JSON string value, concludes the document is
+# HTML, and renders a hybrid: some markup resolved to text, the surrounding
+# JSON left as literal punctuation, and every field before the first tag --
+# `display_name` among them -- discarded as boilerplate. What reaches the model
+# is the one thing it cannot do at 4B: parse a document format by hand.
+#
+# Parsing it here instead turns the format from a liability into the best input
+# in the pipeline. A profile API hands over the field NAMES, which is precisely
+# what Pass 1 spends its reasoning budget inventing on an HTML page.
+
+_JSON_DOCUMENT_STARTS = ("{", "[")
+_MAX_JSON_DEPTH = 3
+_MAX_JSON_FIELDS = 60
+_HTML_TAG_PATTERN = re.compile(r"<[A-Za-z/!][^>]*>")
+_TIMESTAMP_VALUE_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}"
+    r"(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
+)
+_OPAQUE_ID_VALUE_PATTERN = re.compile(
+    r"(?i)^(?:\d{4,}|[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+    r"-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+# Anchored, and whitespace-free by construction: an asset URL is noise only
+# when the value IS one. Matching anywhere inside the string instead deletes a
+# biography for ending with a link to its author's own portfolio image.
+_MEDIA_URL_VALUE_PATTERN = re.compile(
+    r"(?i)^\S+\.(?:png|jpe?g|gif|webp|svg|bmp|ico|avif|mp4|webm|mov|mp3|ogg)"
+    r"(?:[?#]\S*)?$"
+)
+_NAME_VALUE_PAIR_KEYS = ({"name", "value"}, {"key", "value"}, {"label", "value"})
+# Fragment-level block tags. Deliberately not a document parser: trafilatura's
+# document heuristics are what mangled these bodies, and a profile bio is a
+# fragment, so the only structure worth keeping is where the line breaks fall.
+_FRAGMENT_BREAK_TAGS = frozenset(
+    {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+)
+
+
+class _FragmentTextParser(HTMLParser):
+    """Flatten an HTML fragment held inside a JSON string value to text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.casefold() == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() in _FRAGMENT_BREAK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def _identity_token(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def _html_fragment_to_text(value: str) -> str:
+    parser = _FragmentTextParser()
+    parser.feed(value)
+    parser.close()
+    return "".join(parser.parts)
+
+
+def _clean_json_string(value: str) -> str:
+    """Render one JSON string leaf as the text a reader would have seen.
+
+    Mastodon splits a link across `<span class="invisible">https://</span>` and
+    a visible remainder, so flattening the fragment reassembles the URL the
+    profile actually advertises rather than the two halves the markup shows.
+    """
+
+    text = value
+    if _HTML_TAG_PATTERN.search(text):
+        text = _html_fragment_to_text(text)
+    return _clean_metadata_value(unescape(text))
+
+
+def _is_noise_json_value(value: str) -> bool:
+    """Drop leaves by SHAPE, never by field name.
+
+    Every rule here describes a kind of string no profile reader would quote:
+    a timestamp, an opaque row id, an asset URL. Naming the fields instead
+    would buy exactly the sites already seen -- the same trap the Pass 1 key
+    and value denylists fell into.
+    """
+
+    if not value:
+        return True
+    if _TIMESTAMP_VALUE_PATTERN.fullmatch(value):
+        return True
+    if _OPAQUE_ID_VALUE_PATTERN.fullmatch(value):
+        return True
+    return bool(_MEDIA_URL_VALUE_PATTERN.fullmatch(value))
+
+
+def _looks_like_json_document(response_text: str) -> bool:
+    return response_text.lstrip().startswith(_JSON_DOCUMENT_STARTS)
+
+
+def _parse_json_document(response_text: str) -> object | None:
+    """Parse a body already known to declare itself JSON, or give up on it.
+
+    Returning `None` here means unreadable, never "try HTML instead": the
+    caller dispatches on the format the body claims, so a JSON body that will
+    not parse settles as empty. Falling through would hand the plain-text
+    branch a document with no markup in it, and Pass 1 would be asked to read
+    18,000 characters of punctuation.
+    """
+
+    try:
+        return json.loads(response_text.lstrip())
+    except (ValueError, RecursionError):
+        # RecursionError, not just ValueError: a deeply nested body raises it
+        # from the C parser. Uncaught it reaches `ai_worker`'s blind except,
+        # which records the site as pending -- retrying the same unparseable
+        # response on every future run rather than settling it once.
+        return None
+
+
+def _looks_like_profile_record(candidate: object) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    named_strings = sum(
+        1
+        for key, value in candidate.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and _clean_json_string(value)
+    )
+    # Two, not one: an error envelope such as `{"error": "Record not found"}`
+    # is a dict of strings too, and must not read as somebody's profile.
+    return named_strings >= 2
+
+
+def _collect_profile_records(document: object) -> list[dict[str, object]]:
+    if _looks_like_profile_record(document):
+        return [document]  # type: ignore[list-item]
+
+    candidates: list[object] = []
+    if isinstance(document, list):
+        candidates = document
+    elif isinstance(document, dict):
+        for value in document.values():
+            if isinstance(value, list):
+                candidates.extend(value)
+    return [item for item in candidates if _looks_like_profile_record(item)]
+
+
+def _record_identity_tokens(record: dict[str, object]) -> set[str]:
+    tokens: set[str] = set()
+    for value in record.values():
+        if not isinstance(value, str):
+            continue
+        cleaned = _clean_json_string(value)
+        if not cleaned or "\n" in cleaned:
+            continue
+        tokens.add(_identity_token(cleaned))
+        # `acct` arrives federated as `user@host`; the local part is the handle.
+        tokens.add(_identity_token(cleaned.split("@", maxsplit=1)[0]))
+    return tokens - {""}
+
+
+def _select_owner_record(
+    records: list[dict[str, object]],
+    searched_username: str,
+) -> tuple[dict[str, object] | None, str]:
+    """Pick the one record this response is about, or refuse to guess.
+
+    A search endpoint answers with every account matching the query, and the
+    pipeline's whole contract -- prompt included -- is "one website profile's
+    owner". Handed several, a model does not pick one: it writes down the union,
+    and a scan of `0day` comes back with a Florida pentester's name over a
+    Madrid hackerspace's meeting times, as one person who does not exist.
+    Returning nothing loses a real lead; returning a composite invents a
+    fictional human and hands it to Pass 2 as evidence. Only one of those is
+    recoverable.
+    """
+
+    if not records:
+        return None, "no_extractable_content"
+    if len(records) == 1:
+        return records[0], "extracted"
+
+    token = _identity_token(searched_username)
+    matches = [record for record in records if token in _record_identity_tokens(record)]
+    if len(matches) == 1:
+        return matches[0], "extracted"
+    if not matches:
+        return None, "no_matching_profile_record"
+    return None, "ambiguous_profile_records"
+
+
+def _render_json_record(
+    record: dict[str, object],
+    *,
+    label_prefix: str = "",
+    depth: int = 0,
+) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for key, value in record.items():
+        if not isinstance(key, str) or len(fields) >= _MAX_JSON_FIELDS:
+            break
+        label = f"{label_prefix} {key}".strip()
+        fields.extend(_render_json_value(value, label=label, depth=depth))
+    return fields
+
+
+def _render_json_value(
+    value: object,
+    *,
+    label: str,
+    depth: int,
+) -> list[tuple[str, str]]:
+    # Non-string scalars carry no owner evidence and every count, flag, and row
+    # id in one rule: `followers_count`, `bot`, and `id` need no denylist entry
+    # because none of them is text a profile states about its owner.
+    if isinstance(value, str):
+        cleaned = _clean_json_string(value)
+        return [] if _is_noise_json_value(cleaned) else [(label, cleaned)]
+    if depth >= _MAX_JSON_DEPTH:
+        return []
+    if isinstance(value, dict):
+        return _render_json_record(value, label_prefix=label, depth=depth + 1)
+    if isinstance(value, list):
+        fields: list[tuple[str, str]] = []
+        for item in value:
+            fields.extend(
+                _render_json_pair(item, label=label, depth=depth)
+                if _is_name_value_pair(item)
+                else _render_json_value(item, label=label, depth=depth + 1)
+            )
+        return fields
+    return []
+
+
+def _is_name_value_pair(item: object) -> TypeIs[dict[str, object]]:
+    return isinstance(item, dict) and any(
+        keys <= {key.casefold() for key in item if isinstance(key, str)}
+        for keys in _NAME_VALUE_PAIR_KEYS
+    )
+
+
+def _render_json_pair(
+    item: dict[str, object],
+    *,
+    label: str,
+    depth: int,
+) -> list[tuple[str, str]]:
+    """Render an owner-authored `{name, value}` row under its own name.
+
+    Mastodon's profile `fields` are the clearest owner evidence on the page and
+    the label is written by the owner, so it is kept: `field hacktivity` says
+    more than `fields` repeated four times.
+    """
+
+    pairs = {key.casefold(): value for key, value in item.items()}
+    name = pairs.get("name") or pairs.get("key") or pairs.get("label")
+    value = pairs.get("value")
+    if not isinstance(name, str) or not isinstance(value, str):
+        return []
+    cleaned_name = _clean_json_string(name).replace("\n", " ")
+    if not cleaned_name:
+        return []
+    singular = label.removesuffix("s") if label.endswith("s") else label
+    return _render_json_value(
+        value,
+        label=f"{singular} {cleaned_name}".strip(),
+        depth=depth,
+    )
+
+
+def _format_json_record(fields: list[tuple[str, str]]) -> str:
+    lines = ["## Profile record"]
+    for label, value in fields:
+        value_lines = value.splitlines()
+        if len(value_lines) == 1:
+            lines.append(f"- {label}: {value}")
+            continue
+        lines.append(f"- {label}:")
+        lines.extend(f"  {line}" for line in value_lines)
+    return "\n".join(lines)
+
+
+def _inspect_json_profile(
+    document: object,
+    *,
+    response_chars: int,
+    searched_username: str,
+) -> ProfileContentDiagnostics:
+    record, outcome = _select_owner_record(
+        _collect_profile_records(document),
+        searched_username,
+    )
+    if record is None:
+        return ProfileContentDiagnostics(
+            content="",
+            outcome=outcome,
+            response_chars=response_chars,
+            saw_markup=False,
+            metadata_fields=(),
+            main_content_method="json_profile_record",
+            main_content_chars=0,
+            prepared_content_chars=0,
+            truncated=False,
+        )
+
+    fields = _render_json_record(record)
+    if not fields:
+        return ProfileContentDiagnostics(
+            content="",
+            outcome="no_extractable_content",
+            response_chars=response_chars,
+            saw_markup=False,
+            metadata_fields=(),
+            main_content_method="json_profile_record",
+            main_content_chars=0,
+            prepared_content_chars=0,
+            truncated=False,
+        )
+
+    rendered = _format_json_record(fields)
+    content = _truncate_profile_content(rendered)
+    return ProfileContentDiagnostics(
+        content=content,
+        outcome="extracted",
+        response_chars=response_chars,
+        saw_markup=False,
+        metadata_fields=tuple(label for label, _ in fields),
+        main_content_method="json_profile_record",
+        main_content_chars=len(rendered),
+        prepared_content_chars=len(content),
+        truncated=len(content) < len(rendered),
+    )
+
+
+def inspect_profile_content(
+    response_text: str,
+    *,
+    searched_username: str = "",
+) -> ProfileContentDiagnostics:
+    """Extract Pass 1 input together with stage-level diagnostics.
+
+    `searched_username` disambiguates a response holding several profile
+    records; without it such a response is refused rather than merged.
+    """
 
     response_chars = len(response_text)
     if not response_text.strip():
@@ -344,6 +704,13 @@ def inspect_profile_content(response_text: str) -> ProfileContentDiagnostics:
             main_content_chars=0,
             prepared_content_chars=0,
             truncated=False,
+        )
+
+    if _looks_like_json_document(response_text):
+        return _inspect_json_profile(
+            _parse_json_document(response_text),
+            response_chars=response_chars,
+            searched_username=searched_username,
         )
 
     parser = _parse_html_metadata(response_text)
@@ -393,7 +760,14 @@ def inspect_profile_content(response_text: str) -> ProfileContentDiagnostics:
     )
 
 
-def extract_profile_content(response_text: str) -> str:
+def extract_profile_content(
+    response_text: str,
+    *,
+    searched_username: str = "",
+) -> str:
     """Extract useful profile metadata and visible text for AI analysis."""
 
-    return inspect_profile_content(response_text).content
+    return inspect_profile_content(
+        response_text,
+        searched_username=searched_username,
+    ).content

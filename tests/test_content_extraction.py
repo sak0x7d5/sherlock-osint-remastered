@@ -248,3 +248,143 @@ def test_extract_profile_content_returns_empty_when_nothing_is_extractable(
     response_text: str,
 ):
     assert extract_profile_content(response_text) == ""
+
+
+MASTODON_ACCOUNT_JSON = """
+{"id":"109356","username":"0day","acct":"0day@infosec.exchange",
+ "display_name":"Ryan M. Montgomery","locked":false,"bot":false,
+ "created_at":"2022-11-05T00:00:00.000Z",
+ "note":"<p>Serial Entrepreneur | Penetration Tester</p><p><a href=\\"https://0day.lol\\" rel=\\"nofollow noopener\\" target=\\"_blank\\"><span class=\\"invisible\\">https://</span><span class=\\"\\">0day.lol</span></a></p>",
+ "url":"https://infosec.exchange/@0day",
+ "avatar":"https://files.mastodon.social/accounts/avatars/109/original/a.png",
+ "followers_count":10432,"following_count":21,"statuses_count":870,
+ "fields":[{"name":"hacktivity","value":"0day enthusiast","verified_at":null}]}
+"""
+
+
+def _search_response(*accounts: str) -> str:
+    return '{"accounts":[' + ",".join(accounts) + '],"statuses":[],"hashtags":[]}'
+
+
+SECOND_ACCOUNT_JSON = """
+{"id":"884412","username":"0day","acct":"0day@mad.convoca.la",
+ "display_name":"0day","note":"<p>Espacio tecnopolitico de debate.</p>",
+ "url":"https://mad.convoca.la/@0day"}
+"""
+
+
+def test_json_api_response_is_read_as_fields_not_scraped_as_html():
+    result = extract_profile_content(
+        MASTODON_ACCOUNT_JSON,
+        searched_username="0day",
+    )
+
+    assert "- display_name: Ryan M. Montgomery" in result
+    assert "- acct: 0day@infosec.exchange" in result
+    assert "Serial Entrepreneur | Penetration Tester" in result
+    # The scheme lives in its own `class="invisible"` span; flattening the
+    # fragment has to reassemble the URL rather than emit the two halves.
+    assert "https://0day.lol" in result
+    assert "- field hacktivity: 0day enthusiast" in result
+    # No markup, no JSON punctuation, no escaped quotes reach the model.
+    assert "<" not in result
+    assert '\\"' not in result
+    assert '","' not in result
+
+
+def test_json_api_response_drops_telemetry_and_assets_by_shape():
+    result = extract_profile_content(
+        MASTODON_ACCOUNT_JSON,
+        searched_username="0day",
+    )
+
+    assert "10432" not in result
+    assert "followers_count" not in result
+    assert "2022-11-05" not in result
+    assert "109356" not in result
+    assert "avatars" not in result
+    assert "false" not in result
+
+
+def test_json_search_response_refuses_to_merge_several_profiles():
+    """Two accounts match `0day`; a merged owner would be a fictional person."""
+
+    diagnostics = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON, SECOND_ACCOUNT_JSON),
+        searched_username="0day",
+    )
+
+    assert diagnostics.outcome == "ambiguous_profile_records"
+    assert diagnostics.content == ""
+
+
+def test_json_search_response_keeps_the_one_record_that_matches():
+    diagnostics = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON, SECOND_ACCOUNT_JSON),
+        searched_username="ryanmontgomery",
+    )
+
+    assert diagnostics.outcome == "no_matching_profile_record"
+    assert diagnostics.content == ""
+
+    single = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON),
+        searched_username="0day",
+    )
+
+    assert single.outcome == "extracted"
+    assert "Ryan M. Montgomery" in single.content
+
+
+def test_json_response_without_a_profile_record_extracts_nothing():
+    diagnostics = inspect_profile_content(
+        '{"error":"Record not found"}',
+        searched_username="0day",
+    )
+
+    assert diagnostics.content == ""
+    assert diagnostics.outcome == "no_extractable_content"
+
+
+def test_html_pages_are_untouched_by_the_json_reader():
+    diagnostics = inspect_profile_content(
+        INSTAGRAM_HTML,
+        searched_username="fixture_handle",
+    )
+
+    assert diagnostics.main_content_method != "json_profile_record"
+    assert "Example Person (@fixture_handle)" in diagnostics.content
+
+
+def test_json_reader_keeps_a_biography_that_ends_in_an_asset_url():
+    """An asset URL is noise only when the value *is* one."""
+
+    record = (
+        '{"username":"dana","display_name":"Dana Reyes",'
+        '"note":"Photographer in Leeds. Portfolio: dana.example/hero.png",'
+        '"avatar":"https://cdn.example/accounts/avatars/1/original/a.png"}'
+    )
+
+    result = extract_profile_content(record, searched_username="dana")
+
+    assert "Dana Reyes" in result
+    assert "Photographer in Leeds" in result
+    assert "dana.example/hero.png" in result
+    # The bare asset URL is still dropped.
+    assert "cdn.example" not in result
+
+
+def test_json_reader_settles_a_body_too_deeply_nested_to_parse():
+    """`json.loads` raises RecursionError here, not ValueError.
+
+    Letting it escape reaches `ai_worker`'s blind except, which records the
+    site as pending and retries the same unparseable body on every run.
+    """
+
+    diagnostics = inspect_profile_content(
+        "[" * 100_000 + "]" * 100_000,
+        searched_username="dana",
+    )
+
+    assert diagnostics.content == ""
+    assert diagnostics.outcome == "no_extractable_content"

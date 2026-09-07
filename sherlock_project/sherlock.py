@@ -19,6 +19,7 @@ import os
 import re
 from argparse import ArgumentParser, ArgumentTypeError, RawDescriptionHelpFormatter
 from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from json import dumps as json_dumps
 from json import loads as json_loads
 from time import perf_counter
@@ -615,8 +616,11 @@ async def ai_worker(
                 )
                 hydrated_usernames.add(job.username)
             site_content = await asyncio.to_thread(
-                extract_profile_content,
-                job.response_text,
+                partial(
+                    extract_profile_content,
+                    job.response_text,
+                    searched_username=job.username,
+                )
             )
             if not site_content:
                 await sherlock_db.update_result_ai_extraction(
