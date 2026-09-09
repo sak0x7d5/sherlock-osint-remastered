@@ -50,6 +50,20 @@ class AIConfigError(RuntimeError):
     """Raised when Sherlock's AI configuration is missing or invalid."""
 
 
+class AIConfigNotFound(AIConfigError):
+    """Raised when no config file exists yet.
+
+    A subclass rather than a flag, so every existing `except AIConfigError`
+    still catches it. It exists to separate the two cases `_read_settings`
+    had been collapsing into one: a file that is CORRUPT, which is a real
+    fault worth interrupting a run to report, and a file that was simply
+    never written, which is the ordinary state of a fresh install and not a
+    fault at all. Only the general-settings loader distinguishes them --
+    `load_ai_settings` treats both as "AI is not configured", which for the
+    AI section is the truth either way.
+    """
+
+
 class AISettings(BaseModel):
     """Runtime settings for one configured AI provider."""
 
@@ -177,7 +191,7 @@ def _read_settings(path: Path) -> SherlockSettings:
         with path.open("rb") as config_file:
             payload = tomllib.load(config_file)
     except FileNotFoundError as error:
-        raise AIConfigError(
+        raise AIConfigNotFound(
             "AI is not configured. Run `sherlock setup ai` first."
         ) from error
     except (OSError, tomllib.TOMLDecodeError) as error:
@@ -220,9 +234,20 @@ def load_settings_or_default(
     default, and the scan echo stays quiet because it only reports
     config-sourced values and nothing is config-sourced any more. The run is
     then not the run the user configured, with nothing on screen saying so.
+
+    A config file that does not exist is NOT such a case, and reporting it as
+    one was wrong on the most-seen path there is. Every fresh install has no
+    config file, so a first plain scan opened with "Stored settings could not
+    be read: AI is not configured. Run `sherlock setup ai` first." -- three
+    claims, none of them true: nothing failed to be read, nothing was stored
+    to lose, and a scan with no `--ai` needs no model at all. Absent means "no
+    stored preferences", which is what the defaults already express, so there
+    is no error to report.
     """
     try:
         return load_settings(path=path, environ=environ), None
+    except AIConfigNotFound:
+        return SherlockSettings(), None
     except AIConfigError as error:
         return SherlockSettings(), str(error)
 

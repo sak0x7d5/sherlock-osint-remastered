@@ -5,9 +5,12 @@ import pytest
 from sherlock_project.ai_config import (
     CONFIG_VERSION,
     AIConfigError,
+    AIConfigNotFound,
     AISettings,
+    SherlockSettings,
     ai_config_path,
     load_ai_settings,
+    load_settings_or_default,
     save_ai_settings,
 )
 
@@ -77,3 +80,51 @@ def test_invalid_environment_url_is_rejected(tmp_path: Path):
             path=path,
             environ={"LLAMA_SERVER_BASE_URL": "not-a-url"},
         )
+
+
+def test_absent_config_is_not_reported_as_a_read_failure(tmp_path: Path):
+    """A fresh install has no config file, and that is not an error.
+
+    This is the most-seen path in the tool: every first run reaches it. The
+    loader used to hand back "AI is not configured. Run `sherlock setup ai`
+    first." for a file that had simply never been written, and the scan
+    printed it as "Stored settings could not be read" -- warning about lost
+    preferences that never existed, and about a model a plain scan does not
+    use. Absent means "no stored preferences", which the defaults already are.
+    """
+    settings, error = load_settings_or_default(
+        path=tmp_path / "missing.toml", environ={}
+    )
+
+    assert error is None
+    assert settings == SherlockSettings()
+
+
+def test_unreadable_config_still_reports_why(tmp_path: Path):
+    """The silence fixed above must not swallow a file that IS broken.
+
+    A config written by a newer build, or corrupted, changes what the run does
+    and has to say so -- that is the case this loader was added for, and it is
+    the one thing distinguishing it from `try_load_settings`.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text("not toml === [[[", encoding="utf-8")
+
+    settings, error = load_settings_or_default(path=path, environ={})
+
+    assert settings == SherlockSettings()
+    assert error is not None
+    assert str(path) in error
+
+
+def test_missing_config_keeps_raising_for_the_ai_specific_loader(tmp_path: Path):
+    """`--ai` must still refuse before scanning when nothing is configured.
+
+    The new exception type is a subclass precisely so this path is unchanged:
+    for the AI section specifically, an absent file really does mean "not
+    configured", and the run cannot proceed.
+    """
+    with pytest.raises(AIConfigNotFound, match="sherlock setup ai"):
+        load_ai_settings(path=tmp_path / "missing.toml", environ={})
+
+    assert issubclass(AIConfigNotFound, AIConfigError)
