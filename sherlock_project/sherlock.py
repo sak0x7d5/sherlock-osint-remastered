@@ -620,6 +620,8 @@ async def ai_worker(
                     extract_profile_content,
                     job.response_text,
                     searched_username=job.username,
+                    site_name=job.site_name,
+                    site_url=job.site_url,
                 )
             )
             if not site_content:

@@ -43,6 +43,11 @@ class AIExtractionJob:
     username: str
     site_name: str
     response_text: str
+    # The profile URL this response came from. Content extraction needs the
+    # host to recognise the site's own branding in a page title, which the
+    # display name alone does not cover: "Steam" does not contain "Community",
+    # but `steamcommunity.com` does.
+    site_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +587,7 @@ class SherlockDB:
                         r.username_id,
                         u.username,
                         r.site_name,
+                        r.site_url,
                         r.response_text,
                         r.ai_extraction_contract_hash
                     FROM results r
@@ -627,6 +633,9 @@ class SherlockDB:
             username=str(row["username"]),
             site_name=str(row["site_name"]),
             response_text=str(row["response_text"]),
+            site_url=(
+                str(row["site_url"]) if row["site_url"] is not None else None
+            ),
         )
 
     async def update_result_ai_extraction(
