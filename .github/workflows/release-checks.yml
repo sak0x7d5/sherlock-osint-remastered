@@ -51,10 +51,18 @@ jobs:
         with:
           python-version: '3.13'
 
+      # Pinned for the same reason ruff is pinned in tox.ini: an unpinned tool
+      # turns a green branch red without a code change. This one is not
+      # hypothetical -- `poetry check` already warns that every [tool.poetry]
+      # field here is deprecated in favour of [project], and Poetry 3 is where
+      # those warnings become errors. Pinning keeps the build reproducible and
+      # makes the pyproject migration a deliberate commit rather than the
+      # morning a release stops building. Bump on purpose, then fix what it
+      # finds.
       - name: Install Poetry
         uses: abatilo/actions-poetry@v4
         with:
-          poetry-version: 'latest'
+          poetry-version: '2.3.3'
 
       - name: Validate project metadata
         run: poetry check
@@ -64,6 +72,14 @@ jobs:
 
       # A wheel that drops the site manifest installs cleanly and then fails at
       # first use, so assert the package data is present in the artifact.
+      #
+      # wmn-data.json is listed FIRST because it is the one a default scan
+      # actually reads -- SitesInformation falls back to WMN_MANIFEST_PATH when
+      # no --json is given. This check used to name only data.json, the legacy
+      # manifest reachable via --json, so a wheel that shipped everything
+      # except the file every scan needs would have passed the gate and then
+      # failed on the user's first run. The prompts are here for the same
+      # reason: --ai loads them from the package at run time.
       - name: Verify packaged resources
         run: |
           python - <<'PY'
@@ -73,8 +89,14 @@ jobs:
           wheel = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(wheel).namelist()
           required = [
+              "sherlock_project/resources/wmn-data.json",
+              "sherlock_project/resources/wmn-data.schema.json",
               "sherlock_project/resources/data.json",
               "sherlock_project/resources/data.schema.json",
+              "sherlock_project/resources/pass_one.md",
+              "sherlock_project/resources/pass_one_native_reasoning.md",
+              "sherlock_project/resources/pass_two.md",
+              "sherlock_project/resources/pass_two_narrative.md",
           ]
           missing = [name for name in required if name not in names]
           if missing:
@@ -124,6 +146,9 @@ jobs:
           sherlock --version
           sherlock --help
 
+      # Loaded through the same entry point a scan uses, so this fails if the
+      # manifest is absent, unparseable, or adapts to nothing -- the three ways
+      # an installed package can look fine and find zero sites.
       - name: Packaged manifest is readable
         shell: bash
         run: |
@@ -131,11 +156,21 @@ jobs:
           import json
           from importlib.resources import files
 
-          manifest = files("sherlock_project").joinpath("resources/data.json")
-          sites = [k for k in json.loads(manifest.read_text(encoding="utf-8")) if k != "$schema"]
+          from sherlock_project.sites import SitesInformation
+
+          sites = [site.name for site in SitesInformation()]
           if not sites:
-              raise SystemExit("packaged manifest contains no sites")
-          print(f"packaged manifest loaded, {len(sites)} sites")
+              raise SystemExit("default manifest adapted to no usable sites")
+          print(f"default manifest loaded, {len(sites)} usable sites")
+
+          legacy = files("sherlock_project").joinpath("resources/data.json")
+          legacy_sites = [
+              k for k in json.loads(legacy.read_text(encoding="utf-8"))
+              if k != "$schema"
+          ]
+          if not legacy_sites:
+              raise SystemExit("packaged legacy manifest contains no sites")
+          print(f"legacy manifest loaded, {len(legacy_sites)} sites")
           PY
 
   sdist-install:
