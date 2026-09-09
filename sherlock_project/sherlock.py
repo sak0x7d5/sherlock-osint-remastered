@@ -67,7 +67,7 @@ from sherlock_project.notify import (
     TerminalReporter,
 )
 from sherlock_project.pass_one_runtime import hydrate_pass_one_key_registry
-from sherlock_project.playwright_engine import PlaywrightEngine
+from sherlock_project.playwright_engine import BrowserUnavailable, PlaywrightEngine
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.settings import resolve_runtime_settings
@@ -2036,6 +2036,30 @@ def cli() -> None:
     except KeyboardInterrupt:
         print(INTERRUPTION_MESSAGE)
         raise SystemExit(130) from None
+    except BrowserUnavailable as error:
+        # The browser is the DEFAULT transport, and acquiring it means
+        # downloading a binary from a third-party host on first use. Behind a
+        # proxy, on an offline machine, or when the release asset 403s, that
+        # fails -- and it used to end a plain `sherlock <username>` in sixty
+        # lines of httpx traceback, on the first command the README tells
+        # anyone to run.
+        #
+        # The condition is recoverable, so the message says how rather than
+        # only what: --no-webbrowser is a supported mode, not a workaround,
+        # and a browser-free run is recorded as such so a later browser run
+        # re-checks whatever it could not confirm.
+        print(f"sherlock: error: the stealth browser could not be started: {error}", file=sys.stderr)
+        print(file=sys.stderr)
+        print("The browser is the default because it is the accurate transport, but", file=sys.stderr)
+        print("the scan does not need it. To run without it:", file=sys.stderr)
+        print(file=sys.stderr)
+        print("    sherlock --no-webbrowser USERNAME", file=sys.stderr)
+        print(file=sys.stderr)
+        print("That reads only what each server sends back, so a profile page built in", file=sys.stderr)
+        print("the browser can read as \"not found\". Every row records the transport that", file=sys.stderr)
+        print("produced it, and a later browser run re-checks what this one could not", file=sys.stderr)
+        print("confirm. To keep it as the default: sherlock settings", file=sys.stderr)
+        raise SystemExit(1) from None
 
     if exit_code:
         raise SystemExit(exit_code)

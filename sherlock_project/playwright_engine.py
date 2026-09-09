@@ -21,6 +21,27 @@ BrowserStatus = Literal["installing", "starting", "ready"]
 BrowserStatusCallback = Callable[[BrowserStatus], None]
 CancellationCallback = Callable[[], None]
 
+class BrowserUnavailable(RuntimeError):
+    """The stealth browser could not be obtained or started.
+
+    Distinct from any other startup failure because it is the one the user can
+    do something about: the scan has a browser-free transport, and this is the
+    condition under which recommending it is useful rather than noise. It is
+    raised only from `__aenter__`, so catching it upstream cannot swallow an
+    error from the scan itself.
+
+    Downloading the binary is a network operation against a third-party host,
+    which makes this ordinary rather than exotic -- a proxy, an offline
+    machine, TLS interception or a 403 on the release asset all land here, and
+    all of them used to surface as sixty lines of httpx traceback.
+
+    Cancellation is deliberately NOT converted. `asyncio.CancelledError` and
+    `KeyboardInterrupt` derive from BaseException rather than Exception, so
+    the conversion below cannot catch them and Ctrl-C keeps unwinding as it
+    should.
+    """
+
+
 class RequestMethod(Protocol):
     async def __call__(self, url: str, **kwargs: Any) -> Any: ...
 
@@ -85,6 +106,10 @@ class PlaywrightEngine:
                 startup_error.add_note(
                     f"Playwright cleanup also failed: {cleanup_error!r}"
                 )
+            if isinstance(startup_error, Exception):
+                raise BrowserUnavailable(
+                    str(startup_error) or type(startup_error).__name__
+                ) from startup_error
             raise
 
         return self
