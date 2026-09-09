@@ -49,6 +49,7 @@ from sherlock_project.tui.reporter import (
     TuiReporter,
     analysis_is_on,
     blank_counts,
+    describe_options,
     describe_settings,
 )
 from sherlock_project.tui.theme import (
@@ -181,6 +182,12 @@ class ScanPane(Vertical):
         # Seeded from the stored `output.verbose`, overridable for one run --
         # the flag > config shape `-v` already has on the CLI.
         self._verbose = bool(settings_values.get("output.verbose"))
+        # What the in-flight scan was actually started with, as
+        # `(analysis, verbose)`, or None while nothing is running. Both toggles
+        # are read once at the start of a run, so the pair here is what lets the
+        # hint under them tell a toggle that describes this scan from one that
+        # describes the next.
+        self._running_options: tuple[bool, bool] | None = None
         # Run-only, exactly like `--anchor`: never stored, gone next launch.
         self._anchors: list[IdentityAnchor] = []
         self._elapsed = 0.0
@@ -238,6 +245,18 @@ class ScanPane(Vertical):
             # drawn inside a fixed height, so on a one-row cell it left zero
             # rows for the text and the line simply vanished.
             yield Static(id="scan-config")
+
+        # What the two toggles above actually do, one line each. Below the row
+        # rather than a fifth column in it: the row is one cell high and sized
+        # for controls, so a sentence in what is left of it would wrap into a
+        # height that cannot hold it.
+        #
+        # Always drawn rather than revealed on hover, like the line under
+        # Build/Rebuild on the results tab and for the same reason: it is read
+        # while deciding whether to press, which is exactly when the pointer is
+        # not on the control yet -- and Tab and Enter reach these with no
+        # pointer involved at all.
+        yield Static(id="options-help")
 
         with Grid(id="scan-body"):
             with Vertical(id="counters-col"):
@@ -392,8 +411,27 @@ class ScanPane(Vertical):
         # Drawn from settings alone, so it answers before a scan has ever run
         # and follows a model chosen on the settings tab mid-session.
         self._redraw_model()
+        self._redraw_options_help()
         self.query_one("#scan-config", Static).update(
             Text(describe_settings(self._settings_values), style="dim")
+        )
+
+    def _redraw_options_help(self) -> None:
+        """Explain the two toggles from whatever state they are in now.
+
+        Its own method rather than a few more lines inside `_redraw_options`,
+        because a scan starting or ending changes what it says without changing
+        a toggle: the same `analysis on` means "this run is extracting" before
+        the scan and "the next run will" if it was flipped during one. The
+        start and the end want this line redrawn and nothing else on the row.
+        """
+        self.query_one("#options-help", Static).update(
+            describe_options(
+                self._settings_values,
+                use_ai=self._use_ai,
+                verbose=self._verbose,
+                running=self._running_options,
+            )
         )
 
     @on(Button.Pressed, "#toggle-ai")
@@ -1135,6 +1173,12 @@ class ScanPane(Vertical):
         self._log_drawn = 0
         self._reporter = TuiReporter(verbose=self._verbose)
         self._scan_running = True
+        # Captured beside the two places that read them -- the reporter above
+        # and `use_ai` in `_scan_worker` -- so the pair cannot drift from what
+        # the run is actually doing. The hint under the toggles is the only
+        # thing that reads it back.
+        self._running_options = (self._use_ai, self._verbose)
+        self._redraw_options_help()
         self._elapsed = 0.0
         self._started_at = self._monotonic()
         self.query_one("#scan-button", Button).label = "STOP"
@@ -1190,6 +1234,10 @@ class ScanPane(Vertical):
         self._scan_running = False
         self._worker = None
         self._started_at = None
+        # Nothing is running, so no toggle is pending any more: both describe
+        # the next scan again, which is the only kind there is now.
+        self._running_options = None
+        self._redraw_options_help()
         # The title carries the running/finished distinction, so it has to be
         # redrawn here -- `_flush` does not touch it.
         self._redraw_feed_title()

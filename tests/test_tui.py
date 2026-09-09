@@ -19,7 +19,11 @@ from textual.screen import ModalScreen
 from sherlock_project.database import SherlockDB
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.tui.app import SherlockUI, run_ui
-from sherlock_project.tui.reporter import TuiReporter, describe_settings
+from sherlock_project.tui.reporter import (
+    TuiReporter,
+    describe_options,
+    describe_settings,
+)
 from sherlock_project.tui.results_pane import ResultsPane
 from sherlock_project.tui.runner import ai_is_configured, resolved
 from sherlock_project.tui.scan_pane import CounterRow, ScanPane
@@ -1451,6 +1455,77 @@ def test_the_config_line_names_the_setting_that_changes_what_a_result_means():
     assert "no browser" not in describe_settings({"scan.webbrowser": True})
 
 
+def test_the_options_hint_explains_both_toggles_and_names_each_one():
+    """Two unlabelled sentences under two adjacent buttons is a matching
+    exercise, and the wrong pairing is the one that gets read."""
+    hint = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False).plain
+
+    assert hint.count("\n") == 1
+    first, second = hint.splitlines()
+    assert first.startswith("analysis off")
+    assert second.startswith("verbose off")
+
+
+def test_the_options_hint_gives_the_consequence_not_just_the_state():
+    """The toggle already shows `off`. What it cannot show is what turning it
+    off costs -- the results tab builds its profile from what analysis stores,
+    so a scan run without it can never produce one."""
+    off = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False)
+    assert "no profile can be built" in off.plain
+
+    on = describe_options({"ai.model": "vendor/m"}, use_ai=True, verbose=False)
+    assert "reads every hit" in on.plain
+
+
+def test_the_options_hint_warns_when_analysis_is_on_with_no_model():
+    """The one state the toggle cannot honour on its own -- and the reason is
+    two tabs away, so the line has to name where to go."""
+    warned = describe_options({}, use_ai=True, verbose=False)
+    assert "no model is configured" in warned.plain
+    assert "SETTINGS" in warned.plain
+    # Styled, not just worded: this is the difference between a scan that
+    # extracts and one that quietly does not.
+    assert any(span.style == "yellow" for span in warned.spans)
+
+    # Nothing is asking for a model, so its absence is not a warning yet. The
+    # stored-settings line beside this one still reports it as stored state.
+    assert "model" not in describe_options({}, use_ai=False, verbose=False).plain
+    assert "no model configured" in describe_settings({})
+
+
+def test_the_options_hint_defers_a_toggle_flipped_during_a_scan():
+    """Both toggles are read once, when the scan starts, so flipping either
+    mid-run changes the NEXT scan and nothing about this one.
+
+    Left unsaid the toggle reads as a live control: analysis switched on at site
+    40 of 680 extracts nothing for the remaining 640, and the screen offers no
+    reason why.
+    """
+    analysis, verbose = describe_options(
+        {"ai.model": "vendor/m"},
+        use_ai=True,
+        verbose=False,
+        running=(False, False),
+    ).plain.splitlines()
+
+    assert "from the next scan" in analysis
+    assert "started without it" in analysis
+    # Verbose is what the run is actually using, so it is described rather than
+    # deferred. Deferring both would say the wrong thing about one of them.
+    assert "from the next scan" not in verbose
+    assert verbose.startswith("verbose off")
+
+
+def test_the_options_hint_defers_nothing_when_the_toggles_match_the_run():
+    """A scan started WITH analysis is already applying it -- telling that
+    operator it takes effect next time is simply false."""
+    hint = describe_options(
+        {"ai.model": "vendor/m"}, use_ai=True, verbose=True, running=(True, True)
+    ).plain
+    assert "from the next scan" not in hint
+    assert "reads every hit" in hint
+
+
 def test_the_runner_reuses_the_cli_scan_lifecycle():
     """The rule the whole TUI is built on, made mechanical.
 
@@ -1987,6 +2062,80 @@ async def test_the_toggles_show_their_own_state():
         assert "off" in str(ai.label)
         await pilot.click("#toggle-ai")
         assert "on" in str(app.query_one("#toggle-ai", Button).label)
+
+
+async def test_the_hint_under_the_toggles_follows_them():
+    """The explanation is drawn from the same state the labels are, so the two
+    cannot disagree about what the next scan will do."""
+    from textual.widgets import Static
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+
+        def hint() -> str:
+            return app.query_one("#options-help", Static).render().plain
+
+        assert "analysis off" in hint()
+        assert "verbose off" in hint()
+
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        assert "analysis on" in hint()
+
+        await pilot.click("#toggle-verbose")
+        await pilot.pause()
+        assert "verbose on" in hint()
+
+
+async def test_a_toggle_flipped_during_a_scan_says_which_scan_it_applies_to(
+    monkeypatch,
+):
+    """The whole point of tracking what the run was started with.
+
+    Held mid-scan by an event the fake session waits on, because the deferral is
+    a property of the window between the scan starting and finishing -- and the
+    clearing at the end is exactly as load-bearing as the setting at the start.
+    A hint left saying "from the next scan" after the scan ended would defer a
+    toggle that is now live.
+    """
+    import asyncio
+
+    from textual.widgets import Static
+
+    from sherlock_project.tui import runner as runner_module
+
+    release = asyncio.Event()
+
+    async def fake_session(*, username, reporter, settings_values, **options):
+        await release.wait()
+
+    monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+
+        def hint() -> str:
+            return app.query_one("#options-help", Static).render().plain
+
+        await pilot.press(*"alice")
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause()
+        assert app.query_one(ScanPane)._scan_running is True
+        assert "from the next scan" not in hint()
+
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        assert "from the next scan" in hint()
+        assert "this run was started without it" in hint()
+
+        release.set()
+        for _ in range(10):
+            await pilot.pause()
+
+        assert app.query_one(ScanPane)._scan_running is False
+        assert "from the next scan" not in hint()
+        assert "analysis on" in hint()
 
 
 async def test_re_scan_defeats_the_resume_filter(monkeypatch, tmp_path):

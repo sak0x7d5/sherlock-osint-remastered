@@ -529,6 +529,17 @@ TabPane { padding: 0 2; }
 .toggle:hover { background: $panel-lighten-2; }
 .toggle:focus { text-style: bold; }
 #scan-config { height: 1; color: $text-muted; }
+/* The toggles, explained -- named for the settings screen's `#help`, which is
+   the same line doing the same job. Every sentence fits an 80-column terminal
+   unwrapped, so this is two rows at the width anything is expected to run at;
+   `height: auto` rather than 2 so a narrower one wraps instead of losing a
+   sentence off the bottom. `margin` for the gap above, never `padding` -- the
+   trap the line above this one and the target button have each paid for once.
+
+   Colour set here rather than as a style on the Text, so the one span that
+   overrides it -- the yellow "no model configured" warning -- is the only
+   styled thing in the string and reads as deliberate. */
+#options-help { height: auto; margin: 1 0 0 0; color: $text-muted; }
 
 /* Counters left, live feed right. The counters column is fixed rather than
    proportional: it holds a known amount of text, and letting it grow with the
