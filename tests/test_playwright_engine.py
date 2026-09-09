@@ -6,7 +6,7 @@ import sys
 import pytest
 
 import sherlock_project.playwright_engine as playwright_module
-from sherlock_project.playwright_engine import PlaywrightEngine
+from sherlock_project.playwright_engine import BrowserUnavailable, PlaywrightEngine
 
 
 @pytest.mark.parametrize("invalid_method", ['', 'unkonwn_method'])
@@ -107,6 +107,56 @@ async def test_browser_lifecycle_reports_starting_and_ready(
     assert statuses == ["starting", "ready"]
     assert context_close_calls == [True]
     assert browser_close_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_becomes_browser_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed binary download is reported as a browser problem, not an httpx one.
+
+    `ensure_binary` reaches a third-party host, so the exception escaping it
+    is whatever its HTTP client raised. Converting it here is what lets the
+    entrypoint recognise the condition and point at --no-webbrowser instead of
+    printing a transport library's stack.
+    """
+    def failed_install(_callback=None) -> None:
+        raise OSError("certificate verify failed")
+
+    monkeypatch.setattr(
+        PlaywrightEngine,
+        "ensure_browser_binary",
+        staticmethod(failed_install),
+    )
+
+    engine = PlaywrightEngine()
+    with pytest.raises(BrowserUnavailable, match="certificate verify failed"):
+        await engine.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_startup_cancellation_is_not_converted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C during startup must still unwind as cancellation.
+
+    The conversion catches Exception, and CancelledError derives from
+    BaseException precisely so this stays true -- if it were ever widened,
+    interrupting a first run would report an unavailable browser instead of
+    an interrupted one.
+    """
+    def cancelled_install(_callback=None) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        PlaywrightEngine,
+        "ensure_browser_binary",
+        staticmethod(cancelled_install),
+    )
+
+    engine = PlaywrightEngine()
+    with pytest.raises(asyncio.CancelledError):
+        await engine.__aenter__()
 
 
 @pytest.mark.asyncio

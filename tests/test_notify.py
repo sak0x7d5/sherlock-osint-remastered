@@ -15,6 +15,7 @@ from sherlock_project.notify import (
     QueryNotifyPrint,
     TerminalReporter,
 )
+from sherlock_project.playwright_engine import BrowserUnavailable
 from sherlock_project.profile_synthesis import ProfileSynthesis
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.settings import TRANSPORT_DOC_URL
@@ -574,6 +575,43 @@ def test_cli_maps_keyboard_interrupt_to_exit_130_without_traceback(
     assert error.value.code == 130
     assert error.value.__suppress_context__ is True
     assert capsys.readouterr().out.strip() == INTERRUPTION_MESSAGE
+
+
+def test_cli_maps_browser_unavailable_to_exit_1_with_a_usable_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A browser that cannot be fetched must not end in a raw traceback.
+
+    This is the DEFAULT transport failing on the FIRST command the README
+    gives anyone, and acquiring it is a download from a third-party host --
+    so a proxy, an offline machine or a 403 on the release asset all reach
+    here. It used to print sixty lines of httpx internals and nothing else;
+    the tool has a working browser-free mode and never mentioned it.
+    """
+    def failed_run(coroutine) -> int:
+        coroutine.close()
+        raise BrowserUnavailable("certificate verify failed")
+
+    monkeypatch.setattr(sherlock_module.asyncio, "run", failed_run)
+
+    with pytest.raises(SystemExit) as error:
+        sherlock_module.cli()
+
+    assert error.value.code == 1
+    # Chained context suppressed: the traceback is what this replaces.
+    assert error.value.__suppress_context__ is True
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    # The reason, so it is diagnosable...
+    assert "certificate verify failed" in captured.err
+    # ...and the way out, so it is actionable.
+    assert "--no-webbrowser" in captured.err
+    # The fallback is weaker, and saying so is the point of the warning that
+    # mode prints on every run. It must not read as a free upgrade.
+    assert 'read as "not found"' in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_module_entrypoint_routes_through_cli(
