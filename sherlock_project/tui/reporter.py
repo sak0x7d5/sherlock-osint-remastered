@@ -817,3 +817,85 @@ def describe_settings(values: dict[str, Any]) -> str:
     if not analysis_is_on(values):
         parts.append("no model configured")
     return "  ·  ".join(parts)
+
+
+def _pending_option(label: str, *, enabled: bool) -> str:
+    """One toggle that no longer describes the scan currently running.
+
+    Both toggles are read once, when the scan starts -- `use_ai` is passed to
+    `run_scan_session` and the reporter's verbosity is fixed by its constructor
+    -- so flipping either mid-run changes the NEXT scan and nothing about this
+    one. Left unsaid, the toggle reads as a live control and the run looks
+    broken: analysis switched on at site 40 of 680 extracts nothing for the
+    remaining 640, and the screen offers no reason why.
+
+    Says which run it applies to AND what the current one is doing, because
+    "from the next scan" alone still leaves the more urgent question open.
+    """
+    return (
+        f"{label} {'on' if enabled else 'off'} — from the next scan; "
+        f"this run was started {'without' if enabled else 'with'} it."
+    )
+
+
+def describe_options(
+    values: dict[str, Any],
+    *,
+    use_ai: bool,
+    verbose: bool,
+    running: tuple[bool, bool] | None = None,
+) -> Text:
+    """What the two per-run toggles are doing, in one line each.
+
+    The scan pane's answer to the hint under Build/Rebuild on the results tab:
+    a line that is always there, states what the control does FROM ITS CURRENT
+    STATE, and turns into a warning when that state cannot deliver what it
+    claims. A hover tooltip would say the same thing, and say it only to the
+    mouse -- this screen is reached with Tab and Enter as often as with a click,
+    and the toggles are read far more often than they are pressed.
+
+    Each line names its toggle. Two unlabelled sentences under two adjacent
+    buttons is a matching exercise, and the wrong pairing is the one that gets
+    read.
+
+    `running` is the pair the in-flight scan was actually started with, or None
+    when nothing is running. Only the toggles that DIFFER from it are reported
+    as pending, so a scan started with analysis on is not told that analysis
+    applies from the next scan -- it is already applying.
+    """
+    ran_with_ai, ran_verbose = running if running is not None else (use_ai, verbose)
+
+    line = Text()
+    if use_ai != ran_with_ai:
+        line.append(_pending_option("analysis", enabled=use_ai))
+    elif use_ai and not analysis_is_on(values):
+        # The one state the toggle cannot honour on its own. Yellow rather than
+        # dim because it is the difference between a scan that extracts and one
+        # that quietly does not, and the fix is two tabs away.
+        line.append(
+            "analysis on, but no model is configured — set one on the SETTINGS tab.",
+            style="yellow",
+        )
+    elif use_ai:
+        line.append(
+            "analysis on — a local model reads every hit and stores the facts it finds."
+        )
+    else:
+        # The consequence, not just the state: someone turning this off wants
+        # a faster scan and does not necessarily know they are also giving up
+        # the profile the results tab builds from what it stores.
+        line.append(
+            "analysis off — accounts only. No page is read, so no profile can be built."
+        )
+
+    line.append("\n")
+    if verbose != ran_verbose:
+        line.append(_pending_option("verbose", enabled=verbose))
+    elif verbose:
+        line.append(
+            "verbose on — ACTIVITY adds request traces, timings and failure "
+            "diagnostics."
+        )
+    else:
+        line.append("verbose off — ACTIVITY carries warnings and failures only.")
+    return line
