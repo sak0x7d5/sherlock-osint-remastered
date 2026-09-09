@@ -65,15 +65,37 @@ the model endpoint you configure yourself.
 
 ## Install
 
-There is no published package. `pip install sherlock-project` installs
-**upstream's** release, not this work.
+Needs **Python 3.13+**. There is no published package — `pip install
+sherlock-project` installs **upstream's** release, not this work — so install
+from a clone.
+
+**To use it.** This puts a real `sherlock` command on your PATH, which is what
+every example below assumes:
 
 ```bash
 git clone https://github.com/sak0x7d5/sherlock-osint-remastered
 cd sherlock-osint-remastered
+pipx install .          # or: uv tool install .
+sherlock --version
+```
+
+No pipx or uv? A virtualenv does the same:
+
+```bash
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install .
+```
+
+**To work on it.** Poetry adds the dev dependencies and the test suite:
+
+```bash
 poetry install
 poetry run sherlock --help
+tox
 ```
+
+Installed this way `sherlock` is not on your PATH, so every `sherlock ...`
+below becomes `poetry run sherlock ...` (or run `poetry shell` once).
 
 ## Quick start
 
