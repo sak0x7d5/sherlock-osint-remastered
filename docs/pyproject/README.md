@@ -1,7 +1,7 @@
 <!-- This README should be a mini version at all times for use on pypi -->
 
 <p align=center>
-  <strong><span>Find accounts by username across 720 sites, then analyse them with a local model</span></strong>
+  <strong><span>Find accounts by username across 719 sites, then analyse them with a local model</span></strong>
   <br><br>
   <span>Full documentation is in the <a href="https://github.com/sak0x7d5/sherlock-osint-remastered">GitHub repository</a></span>
   <br>
