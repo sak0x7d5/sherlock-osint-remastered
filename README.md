@@ -1,6 +1,6 @@
 # sherlock-osint-remastered
 
-**Find accounts by username across 720 sites — then have a local model tell you
+**Find accounts by username across 719 sites — then have a local model tell you
 who they belong to, with every claim traced back to the page it came from.**
 
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
@@ -209,13 +209,15 @@ profiles, keyed by username. It persists until you delete it.
 
 ## Sites
 
-720 sites across 20 categories, from the
+719 sites across 20 categories, from the
 [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset, vendored
 unmodified and separately licensed (CC BY-SA 4.0 — see [NOTICE.md](NOTICE.md)).
+The dataset ships 720 entries; one (`7cup`) is flagged `valid: false` upstream
+and is skipped at load, so 719 are usable.
 
 | Category | Sites | | Category | Sites |
 | - | - | - | - | - |
-| social | 205 | | shopping | 23 |
+| social | 204 | | shopping | 23 |
 | gaming | 74 | | music | 22 |
 | tech | 57 | | blog | 18 |
 | hobby | 50 | | art | 12 |
@@ -226,7 +228,7 @@ unmodified and separately licensed (CC BY-SA 4.0 — see [NOTICE.md](NOTICE.md))
 | business | 25 | | video | 9 |
 | images | 25 | | archived | 9 |
 
-The 39 NSFW sites are skipped unless you pass `--nsfw`, leaving **681** checked
+The 39 NSFW sites are skipped unless you pass `--nsfw`, leaving **680** checked
 by default. No network call is needed to load the list; it ships with the
 package.
 
@@ -239,9 +241,13 @@ uses.
 ```
 sherlock USERNAME...        Scan for a username
 sherlock show USERNAME      Read what is stored. Never scans, never writes
+sherlock ui                 Full-screen interface: scan, results and settings
 sherlock setup ai           Configure the local model endpoint
 sherlock settings           Edit stored defaults for scans, output and AI
 ```
+
+`sherlock ui` puts all three in one place and needs a terminal; without one it
+says so and exits rather than failing.
 
 <details>
 <summary><strong>Scan options</strong></summary>
