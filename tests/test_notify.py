@@ -6,6 +6,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
+from sherlock_project import notify as notify_module
 from sherlock_project import sherlock as sherlock_module
 from sherlock_project.ai_engine import AIRequestTrace, StructuredResponseError
 from sherlock_project.ai_provider import AIGenerationStats
@@ -120,7 +121,46 @@ def test_browserless_transport_states_the_limit_before_the_scan() -> None:
     assert "assembled in the browser" in rendered
     assert 'read as "not found"' in rendered
     # Printed, not only linked: OSC 8 does not survive a redirect to a file.
-    assert TRANSPORT_DOC_URL in rendered
+    # Guarded on the constant being set, because `x in rendered` is vacuously
+    # true for the empty string and would assert nothing while it is unset.
+    if TRANSPORT_DOC_URL:
+        assert TRANSPORT_DOC_URL in rendered
+
+
+def test_browserless_transport_omits_the_why_line_when_no_doc_url_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty TRANSPORT_DOC_URL must take the whole line with it.
+
+    The constant ships empty on purpose until the page exists, and the caller
+    used to interpolate it unconditionally -- so every browserless scan ended
+    on a bare "Why:" pointing at nothing. A label with no referent reads as a
+    bug in a tool whose selling point is that it tells you what is real.
+    """
+    monkeypatch.setattr(notify_module, "TRANSPORT_DOC_URL", "")
+    reporter, output, _ = _reporter()
+
+    reporter.browserless_transport()
+
+    assert "Why:" not in output.getvalue()
+
+
+def test_browserless_transport_prints_the_why_line_once_a_doc_url_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must not become the reason the URL never prints.
+
+    Suppressing an empty value is right; suppressing a real one would quietly
+    delete the explanation the warning exists to offer.
+    """
+    monkeypatch.setattr(
+        notify_module, "TRANSPORT_DOC_URL", "https://example.invalid/transports"
+    )
+    reporter, output, _ = _reporter()
+
+    reporter.browserless_transport()
+
+    assert "Why: https://example.invalid/transports" in output.getvalue()
 
 
 def test_scan_output_uses_instance_counters_and_keeps_claimed_sites() -> None:

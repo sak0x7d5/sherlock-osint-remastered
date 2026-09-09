@@ -778,7 +778,12 @@ class TerminalReporter(QueryNotify):
             "did not confirm."
         )
         # Printed plainly, not as a terminal hyperlink -- see TRANSPORT_DOC_URL.
-        self.hint(f"Why: {TRANSPORT_DOC_URL}")
+        # Guarded because that constant is deliberately empty until the page
+        # exists, and an unguarded f-string printed a bare "Why:" pointing at
+        # nothing on every browserless scan -- the dangling-label failure the
+        # constant's own comment says each caller already avoids.
+        if TRANSPORT_DOC_URL:
+            self.hint(f"Why: {TRANSPORT_DOC_URL}")
 
     def ai_extractions_from_other_models(
         self,

@@ -178,10 +178,18 @@ FieldKind = Literal["spin", "toggle", "text", "folder", "model"]
 # is the absence of one and cannot be reset to.
 NO_DEFAULT = object()
 
-# PLACEHOLDER. The page does not exist yet and the repository is still private,
-# so this 404s for anyone who follows it. Tracked in TODO; do not ship a release
-# pointing at example.com. Every message carrying it states its reason in full
-# first, so it is always a "read more" and never the only explanation.
+# EMPTY, deliberately, and every surface that prints it guards on that. It held
+# "https://example.com" as a placeholder, which meant the settings help line,
+# the plain-text listing and the scan warning each offered a "read more" that
+# went nowhere. An obviously fake link is worse than no link: it reads as an
+# oversight in a tool whose whole job is telling you what is real. Emptying it
+# then exposed the other half of the same bug -- the scan warning interpolated
+# it unconditionally and printed a bare "Why:" with nothing after it -- so that
+# caller is guarded too. Put the real URL here when the page exists; nothing
+# else needs changing.
+#
+# Every message carrying it states its reason in full first, so it is always a
+# "read more" and never the only explanation.
 #
 # PRINTED AS PLAIN TEXT, never as a terminal hyperlink. That was tried and
 # measured on 2026-08-12: Textual does not emit OSC 8 for a Rich `link` style at
@@ -191,13 +199,6 @@ NO_DEFAULT = object()
 # worked in Windows Terminal and not in cmd.exe. A plain URL is honest, is
 # copyable everywhere, and terminals that autodetect URLs make it clickable
 # themselves without us claiming they will.
-# EMPTY, deliberately. It held "https://example.com" as a placeholder, which
-# meant every surface carrying it -- the settings help line, the plain-text
-# listing, the scan warning -- offered a "read more" that went nowhere. An
-# obviously fake link is worse than no link: it reads as an oversight in a tool
-# whose whole job is telling you what is real. Put the real URL here when the
-# page exists; everything that prints it already guards on it being non-empty,
-# so nothing needs changing but this line.
 TRANSPORT_DOC_URL = ""
 
 
