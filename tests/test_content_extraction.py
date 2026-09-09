@@ -4,6 +4,7 @@ from sherlock_project.content_extraction import (
     MAX_PROFILE_CONTENT_CHARS,
     extract_profile_content,
     inspect_profile_content,
+    strip_site_branding,
 )
 
 INSTAGRAM_HTML = """
@@ -388,3 +389,123 @@ def test_json_reader_settles_a_body_too_deeply_nested_to_parse():
 
     assert diagnostics.content == ""
     assert diagnostics.outcome == "no_extractable_content"
+
+
+STEAM_HTML = """
+<html><head>
+<title>Steam Community :: Erik</title>
+<meta property="og:title" content="Steam Community :: Erik">
+<meta name="description" content="Nothing to see here, move along.">
+</head><body><div>Install Steam | language | support</div></body></html>
+"""
+
+
+@pytest.mark.parametrize(
+    ("title", "site_name", "site_url", "expected"),
+    [
+        # The site's own name is never the user's name, and the scanner
+        # already knows the site's name -- no per-site rule required.
+        (
+            "Steam Community :: Erik",
+            "Steam",
+            "https://steamcommunity.com/id/7ghost/",
+            "Erik",
+        ),
+        (
+            "Hana Okonkwo (@tallowbird) - Pinbase",
+            "Pinbase",
+            "https://pinbase.example/tallowbird",
+            "Hana Okonkwo (@tallowbird)",
+        ),
+        # Brand plus page furniture in one segment.
+        (
+            "Erik T. Halvorsen (@7ghost) • Instagram photos and videos",
+            "Instagram",
+            "https://instagram.com/7ghost",
+            "Erik T. Halvorsen (@7ghost)",
+        ),
+        # Host labels are rejoined, so a two-label brand still matches.
+        ("dev.to: 7ghost's profile", "DEV", "https://dev.to/7ghost", "7ghost's profile"),
+        ("GitHub - 7ghost", "GitHub", "https://github.com/7ghost", "7ghost"),
+        # Substring matching would eat this: `Interest` is inside `Pinterest`.
+        (
+            "Erik - Interest Group",
+            "Pinterest",
+            "https://pinterest.com/erik",
+            "Erik - Interest Group",
+        ),
+        # Deciding a page has no title is the caller's job, so the last
+        # surviving segment is never stripped.
+        (
+            "Steam Community",
+            "Steam",
+            "https://steamcommunity.com/id/7ghost/",
+            "Steam Community",
+        ),
+        # Furniture alone is never branding.
+        ("Profile - Home", "Steam", "https://steamcommunity.com/", "Profile - Home"),
+        # Nothing to strip, nothing changed.
+        ("Erik Halvorsen", "Steam", "https://steamcommunity.com/", "Erik Halvorsen"),
+    ],
+)
+def test_strip_site_branding_uses_the_site_the_scanner_already_knows(
+    title: str,
+    site_name: str,
+    site_url: str,
+    expected: str,
+):
+    assert strip_site_branding(title, site_name=site_name, site_url=site_url) == expected
+
+
+def test_page_title_reaches_pass_one_without_the_site_name():
+    result = extract_profile_content(
+        STEAM_HTML,
+        searched_username="7ghost",
+        site_name="Steam",
+        site_url="https://steamcommunity.com/id/7ghost/",
+    )
+
+    assert "- Title: Erik" in result
+    assert "Steam Community :: Erik" not in result
+
+
+def test_site_branding_is_left_alone_when_the_site_is_unknown():
+    """A caller with no site identity gets exactly the previous behaviour."""
+
+    result = extract_profile_content(STEAM_HTML)
+
+    assert "- Title: Steam Community :: Erik" in result
+
+
+@pytest.mark.parametrize(
+    ("title", "site_name"),
+    [
+        # A bare colon is a time, not a title separator.
+        ("Live at 19:00 - Pinbase", "Pinbase"),
+        ("Erik 3:1 ratio | Pinbase", "Pinbase"),
+    ],
+)
+def test_strip_site_branding_does_not_split_on_colons_inside_values(
+    title: str,
+    site_name: str,
+):
+    stripped = strip_site_branding(title, site_name=site_name, site_url=None)
+
+    assert ":" in stripped
+    assert site_name not in stripped
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Erik 3:1 ratio | Steam",
+        "Live at 19:00 - Steam",
+        "Hana Okonkwo • Ceramics",
+    ],
+)
+def test_strip_site_branding_returns_an_unstripped_title_unchanged(title: str):
+    """Rejoining is a rewrite, and an untouched title has not earned one."""
+
+    assert (
+        strip_site_branding(title, site_name="Pinbase", site_url=None) == title
+    )
