@@ -89,6 +89,18 @@ talks to:
 
 Pass `--local` to use only the bundled manifest and avoid the first two.
 
+One further outbound call is not upstream's but is listed here for the same
+reason, since the table above is what an operator reads to learn what this
+tool talks to:
+
+| Resource | Used for | Defined in |
+| - | - | - |
+| `https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest` | Update check, once per scan | `sherlock_project/__init__.py` |
+
+It runs off-thread with a 10s timeout, and any failure -- including the 404
+returned while no release exists -- is swallowed into a verbose-only debug
+line, so it can neither block nor fail a scan.
+
 ## Naming
 
 This repository has not been renamed away from the upstream package name
