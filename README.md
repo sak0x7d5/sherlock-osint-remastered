@@ -274,6 +274,18 @@ sherlock settings           Edit stored defaults for scans, output and AI
 `sherlock ui` puts all three in one place and needs a terminal; without one it
 says so and exits rather than failing.
 
+> [!NOTE]
+> **On macOS, turn on Option-as-Meta first.** The UI drives everything from
+> `alt` — `alt+1/2/3` for the tabs, `alt+q` to quit, `alt+a` and `alt+f` in the
+> scan pane. macOS terminals send composed characters instead by default, so
+> `alt+3` types `#` into the username field rather than switching tab.
+>
+> - **Terminal.app** — Settings → Profiles → Keyboard → *Use Option as Meta key*
+> - **iTerm2** — Settings → Profiles → Keys → *Left Option key* → `Esc+`
+>
+> Without it the tabs are still clickable, and `Tab` eventually reaches the tab
+> bar where `←`/`→` switch tabs — but the shortcuts in the footer will not work.
+
 <details>
 <summary><strong>Scan options</strong></summary>
 
