@@ -31,8 +31,11 @@ Three things are different here:
 | **Every result is kept** | Results persist to SQLite, including *which transport* produced each row. Re-running resumes instead of re-scanning, and a fast run never overwrites better evidence from a browser run. |
 | **A local model reads the pages** | Two passes: per-site extraction of structured facts, then cross-site synthesis into one profile where every field records which sites support it and how confident the merge is. |
 
-Nothing leaves your machine except requests to the sites being checked and to
-the model endpoint you configure yourself.
+Nothing leaves your machine except requests to the sites being checked, to the
+model endpoint you configure yourself, and one call per scan to GitHub's API to
+see whether a newer release exists. That last one is listed in
+[NOTICE.md](NOTICE.md) with everything else this tool talks to; it fails
+silently and never blocks a scan.
 
 ## Requirements
 
