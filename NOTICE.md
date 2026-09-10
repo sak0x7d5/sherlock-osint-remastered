@@ -20,6 +20,12 @@ Upstream's MIT license is retained in [LICENSE](LICENSE) alongside the
 copyright for changes made in this repository. The original copyright notice
 is preserved as the license requires.
 
+That file carries two copyright lines: the 2019 line is the upstream Sherlock
+Project's, from which this work derives, and the 2026 line covers changes made
+here. The licence body itself is left verbatim -- explanatory prose inside it
+stops GitHub identifying the file as MIT, which is why that explanation lives
+in this file instead.
+
 ## Inherited from upstream
 
 - The legacy site manifest (`sherlock_project/resources/data.json`) and its
