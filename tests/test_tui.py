@@ -2556,6 +2556,31 @@ async def test_deleting_a_username_removes_both_tables(db: SherlockDB):
     assert await db.delete_username("wrongperson") == 0
 
 
+async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
+    """Wait for the app's workers, not just for the event loop to go quiet.
+
+    `pilot.pause()` ends at `wait_for_idle`, which is satisfied the moment no
+    callback is READY to run -- and a `@work` worker awaiting SQLite through
+    aiosqlite's thread executor leaves the loop exactly that idle while its I/O
+    is outstanding. So a `for _ in range(20): await pilot.pause()` loop can spin
+    through all twenty iterations in microseconds without the worker advancing a
+    step. On a fast disk the I/O lands between iterations and the loop looks
+    like it works; on a slower runner it does not, which is how macOS CI failed
+    `test_confirming_delete_erases_and_refreshes_the_list` with `assert 2 == 1`
+    despite the test already pausing twenty times.
+
+    `workers.wait_for_complete()` is the actual barrier. It stays inside a
+    bounded loop because these flows CHAIN workers -- the delete finishes, and
+    only then does the reload it triggers start -- so one barrier does not
+    always cover the whole sequence.
+    """
+    for _ in range(tries):
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        if predicate is None or predicate():
+            return
+
+
 async def test_delete_asks_first_and_cancelling_keeps_everything():
     """The only irreversible action in the app, and the only one that asks.
 
@@ -2612,10 +2637,10 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
     app = SherlockUI()
     async with app.run_test() as pilot:
         await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         table = app.query_one("#username-list", DataTable)
+        await _settle(app, pilot, lambda: table.row_count == 2)
         assert table.row_count == 2
         selected = app.query_one(ResultsPane)._selected
 
@@ -2623,10 +2648,7 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
         await pilot.pause()
         assert isinstance(app.screen, ConfirmScreen)
         await pilot.click("#confirm-yes")
-        for _ in range(20):
-            await pilot.pause()
-            if table.row_count == 1:
-                break
+        await _settle(app, pilot, lambda: table.row_count == 1)
 
         assert table.row_count == 1
 
