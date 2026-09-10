@@ -2135,21 +2135,35 @@ async def test_the_app_opens_on_scan_with_three_tabs():
     """Tab order is the order of a session: scan, then read, then adjust."""
     app = SherlockUI()
     async with app.run_test() as pilot:
-        from textual.widgets import TabbedContent
+        from textual.widgets import TabbedContent, TabPane
 
         tabs = app.query_one(TabbedContent)
         assert tabs.active == "tab-scan"
 
-        pane_ids = [pane.id for pane in app.query(".-content-tab")] or [
+        # TabPane, not ".-content-tab". The latter is an internal Textual class
+        # that matches nothing in 8.x, and it sat behind an `or [...]` fallback
+        # naming the three ids by hand -- so an empty query silently substituted
+        # the literal and the length check compared it to itself. It asserted
+        # the tabs existed while being unable to observe whether they did.
+        assert [pane.id for pane in tabs.query(TabPane)] == [
             "tab-scan",
             "tab-results",
             "tab-settings",
         ]
-        assert len(pane_ids) == 3
 
+        # pause() after each press, because press() only awaits `_wait_for_screen`
+        # and the binding's action can still be sitting on the app's queue when
+        # the next line runs. Only pause() adds the `wait_for_idle` that drains
+        # it. This is the suite's convention everywhere else; the two presses
+        # below were the exception, and macOS CI is where the race finally
+        # showed -- the session-scoped browser fixture from the Playwright tests
+        # is still alive on the same session-scoped event loop, so the pump has
+        # company.
         await pilot.press("alt+2")
+        await pilot.pause()
         assert tabs.active == "tab-results"
         await pilot.press("alt+3")
+        await pilot.pause()
         assert tabs.active == "tab-settings"
 
 
@@ -2167,6 +2181,11 @@ async def test_function_keys_switch_tabs_because_digits_would_not():
         from textual.widgets import Input, TabbedContent
 
         await pilot.press("u", "1", "2")
+        # Same pause, and it matters more here than it looks: this asserts a tab
+        # switch did NOT happen, so without settling first the test would pass
+        # by observing the app too early rather than by the digits being typed
+        # into the field.
+        await pilot.pause()
         assert app.query_one("#target-input", Input).value == "u12"
         assert app.query_one(TabbedContent).active == "tab-scan"
 
