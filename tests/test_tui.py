@@ -3139,6 +3139,7 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
     button there would produce an empty profile and look broken rather than say
     why.
     """
+    from textual.geometry import Region
     from textual.widgets import Button, Static
 
     await _results_with("noevidence")
@@ -3155,11 +3156,158 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "scanned without analysis" in hint
-        assert "Scan with analysis" in str(
+        # Named for the trip it makes, not for a build it cannot do.
+        assert "Scan this username with analysis" in str(
             app.query_one("#profile-build", Button).label
         )
         # No point offering anchors for a build that cannot happen.
         assert app.query_one("#profile-anchors", Button).display is False
+        # And the pane says so once. The profile block's "No profile stored,
+        # scanning builds one" is wrong here -- this username HAS been
+        # scanned -- so the actions block is left to answer alone.
+        block = app.query_one("#detail-profile", Static)
+        drawn = " ".join(
+            strip.text
+            for strip in block.render_lines(
+                Region(0, 0, block.region.width, block.region.height)
+            )
+        )
+        assert "No profile stored" not in drawn
+
+
+async def test_the_pointer_state_does_not_stick_to_the_next_username():
+    """The flat treatment is a state, not a setting.
+
+    It is carried by a class on `#profile-actions`, and a class that is added
+    on one row and never removed is the classic way a master/detail pane starts
+    lying: click a username with no evidence, click one with evidence, and the
+    commit button would still be wearing the pointer's flat chrome -- and the
+    Anchors button would still be laid out beside a spacer the stylesheet had
+    hidden. Both directions are checked, because only removing it is the bug.
+    """
+    from textual.widgets import Button
+
+    from sherlock_project.tui.results_pane import NO_EVIDENCE
+
+    await _results_with("bare")
+    await _results_with("stocked", extractions=2)
+
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(12):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        pane = app.query_one(ResultsPane)
+        actions = app.query_one("#profile-actions")
+        build = app.query_one("#profile-build", Button)
+        spacer = app.query_one("#profile-spacer")
+
+        for username, pointer in (("bare", True), ("stocked", False),
+                                  ("bare", True)):
+            pane.select_username(username)
+            for _ in range(14):
+                await pilot.pause()
+            assert actions.has_class(NO_EVIDENCE) is pointer, username
+            # And the layout that the class drives actually followed it.
+            assert spacer.display is not pointer, username
+            assert build.region.height == (1 if pointer else 3), username
+
+
+@pytest.mark.parametrize("size", [(110, 34), (80, 30), (140, 40)])
+async def test_the_pointer_button_draws_its_whole_label(size):
+    """The pixels, unusually -- because the attribute was never the bug.
+
+    This file prefers assertions about decisions, and one holds here: a control
+    that cannot say what it does is not a control. But `Button.label` read back
+    as "Scan with analysis" for the entire time the screen said "Scan with".
+    `#profile-buttons` is a `1fr 12 20` grid and Textual SKIPS hidden children
+    when it assigns cells, so hiding `#profile-anchors` in this state slid the
+    build button out of the 20-cell column into the 12-cell one: ten usable
+    cells for an eighteen-character label, clipped with no ellipsis to admit it.
+    Only a render can catch that, and only across widths -- a fixed column hides
+    the fault at whatever size it was last eyeballed at.
+    """
+    from textual.geometry import Region
+    from textual.widgets import Button
+
+    await _results_with("noevidence")
+
+    app = SherlockUI()
+    async with app.run_test(size=size) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(12):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        button = app.query_one("#profile-build", Button)
+        drawn = " ".join(
+            strip.text
+            for strip in button.render_lines(
+                Region(0, 0, button.region.width, button.region.height)
+            )
+        )
+        for word in str(button.label).split():
+            assert word in drawn, (
+                f"{word!r} clipped out of the button at {size}: {drawn!r}"
+            )
+
+
+async def test_the_pointer_button_stays_operable_by_mouse_and_keyboard():
+    """Flattening the chrome must not flatten the affordance.
+
+    It loses its border here, which is a look, not a demotion: it is still a
+    Button, so it stays in the Tab order and stays pressable both ways. The
+    focus rule matters as much as the hover one -- the ID selector that styles
+    it outranks Textual's `Button:focus`, so without an explicit focus style
+    the only remaining cue is an 8/255 background shift and a keyboard user is
+    left with no idea where they are.
+    """
+    from textual.widgets import Button
+
+    await _results_with("noevidence")
+
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(12):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        button = app.query_one("#profile-build", Button)
+        assert button in app.screen.focus_chain
+
+        app.set_focus(button)
+        for _ in range(3):
+            await pilot.pause()
+        focused = button.styles.background
+        app.set_focus(None)
+        for _ in range(3):
+            await pilot.pause()
+        blurred = button.styles.background
+        # Not merely different -- different enough to see across the row.
+        assert focused != blurred
+        delta = abs(
+            focused.rgb[0] * 0.2126
+            + focused.rgb[1] * 0.7152
+            + focused.rgb[2] * 0.0722
+            - (
+                blurred.rgb[0] * 0.2126
+                + blurred.rgb[1] * 0.7152
+                + blurred.rgb[2] * 0.0722
+            )
+        )
+        assert delta > 15, f"focus is invisible: {blurred} -> {focused}"
 
 
 async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
