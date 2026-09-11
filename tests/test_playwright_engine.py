@@ -2,11 +2,20 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
 import sherlock_project.playwright_engine as playwright_module
 from sherlock_project.playwright_engine import BrowserUnavailable, PlaywrightEngine
+
+
+async def _already_installed(_callback=None) -> None:
+    """Stand-in for a machine that already has the browser binary.
+
+    `ensure_browser_binary` is awaited, so a plain function patched over it
+    would hand `__aenter__` a None to await.
+    """
 
 
 @pytest.mark.parametrize("invalid_method", ['', 'unkonwn_method'])
@@ -31,7 +40,8 @@ async def test_semaphore_size_follows_requested_concurrency() -> None:
     assert engine.sem.locked()
 
 
-def test_missing_browser_binary_reports_installation_without_printing(
+@pytest.mark.asyncio
+async def test_missing_browser_binary_reports_installation_without_printing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -48,11 +58,92 @@ def test_missing_browser_binary_reports_installation_without_printing(
         lambda: installs.append(True),
     )
 
-    PlaywrightEngine.ensure_browser_binary(statuses.append)  # type: ignore[arg-type]
+    await PlaywrightEngine.ensure_browser_binary(statuses.append)  # type: ignore[arg-type]
 
     assert statuses == ["installing"]
     assert installs == [True]
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.asyncio
+async def test_binary_download_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first run must keep redrawing while the browser downloads.
+
+    `ensure_binary` is minutes of synchronous network I/O. Called on the loop
+    it stopped everything else on it -- including the 0.1s timer painting the
+    `installing` step it had just announced, and the AI model load started
+    moments earlier to overlap with it. The screen froze on the very frame
+    that was there to say the wait was expected.
+    """
+    download_started = threading.Event()
+    release_download = threading.Event()
+    download_thread: list[str] = []
+    statuses: list[str] = []
+
+    def blocking_install() -> None:
+        download_thread.append(threading.current_thread().name)
+        download_started.set()
+        assert release_download.wait(timeout=10)
+
+    monkeypatch.setattr(
+        playwright_module,
+        "binary_info",
+        lambda: {"installed": False},
+    )
+    monkeypatch.setattr(playwright_module, "ensure_binary", blocking_install)
+
+    install = asyncio.create_task(
+        PlaywrightEngine.ensure_browser_binary(statuses.append)  # type: ignore[arg-type]
+    )
+    await asyncio.to_thread(download_started.wait, 10)
+
+    # Announced before the transfer starts, or there is nothing on screen to
+    # keep alive in the first place.
+    assert statuses == ["installing"]
+    assert download_thread[0] != threading.current_thread().name
+
+    # Real timer ticks, completed while the download is still holding its
+    # thread: this is the property that was broken, and `sleep(0)` would pass
+    # on a blocked loop too.
+    ticks = 0
+    while ticks < 3:
+        await asyncio.sleep(0.01)
+        ticks += 1
+    assert not install.done()
+
+    release_download.set()
+    await asyncio.wait_for(install, timeout=10)
+    assert statuses == ["installing"]
+
+
+@pytest.mark.asyncio
+async def test_download_failure_reaches_the_awaiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A download that fails in its thread must raise, not hang.
+
+    The result is carried back across the thread by hand, and an earlier
+    draft captured the exception in a closure: `except ... as error` unbinds
+    `error` the moment the block ends, so whether the awaiter got the failure
+    or waited forever came down to which thread reached the callback first.
+    """
+    def failing_install() -> None:
+        raise OSError("certificate verify failed")
+
+    monkeypatch.setattr(
+        playwright_module,
+        "binary_info",
+        lambda: {"installed": False},
+    )
+    monkeypatch.setattr(playwright_module, "ensure_binary", failing_install)
+
+    with pytest.raises(OSError, match="certificate verify failed"):
+        await asyncio.wait_for(
+            PlaywrightEngine.ensure_browser_binary(),
+            timeout=10,
+        )
 
 
 @pytest.mark.asyncio
@@ -93,7 +184,7 @@ async def test_browser_lifecycle_reports_starting_and_ready(
     monkeypatch.setattr(
         PlaywrightEngine,
         "ensure_browser_binary",
-        staticmethod(lambda _callback=None: None),
+        staticmethod(_already_installed),
     )
     monkeypatch.setattr(playwright_module, "launch_async", fake_launch)
 
@@ -120,7 +211,7 @@ async def test_startup_failure_becomes_browser_unavailable(
     entrypoint recognise the condition and point at --no-webbrowser instead of
     printing a transport library's stack.
     """
-    def failed_install(_callback=None) -> None:
+    async def failed_install(_callback=None) -> None:
         raise OSError("certificate verify failed")
 
     monkeypatch.setattr(
@@ -145,7 +236,7 @@ async def test_startup_cancellation_is_not_converted(
     interrupting a first run would report an unavailable browser instead of
     an interrupted one.
     """
-    def cancelled_install(_callback=None) -> None:
+    async def cancelled_install(_callback=None) -> None:
         raise asyncio.CancelledError
 
     monkeypatch.setattr(
@@ -173,7 +264,7 @@ async def test_browser_launch_cancellation_notifies_without_started_resources(
     monkeypatch.setattr(
         PlaywrightEngine,
         "ensure_browser_binary",
-        staticmethod(lambda _callback=None: None),
+        staticmethod(_already_installed),
     )
     monkeypatch.setattr(playwright_module, "launch_async", blocked_launch)
 
@@ -219,7 +310,7 @@ async def test_context_creation_cancellation_closes_started_browser(
     monkeypatch.setattr(
         PlaywrightEngine,
         "ensure_browser_binary",
-        staticmethod(lambda _callback=None: None),
+        staticmethod(_already_installed),
     )
     monkeypatch.setattr(playwright_module, "launch_async", fake_launch)
 
@@ -272,7 +363,7 @@ async def test_body_cancellation_notifies_before_context_and_browser_close(
     monkeypatch.setattr(
         PlaywrightEngine,
         "ensure_browser_binary",
-        staticmethod(lambda _callback=None: None),
+        staticmethod(_already_installed),
     )
     monkeypatch.setattr(playwright_module, "launch_async", fake_launch)
 
@@ -329,7 +420,7 @@ async def test_context_close_failure_still_closes_browser(
     monkeypatch.setattr(
         PlaywrightEngine,
         "ensure_browser_binary",
-        staticmethod(lambda _callback=None: None),
+        staticmethod(_already_installed),
     )
     monkeypatch.setattr(playwright_module, "launch_async", fake_launch)
 

@@ -439,8 +439,16 @@ class TerminalReporter(QueryNotify):
                         status="installing runtime",
                     )
             else:
+                # No progress row to animate on this path, so the run goes
+                # quiet for the length of the download. Saying how long that
+                # is, and that it happens once, is the whole difference
+                # between a wait and an apparent hang.
                 self.warning(
                     "Web scanner runtime is missing; installing it now"
+                )
+                self.hint(
+                    "One-off download of a browser build; it can take a few "
+                    "minutes before the scan starts."
                 )
         elif status == "starting":
             if self._web_scanner_started_at is None:

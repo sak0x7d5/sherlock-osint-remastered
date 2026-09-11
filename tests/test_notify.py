@@ -288,6 +288,41 @@ def test_interactive_output_uses_live_progress_rendering() -> None:
     assert "Profile extraction 1/1 · 1 with facts · 0 no facts" in rendered
 
 
+def test_plain_output_says_the_install_is_a_one_off_download() -> None:
+    """The non-interactive path has no spinner to carry the wait.
+
+    A first run prints one line and then says nothing for the length of a
+    browser download. Without the duration, that silence is the thing users
+    read as a hang and kill -- which is what the status was added to stop.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.browser_status("installing")
+
+    rendered = output.getvalue()
+    assert "Web scanner runtime is missing; installing it now" in rendered
+    assert "One-off download" in rendered
+    assert "few minutes" in rendered
+
+
+def test_interactive_install_is_not_announced_twice() -> None:
+    """The interactive path uses the progress row and nothing else.
+
+    The hint is a plain line; printed while a live row is up it would scroll
+    above the row it describes and stay there after the row is gone.
+    """
+    reporter, output, _ = _reporter(no_color=False, force_terminal=True)
+
+    reporter.browser_status("installing")
+
+    assert "One-off download" not in output.getvalue()
+    task_id = reporter._web_scanner_task_id
+    assert task_id is not None
+    assert reporter._progress._tasks[task_id].fields["status"] == (
+        "installing runtime"
+    )
+
+
 def test_interactive_stage_rows_update_in_place_then_leave_one_final_line() -> None:
     reporter, output, _ = _reporter(no_color=False, force_terminal=True)
 
