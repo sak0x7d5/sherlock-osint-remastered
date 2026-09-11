@@ -24,13 +24,22 @@ list means something different once you know six sites gave no answer, and now
 you can see that without leaving the accounts. Hiding the number was the only
 real cost of switching, so it is the one thing that does not get hidden.
 
-**A symbol column comes with a key.** The mark column is two cells wide and
-its header is blank, which left the distinction this tool exists to make --
-blocked is not inconclusive is not rejected -- drawn in symbols nobody had been
-shown a glossary for. The live feed on the scan pane does not have that problem
-because it prints the word beside every symbol; a table has no room for that,
-so the sentence goes above the column instead, naming the symbols that section
-is actually drawing and disappearing on the one section that draws none.
+**A symbol column comes with a key, where the symbols contend.** The mark
+column is two cells wide and its header is blank, which left the distinction
+this tool exists to make -- blocked is not inconclusive is not rejected --
+drawn in symbols nobody had been shown a glossary for. The live feed on the
+scan pane does not have that problem because it prints the word beside every
+symbol; a table has no room for that, so the sentence goes above the column
+instead, naming the symbols that section is actually drawing.
+
+It sits on its own line rather than beside the tabs, which is where the spare
+width looks like it is. Measured, that space is not spare: `Tabs` is a
+scrolling strip, so squeezed it drops tabs rather than wrapping or
+ellipsizing them, silently and from the left. A key sharing that row needs a
+126-column terminal to leave three tabs intact and 138 for four -- below that
+it eats the way back to ACCOUNTS. One row of table is the cheaper thing to
+spend, and it is only spent on UNRESOLVED: ACCOUNTS is one symbol repeated
+down a list the tab already names, and PROFILE has no symbols at all.
 
 **Everything that is not interactive is still a Rich renderable inside a
 `Static`.** Widgets earn their keep when something can be clicked or focused --
@@ -171,7 +180,10 @@ class ResultsPane(Vertical):
         # the table names those and only those. Filled by the fill methods
         # rather than listed here as what each section may contain: a key
         # offering `rejected` when nothing was rejected is noise in a line
-        # whose whole job is to be short enough to read in passing.
+        # whose whole job is to be short enough to read in passing. A section
+        # that registers nothing gets no key, which is how ACCOUNTS and
+        # PROFILE opt out -- keyed by section rather than hardcoded to the one
+        # that uses it, so a section added later only has to say what it draws.
         self._section_statuses: dict[str, list[QueryStatus]] = {}
         # Live state for a rebuild in progress.
         self._build_reporter: TuiReporter | None = None
@@ -489,16 +501,17 @@ class ResultsPane(Vertical):
     def _redraw_legend(self) -> None:
         """Name the symbols the section on screen is actually using.
 
-        Per section, because the sections do not share a vocabulary: every
-        account row is a hit, so `● found` is the whole key there, while
-        UNRESOLVED is the one place the distinction between "the site blocked
-        us" and "the rules did not decide" is drawn -- and that distinction is
-        the tool's central claim, made in two cells of a table nobody has been
-        given a glossary for.
+        Per section, because the sections do not share a vocabulary, and a key
+        only earns its row where symbols contend. That is UNRESOLVED, and only
+        UNRESOLVED: it is the one place the distinction between "the site
+        blocked us", "the rules did not decide" and "the site would never have
+        allowed this name" is drawn -- the tool's central claim, made in two
+        cells of a table nobody has been given a glossary for. ACCOUNTS is one
+        symbol repeated, and PROFILE has none at all.
 
         Hidden rather than blanked when there is nothing to explain. A blank
-        line still occupies a row, and PROFILE has no symbols at all; it should
-        not pay for a key it does not have.
+        line still occupies a row, and this pane is short enough that every row
+        spent on chrome is a finding not shown.
         """
         current = self.query_one("#detail-switch", ContentSwitcher).current
         statuses = self._section_statuses.get(current or "", [])
@@ -603,9 +616,11 @@ class ResultsPane(Vertical):
         table = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
         table.clear()
         self._account_urls.clear()
-        self._section_statuses[SEC_ACCOUNTS] = (
-            [QueryStatus.CLAIMED] if accounts else []
-        )
+        # No entry in `_section_statuses`, which is what keeps the key off this
+        # section. Every row here is a hit, so the mark column is one symbol
+        # repeated down a list the tab already calls ACCOUNTS -- there is
+        # nothing for a key to disambiguate, and it would be spending a row of
+        # findings to say so. A key earns its row where symbols contend.
         if not accounts:
             # One row rather than an empty table, so the section reads as
             # answered rather than as still loading.
