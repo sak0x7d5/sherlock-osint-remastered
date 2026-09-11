@@ -474,6 +474,25 @@ TabPane { padding: 0 2; }
 }
 .panel-accent { border: round $accent; }
 
+/* Hover text, app-wide. Textual ships a `Tooltip` already; these three rules
+   are the ones its defaults get wrong on a screen this dense.
+
+   A BORDER, because the default box is `background: $panel` -- the same paint
+   as the toggles and the appbar it floats over, so it read as part of the
+   layout rather than as something that had just appeared. Accent rather than
+   the muted border `.panel` uses: this is the one thing on screen the pointer
+   is asking about.
+
+   `max-width: 52` rather than the default 40. These carry two sentences, and at
+   40 cells minus padding the second one broke into a narrow column five lines
+   tall. `padding: 0 1` rather than `1 2` for the same reason -- with a border
+   the default padding spends four rows and four columns on air. */
+Tooltip {
+    max-width: 52;
+    padding: 0 1;
+    border: round $accent;
+}
+
 /* ---- scan pane ------------------------------------------------------- */
 
 /* The target row. A grid, not a horizontal box, because the label, the field
@@ -529,17 +548,6 @@ TabPane { padding: 0 2; }
 .toggle:hover { background: $panel-lighten-2; }
 .toggle:focus { text-style: bold; }
 #scan-config { height: 1; color: $text-muted; }
-/* The toggles, explained -- named for the settings screen's `#help`, which is
-   the same line doing the same job. Every sentence fits an 80-column terminal
-   unwrapped, so this is two rows at the width anything is expected to run at;
-   `height: auto` rather than 2 so a narrower one wraps instead of losing a
-   sentence off the bottom. `margin` for the gap above, never `padding` -- the
-   trap the line above this one and the target button have each paid for once.
-
-   Colour set here rather than as a style on the Text, so the one span that
-   overrides it -- the yellow "no model configured" warning -- is the only
-   styled thing in the string and reads as deliberate. */
-#options-help { height: auto; margin: 1 0 0 0; color: $text-muted; }
 
 /* Counters left, live feed right. The counters column is fixed rather than
    proportional: it holds a known amount of text, and letting it grow with the

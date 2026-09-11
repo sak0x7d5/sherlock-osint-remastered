@@ -1455,45 +1455,42 @@ def test_the_config_line_names_the_setting_that_changes_what_a_result_means():
     assert "no browser" not in describe_settings({"scan.webbrowser": True})
 
 
-def test_the_options_hint_explains_both_toggles_and_names_each_one():
-    """Two unlabelled sentences under two adjacent buttons is a matching
-    exercise, and the wrong pairing is the one that gets read."""
-    hint = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False).plain
+def test_each_toggle_tooltip_names_the_toggle_it_belongs_to():
+    """A floating box beside the pointer carries no other clue about which of
+    two adjacent controls it is describing."""
+    analysis, verbose = describe_options(
+        {"ai.model": "vendor/m"}, use_ai=False, verbose=False
+    )
+    assert analysis.startswith("AI analysis — OFF")
+    assert verbose.startswith("Verbose — OFF")
 
-    assert hint.count("\n") == 1
-    first, second = hint.splitlines()
-    assert first.startswith("analysis off")
-    assert second.startswith("verbose off")
 
-
-def test_the_options_hint_gives_the_consequence_not_just_the_state():
+def test_the_toggle_tooltips_give_the_consequence_not_just_the_state():
     """The toggle already shows `off`. What it cannot show is what turning it
     off costs -- the results tab builds its profile from what analysis stores,
     so a scan run without it can never produce one."""
-    off = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False)
-    assert "no profile can be built" in off.plain
+    off, _ = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False)
+    assert "cannot build a profile" in off
 
-    on = describe_options({"ai.model": "vendor/m"}, use_ai=True, verbose=False)
-    assert "reads every hit" in on.plain
+    on, _ = describe_options({"ai.model": "vendor/m"}, use_ai=True, verbose=False)
+    assert "reads every hit" in on
 
 
-def test_the_options_hint_warns_when_analysis_is_on_with_no_model():
+def test_the_analysis_tooltip_says_so_when_no_model_is_configured():
     """The one state the toggle cannot honour on its own -- and the reason is
-    two tabs away, so the line has to name where to go."""
-    warned = describe_options({}, use_ai=True, verbose=False)
-    assert "no model is configured" in warned.plain
-    assert "SETTINGS" in warned.plain
-    # Styled, not just worded: this is the difference between a scan that
-    # extracts and one that quietly does not.
-    assert any(span.style == "yellow" for span in warned.spans)
+    two tabs away, so the text has to name where to go."""
+    warned, _ = describe_options({}, use_ai=True, verbose=False)
+    assert "no model is configured" in warned
+    assert "SETTINGS" in warned
 
-    # Nothing is asking for a model, so its absence is not a warning yet. The
-    # stored-settings line beside this one still reports it as stored state.
-    assert "model" not in describe_options({}, use_ai=False, verbose=False).plain
+    # Nothing is asking for a model, so its absence is not worth raising here.
+    # The stored-settings line beside the toggles still reports it.
+    quiet, _ = describe_options({}, use_ai=False, verbose=False)
+    assert "no model" not in quiet
     assert "no model configured" in describe_settings({})
 
 
-def test_the_options_hint_defers_a_toggle_flipped_during_a_scan():
+def test_a_toggle_tooltip_defers_a_toggle_flipped_during_a_scan():
     """Both toggles are read once, when the scan starts, so flipping either
     mid-run changes the NEXT scan and nothing about this one.
 
@@ -1506,24 +1503,24 @@ def test_the_options_hint_defers_a_toggle_flipped_during_a_scan():
         use_ai=True,
         verbose=False,
         running=(False, False),
-    ).plain.splitlines()
+    )
 
-    assert "from the next scan" in analysis
+    assert "from the NEXT scan" in analysis
     assert "started without it" in analysis
     # Verbose is what the run is actually using, so it is described rather than
     # deferred. Deferring both would say the wrong thing about one of them.
-    assert "from the next scan" not in verbose
-    assert verbose.startswith("verbose off")
+    assert "NEXT scan" not in verbose
 
 
-def test_the_options_hint_defers_nothing_when_the_toggles_match_the_run():
+def test_the_toggle_tooltips_defer_nothing_when_they_match_the_run():
     """A scan started WITH analysis is already applying it -- telling that
     operator it takes effect next time is simply false."""
-    hint = describe_options(
+    analysis, verbose = describe_options(
         {"ai.model": "vendor/m"}, use_ai=True, verbose=True, running=(True, True)
-    ).plain
-    assert "from the next scan" not in hint
-    assert "reads every hit" in hint
+    )
+    assert "NEXT scan" not in analysis
+    assert "NEXT scan" not in verbose
+    assert "reads every hit" in analysis
 
 
 def test_the_runner_reuses_the_cli_scan_lifecycle():
@@ -2064,78 +2061,84 @@ async def test_the_toggles_show_their_own_state():
         assert "on" in str(app.query_one("#toggle-ai", Button).label)
 
 
-async def test_the_hint_under_the_toggles_follows_them():
-    """The explanation is drawn from the same state the labels are, so the two
-    cannot disagree about what the next scan will do."""
-    from textual.widgets import Static
+async def test_the_toggles_carry_hover_text_that_follows_their_state():
+    """Hung on every redraw, not once at mount.
+
+    The text is a function of state, and a tooltip describing the state the app
+    booted in is worse than none -- nothing about a stale one looks stale.
+    """
+    from textual.widgets import Button
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-
-        def hint() -> str:
-            return app.query_one("#options-help", Static).render().plain
-
-        assert "analysis off" in hint()
-        assert "verbose off" in hint()
+        ai = app.query_one("#toggle-ai", Button)
+        verbose = app.query_one("#toggle-verbose", Button)
+        assert "AI analysis — OFF" in ai.tooltip
+        assert "Verbose — OFF" in verbose.tooltip
 
         await pilot.click("#toggle-ai")
         await pilot.pause()
-        assert "analysis on" in hint()
+        assert "AI analysis — ON" in app.query_one("#toggle-ai", Button).tooltip
 
         await pilot.click("#toggle-verbose")
         await pilot.pause()
-        assert "verbose on" in hint()
+        assert "Verbose — ON" in app.query_one("#toggle-verbose", Button).tooltip
 
 
-async def test_a_toggle_flipped_during_a_scan_says_which_scan_it_applies_to(
-    monkeypatch,
-):
-    """The whole point of tracking what the run was started with.
+async def test_nothing_is_drawn_under_the_options_row():
+    """The reason this is a tooltip and not a pair of lines.
 
-    Held mid-scan by an event the fake session waits on, because the deferral is
-    a property of the window between the scan starting and finishing -- and the
-    clearing at the end is exactly as load-bearing as the setting at the start.
-    A hint left saying "from the next scan" after the scan ended would defer a
-    toggle that is now live.
+    Two permanent sentences explaining controls that do not change during a scan
+    cost three rows the counters and the feed want back, every run, forever
+    after the one time they are read.
     """
-    import asyncio
-
     from textual.widgets import Static
-
-    from sherlock_project.tui import runner as runner_module
-
-    release = asyncio.Event()
-
-    async def fake_session(*, username, reporter, settings_values, **options):
-        await release.wait()
-
-    monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-
-        def hint() -> str:
-            return app.query_one("#options-help", Static).render().plain
-
-        await pilot.press(*"alice")
-        await pilot.press("enter")
-        for _ in range(10):
-            await pilot.pause()
-        assert app.query_one(ScanPane)._scan_running is True
-        assert "from the next scan" not in hint()
-
-        await pilot.click("#toggle-ai")
         await pilot.pause()
-        assert "from the next scan" in hint()
-        assert "this run was started without it" in hint()
+        assert not app.query("#options-help")
+        # The stored-settings summary still rides in the row itself.
+        assert "browser" in app.query_one("#scan-config", Static).render().plain
 
-        release.set()
-        for _ in range(10):
-            await pilot.pause()
 
-        assert app.query_one(ScanPane)._scan_running is False
-        assert "from the next scan" not in hint()
-        assert "analysis on" in hint()
+async def test_hovering_a_toggle_actually_shows_the_tooltip():
+    """The attribute is not the feature -- the popup is.
+
+    `run_test` disables tooltips unless asked, so this is the one test that
+    proves the wiring rather than the text: hover the control, let
+    TOOLTIP_DELAY elapse, and find the box on screen carrying its words.
+    """
+    app = SherlockUI()
+    async with app.run_test(tooltips=True) as pilot:
+        from textual.widgets import Tooltip
+
+        tooltip = app.screen.get_child_by_type(Tooltip)
+        assert tooltip.display is False
+
+        await pilot.hover("#toggle-ai")
+        await pilot.pause(app.TOOLTIP_DELAY + 0.1)
+        await pilot.pause()
+
+        assert tooltip.display is True
+        assert "AI analysis" in tooltip.render().plain
+
+
+async def test_the_profile_button_carries_the_hover_text_too():
+    """What the button IS, beside a line saying what pressing it does NOW.
+
+    The split is what keeps the two from being one answer written twice: the
+    mechanism never changes, the state changes on every redraw.
+    """
+    from textual.widgets import Button
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.press("alt+2")
+        await pilot.pause()
+        anchors = app.query_one("#profile-anchors", Button)
+        assert "Anchors" in anchors.tooltip
+        assert "merging every name every site showed" in anchors.tooltip
 
 
 async def test_re_scan_defeats_the_resume_filter(monkeypatch, tmp_path):
