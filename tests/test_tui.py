@@ -1412,8 +1412,7 @@ async def _start_scan_and_capture(monkeypatch, press):
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await press(pilot, app)
-        await pilot.pause()
-        await pilot.pause()
+        await _settle(app, pilot, lambda: bool(launched))
     return launched
 
 
@@ -1459,8 +1458,7 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await pilot.press("enter")
-        for _ in range(10):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: "use_ai" in captured)
         # Nothing stored for this username, so no prompt and no re-scan.
         assert captured["use_ai"] is False
         assert captured["fresh"] is False
@@ -1468,8 +1466,8 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
         # The analysis toggle reaches the scan.
         await pilot.click("#toggle-ai")
         await pilot.press("ctrl+r")
-        for _ in range(10):
-            await pilot.pause()
+        # `captured` carries the previous run's value, so wait for the CHANGE.
+        await _settle(app, pilot, lambda: captured.get("use_ai") is True)
         assert captured["use_ai"] is True
 
 
@@ -1628,7 +1626,7 @@ async def test_an_empty_username_is_refused_rather_than_scanned(monkeypatch):
     app = SherlockUI()
     async with app.run_test() as pilot:
         await pilot.press("enter")
-        await pilot.pause()
+        await _settle(app, pilot)
     assert launched == []
 
 
@@ -1654,9 +1652,19 @@ async def test_stopping_a_scan_leaves_other_work_alone(monkeypatch):
         bystander = app.run_worker(asyncio.sleep(60), group="bystander")
         await pilot.press(*"alice")
         await pilot.press("enter")
-        await pilot.pause()
-
         pane = app.query_one(ScanPane)
+        # NOT `_settle` here: its barrier is `workers.wait_for_complete()`, and
+        # this scan sleeps for a minute on purpose -- waiting for it to finish
+        # is waiting for the thing the test is about to cancel. What is needed
+        # is the opposite: wait for the chain to have STARTED it. The sleep is
+        # load-bearing rather than padding, because `peek_stored` runs on
+        # aiosqlite's thread executor and only a real timer yields to it --
+        # `pause()` alone returns while that read is still outstanding.
+        for _ in range(50):
+            if pane._scan_running:
+                break
+            await pilot.pause()
+            await asyncio.sleep(0.02)
         assert pane._scan_running is True
 
         await pilot.press("escape")
@@ -1850,8 +1858,7 @@ async def test_an_unknown_username_scans_without_asking(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"nobody")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: captured.get("username") == "nobody")
 
         assert not isinstance(app.screen, ModalScreen)
         assert captured.get("username") == "nobody"
@@ -1873,8 +1880,7 @@ async def test_a_known_username_asks_before_scanning_again(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: isinstance(app.screen, ResumeScreen))
 
         assert isinstance(app.screen, ResumeScreen)
         # The counts are the content -- "scanned before, continue?" is a
@@ -1898,12 +1904,10 @@ async def test_choosing_re_scan_passes_fresh(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: app.screen.query("#resume-fresh"))
 
         await pilot.click("#resume-fresh")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: captured.get("fresh") is True)
 
     assert captured.get("fresh") is True
 
@@ -1933,8 +1937,7 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(20):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: app.screen.query("#resume-detail"))
 
         detail = app.screen.query_one("#resume-detail").render().plain
         assert "Nothing is left to check" in detail
