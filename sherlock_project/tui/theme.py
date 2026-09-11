@@ -630,14 +630,23 @@ TabPane { padding: 0 2; }
    numbers does not.
 
    38 is that total, and it is arithmetic rather than taste: 34 + 4. The cells
-   come to 34 (17 username + 7 found + 7 sites + 3 delete -- each column's width
+   come to 34 (15 username + 7 found + 7 sites + 5 delete -- each column's width
    plus one cell of padding on each side), and the 4 is what the widget spends
    around them: 1 on its right padding, 1 on its border, and 2 on the vertical
    scrollbar a list longer than the pane puts there. The old 34 did not count
    that scrollbar, so a database with 40 usernames in it left the columns 30
    cells and grew a HORIZONTAL scrollbar under a table of three short columns.
    The delete control has to stay visible at the right-hand end of every row, so
-   the width is now the full list's, not the empty one's. */
+   the width is now the full list's, not the empty one's.
+
+   38 and not a cell more, which is measured rather than chosen: at 40 an
+   80-column terminal leaves the section strip 32 cells for 33 of tabs, and
+   `Tabs` is a scrolling strip -- squeezed, it drops tabs silently and from the
+   LEFT, so ACCOUNTS arrives as "CCOUNTS" and then goes entirely. The detail
+   absorbs what this column takes, which is the rule it was fixed for, but the
+   strip in it has a floor. The four cells the control needed came out of the
+   username column instead; the URLs beside it ellipsize a little earlier, which
+   they already did at that width. */
 #results-body {
     layout: grid;
     grid-size: 2 1;
@@ -649,6 +658,32 @@ TabPane { padding: 0 2; }
     height: 1fr;
     border-right: solid $panel-lighten-2;
     padding: 0 1 0 0;
+}
+/* The delete control, drawn on the row under the pointer. Deliberately the same
+   shape as `#add-anchor`: a block of `$panel` with a coloured symbol on it,
+   which is this app's existing way of saying that a symbol is a button. A bare
+   glyph in a column of numbers reads as another value, and a value is not
+   something you press. No border, for the reason that button has none either --
+   a raised box around one character out-shouts the rows it sits among.
+
+   Red because it deletes; it is the only red in the pane, which is the point.
+   `$text-error` and not `$error`: the two are the same colour in the dark theme
+   until you put them on something. Measured against this block, `$error` comes
+   out at 1.51:1 in the dark theme -- a red smudge on grey -- while `$text-error`,
+   which is the token that exists to be READ, gives 4.62:1 dark and 6.24:1
+   light. `$panel` rather than the lighter panel tints for the same reason:
+   every step lighter costs the glyph contrast, and `$panel-lighten-2` takes it
+   to 2.79:1.
+
+   This survives the SELECTED row, which is what `cursor_foreground_priority`
+   and `cursor_background_priority` are set to "renderable" for -- see
+   UsernameList. Left at their defaults the cursor repaints the control in its
+   own colours, and a delete button painted as part of the row highlight is not
+   a delete button. */
+#username-list > .username-list--delete {
+    background: $panel;
+    color: $text-error;
+    text-style: bold;
 }
 #result-detail { height: 1fr; }
 #detail-header { height: auto; padding: 0 0 1 0; }

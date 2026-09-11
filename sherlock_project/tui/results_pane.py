@@ -137,8 +137,11 @@ from sherlock_project.tui.theme import (
 # compressed, narrow enough to fit a half-screen detail pane.
 PROFILE_RENDER_WIDTH = 96
 
-# The delete control a row shows while the pointer is on it, and the nothing it
-# shows the rest of the time.
+# The delete control, and the nothing a row shows the rest of the time. Three
+# cells each, so the control is a BLOCK rather than a lone character: the same
+# shape the `+` beside ANCHORS uses, which is the app's existing answer to "this
+# symbol is a button". A bare glyph in a column of numbers reads as another
+# value, and a value is not something you press.
 #
 # `✕` rather than a wastebasket emoji: the emoji is two cells wide in some
 # terminals and one in others, so a column sized for it is wrong somewhere, and
@@ -148,8 +151,14 @@ PROFILE_RENDER_WIDTH = 96
 #
 # `Text` and not a markup string, for the reason every cell here is: `str` cells
 # are parsed as markup, and cell content in this pane sits next to user data.
-DELETE_GLYPH = Text("✕", style="bold red")
-NO_DELETE = Text(" ")
+DELETE_LABEL = " ✕ "
+NO_DELETE = Text("   ")
+
+# The stylesheet names the control's colours; this names the style. Component
+# classes are how a widget exposes a part of itself to CSS, so the chip follows
+# the theme like everything else instead of carrying a literal red into a file
+# whose first rule is that colours are semantic tokens.
+DELETE_STYLE = "username-list--delete"
 
 
 class UsernameList(DataTable):
@@ -184,6 +193,8 @@ class UsernameList(DataTable):
 
     DELETE_COLUMN = "delete"
 
+    COMPONENT_CLASSES: ClassVar[set[str]] = {DELETE_STYLE}
+
     class DeleteRequested(Message):
         """The ✕ on a row was pressed. Deleting is the pane's decision."""
 
@@ -205,9 +216,40 @@ class UsernameList(DataTable):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        # What the cursor is allowed to repaint. `DataTable` sends its cursor
+        # colours through TWICE: once as the base style under the cell, and
+        # again over the top of it -- "css" priority means that second pass
+        # happens, and a cell cannot keep a colour of its own on the selected
+        # row at all. The control came out white there, in the cursor's own
+        # colour, on the row it is most likely to be used from; a delete button
+        # painted as part of the row highlight is not a delete button.
+        #
+        # "renderable" drops the second pass and leaves those colours as the
+        # base, which is what a base is for. A cell that states no colour still
+        # takes the cursor's -- the username and the site total do, so a
+        # selected row still reads as selected -- and a cell that states one
+        # keeps it: the control, and the hit count, whose green is the only
+        # thing on the row saying an account was found.
+        #
+        # Set here rather than as class attributes because these are `__init__`
+        # arguments: assigned in the class body they are overwritten by the
+        # defaults the moment `DataTable.__init__` runs. Both are named even
+        # though the background already defaults to "renderable", so a change
+        # to that default cannot silently take the control's block with it.
+        self.cursor_foreground_priority = "renderable"
+        self.cursor_background_priority = "renderable"
         # Which row is currently drawing its ✕, so the one before it can be
         # cleared without repainting the column on every mouse move.
         self._marked_row: int | None = None
+
+    def _delete_chip(self) -> Text:
+        """The control, in the theme's colours.
+
+        Resolved per draw rather than built once at import: a component style
+        is only knowable once the widget has an app and a theme behind it, and
+        the theme can change while the app is running.
+        """
+        return Text(DELETE_LABEL, style=self.get_component_rich_style(DELETE_STYLE))
 
     def clear(self, columns: bool = False) -> UsernameList:
         # Row indices do not survive a reload: the same number is a different
@@ -267,7 +309,10 @@ class UsernameList(DataTable):
         """Move the delete control onto `row`, or off the list entirely."""
         if row == self._marked_row:
             return
-        for index, glyph in ((self._marked_row, NO_DELETE), (row, DELETE_GLYPH)):
+        for index, glyph in (
+            (self._marked_row, NO_DELETE),
+            (row, self._delete_chip()),
+        ):
             if index is None:
                 continue
             cell = Coordinate(index, 0)
@@ -397,17 +442,23 @@ class ResultsPane(Vertical):
         # Widths chosen to fit the fixed column the stylesheet gives this list,
         # padding and scrollbar included. At their previous size the last column
         # was clipped to "si" and its number could not be read.
-        table.add_column("username", key="username", width=15)
+        #
+        # 13 rather than 15 because the delete control took two cells from
+        # somewhere and this was the cheapest place: the alternative was two
+        # more cells of pane, which costs the section strip opposite a tab --
+        # see the arithmetic in theme.py. A name too long for 13 ellipsizes;
+        # a tab that has scrolled out of the strip is simply gone.
+        table.add_column("username", key="username", width=13)
         # "found" before "sites": the hit count is what someone is scanning the
         # list for, and the total is context for it. Reversed, the eye lands on
         # the larger, less interesting number first on every row.
         table.add_column("found", key="found", width=5)
         table.add_column("sites", key="sites", width=5)
-        # The delete control's column: unlabelled, one cell wide, and empty on
-        # every row the pointer is not on. Added LAST, so it sits at the end of
-        # the row: a control that acts on the whole row belongs after the facts
-        # about that row, not in front of them.
-        table.add_column("", key=UsernameList.DELETE_COLUMN, width=1)
+        # The delete control's column: unlabelled, as wide as the control, and
+        # empty on every row the pointer is not on. Added LAST, so it sits at
+        # the end of the row: a control that acts on the whole row belongs after
+        # the facts about that row, not in front of them.
+        table.add_column("", key=UsernameList.DELETE_COLUMN, width=3)
 
         accounts = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
         accounts.add_column("", key="mark", width=2)
