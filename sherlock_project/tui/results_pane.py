@@ -73,10 +73,11 @@ from typing import Any, ClassVar
 
 from rich.console import Console, Group
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import (
     Button,
@@ -86,6 +87,7 @@ from textual.widgets import (
     Tab,
     Tabs,
 )
+from textual.widgets.data_table import CellDoesNotExist
 
 # Section ids. The tab and the pane it selects need SEPARATE ids even though
 # they are the same section: two widgets sharing one id makes `query_one`
@@ -134,6 +136,158 @@ from sherlock_project.tui.theme import (
 # result nobody is measuring with a ruler. Wide enough that the columns are not
 # compressed, narrow enough to fit a half-screen detail pane.
 PROFILE_RENDER_WIDTH = 96
+
+# The delete control a row shows while the pointer is on it, and the nothing it
+# shows the rest of the time.
+#
+# `✕` rather than a wastebasket emoji: the emoji is two cells wide in some
+# terminals and one in others, so a column sized for it is wrong somewhere, and
+# it falls back to a hollow box wherever the font has no colour glyph for it.
+# `✕` is already this app's mark for a rejected result, so the visual vocabulary
+# is not growing to pay for this either.
+#
+# `Text` and not a markup string, for the reason every cell here is: `str` cells
+# are parsed as markup, and cell content in this pane sits next to user data.
+DELETE_GLYPH = Text("✕", style="bold red")
+NO_DELETE = Text(" ")
+
+
+class UsernameList(DataTable):
+    """The stored-username picker, with a delete control on the pointed-at row.
+
+    Erasing a username was already possible and reachable only by pressing
+    `delete`. The footer named the key, but the list itself showed no sign that
+    a row could be removed at all -- so the one action in the app that destroys
+    a dossier was the one with no control to press, and the documented answer
+    for "remove this person" was still to open the database in an external
+    SQLite tool.
+
+    **The control is drawn on the hovered row only.** A dim `✕` on every row was
+    the alternative and it is worse in both directions: a column of delete marks
+    reads as a list of things queued for deletion, and it parks an irreversible
+    control one misclick away from every name on screen. Drawn under the
+    pointer, it is exactly as present as the row it belongs to, and the row
+    tint that `DataTable` already paints on hover says which row that is.
+
+    **Clicking it does not select the row.** Cancelling the confirmation has to
+    leave the pane exactly as it was, and moving the cursor on the way to a
+    dialog you then dismiss is a change nobody asked for -- it would also swap
+    the detail on the right for a username you decided not to touch. The base
+    class moves the cursor in its own click handler, so this one runs first
+    (subclass before base, in MRO order) and calls `prevent_default()`, which
+    stops the dispatcher before `DataTable._on_click` is reached.
+
+    Nothing here erases anything. The list knows which row was pointed at and
+    that is all it knows; what a username costs to delete, and the asking, are
+    the pane's business.
+    """
+
+    DELETE_COLUMN = "delete"
+
+    class DeleteRequested(Message):
+        """The ✕ on a row was pressed. Deleting is the pane's decision."""
+
+        def __init__(self, username_list: UsernameList, username: str) -> None:
+            super().__init__()
+            self.username_list = username_list
+            self.username = username
+
+        @property
+        def control(self) -> UsernameList:
+            """The list the control was on.
+
+            Named `control` because that is the attribute `@on(..., selector)`
+            matches against -- the same contract `DataTable.RowSelected` and
+            every other framework message keeps, so this one can be handled
+            exactly like them.
+            """
+            return self.username_list
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # Which row is currently drawing its ✕, so the one before it can be
+        # cleared without repainting the column on every mouse move.
+        self._marked_row: int | None = None
+
+    def clear(self, columns: bool = False) -> UsernameList:
+        # Row indices do not survive a reload: the same number is a different
+        # username afterwards, or no row at all. Forgetting the mark here is
+        # what stops a ✕ being left behind on a row nobody is pointing at --
+        # and it means that after a delete the control has to be re-hovered,
+        # which is the right amount of friction for the second one.
+        self._marked_row = None
+        return super().clear(columns)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self._mark(self._row_under(event.style.meta))
+
+    def on_leave(self, _: events.Leave) -> None:
+        # The pointer can leave the list without a last move across an empty
+        # row, and a ✕ still drawn once it has gone is a button belonging to
+        # nothing.
+        self._mark(None)
+
+    def on_click(self, event: events.Click) -> None:
+        row = self._row_under(event.style.meta)
+        if row is None:
+            return
+        cell = Coordinate(row, event.style.meta.get("column", -1))
+        if not self.is_valid_coordinate(cell):
+            return
+        key = self.coordinate_to_cell_key(cell)
+        if key.column_key.value != self.DELETE_COLUMN:
+            return
+        username = key.row_key.value
+        if not username:
+            return
+        # The click was the button. Nobody else acts on it -- least of all the
+        # base class, which would move the cursor onto the row being deleted.
+        event.prevent_default()
+        event.stop()
+        self.post_message(self.DeleteRequested(self, str(username)))
+
+    @staticmethod
+    def _row_under(meta: dict[str, Any]) -> int | None:
+        """Which row the pointer is on, or None if it is not on one.
+
+        `out_of_bounds` is `DataTable`'s word for the empty space past the last
+        row, which it still reports as the nearest row so a row cursor keeps its
+        highlight down there. A button has to be stricter than a highlight:
+        there is no row under the pointer, so there is no control to offer.
+        Row -1 is the header, which is not a username either.
+        """
+        if not meta or meta.get("out_of_bounds"):
+            return None
+        row = meta.get("row")
+        if not isinstance(row, int) or row < 0:
+            return None
+        return row
+
+    def _mark(self, row: int | None) -> None:
+        """Move the delete control onto `row`, or off the list entirely."""
+        if row == self._marked_row:
+            return
+        for index, glyph in ((self._marked_row, NO_DELETE), (row, DELETE_GLYPH)):
+            if index is None:
+                continue
+            cell = Coordinate(index, 0)
+            if not self.is_valid_coordinate(cell):
+                continue
+            try:
+                self.update_cell(
+                    self.coordinate_to_cell_key(cell).row_key,
+                    self.DELETE_COLUMN,
+                    # A copy, for the same reason the rows are built with one:
+                    # the table keeps what it is given, and a renderable shared
+                    # between cells is shared until something edits it.
+                    glyph.copy(),
+                )
+            except CellDoesNotExist:
+                # The column is added by whoever builds the list. Without it
+                # there is no control to draw, which is not a reason to take
+                # the pane down from inside a mouse handler.
+                continue
+        self._marked_row = row
 
 
 class ResultsPane(Vertical):
@@ -194,7 +348,7 @@ class ResultsPane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("STORED USERNAMES", classes="pane-title")
         with Grid(id="results-body"):
-            yield DataTable(id="username-list", cursor_type="row")
+            yield UsernameList(id="username-list", cursor_type="row")
             with Vertical(id="result-detail"):
                 # Always visible, whichever section is showing: who this is and
                 # when it was scanned is context for all three.
@@ -239,9 +393,9 @@ class ResultsPane(Vertical):
                                 )
 
     def on_mount(self) -> None:
-        table = self.query_one("#username-list", DataTable)
-        # Widths chosen to fit the fixed 34-cell column the stylesheet gives
-        # this list, padding included. At their previous size the last column
+        table = self.query_one("#username-list", UsernameList)
+        # Widths chosen to fit the fixed column the stylesheet gives this list,
+        # padding and scrollbar included. At their previous size the last column
         # was clipped to "si" and its number could not be read.
         table.add_column("username", key="username", width=15)
         # "found" before "sites": the hit count is what someone is scanning the
@@ -249,6 +403,11 @@ class ResultsPane(Vertical):
         # the larger, less interesting number first on every row.
         table.add_column("found", key="found", width=5)
         table.add_column("sites", key="sites", width=5)
+        # The delete control's column: unlabelled, one cell wide, and empty on
+        # every row the pointer is not on. Added LAST, so it sits at the end of
+        # the row: a control that acts on the whole row belongs after the facts
+        # about that row, not in front of them.
+        table.add_column("", key=UsernameList.DELETE_COLUMN, width=1)
 
         accounts = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
         accounts.add_column("", key="mark", width=2)
@@ -291,7 +450,7 @@ class ResultsPane(Vertical):
         self._fill_list()
 
     def _fill_list(self) -> None:
-        table = self.query_one("#username-list", DataTable)
+        table = self.query_one("#username-list", UsernameList)
         table.clear()
         if not self._listings:
             self._set_detail(
@@ -312,6 +471,11 @@ class ResultsPane(Vertical):
                     style="bold green" if listing.claimed_sites else "dim",
                 ),
                 Text(str(listing.total_sites), style="dim"),
+                # The delete control's cell, empty until the pointer is on this
+                # row. Its own `Text`, not the shared blank: a cell's value is
+                # kept by the table, and one object shared by every row is one
+                # edit away from every row changing together.
+                NO_DELETE.copy(),
                 key=listing.username,
             )
         # Open on whichever row was asked for, otherwise the first. The list is
@@ -389,7 +553,34 @@ class ResultsPane(Vertical):
         self.notify(f"Wrote {target}")
 
     def action_delete_username(self) -> None:
-        """Erase everything stored for the selected username, after confirming.
+        """Erase the selected username: the keyboard half of the row's ✕.
+
+        One action with two ways in, not two actions. The key asks about the
+        SELECTED row, the control asks about the row under the pointer, and
+        both land in `_confirm_delete` with the same question.
+
+        Reads the selection rather than the loaded record, so it works in the
+        moment between picking a row and its detail arriving -- the detail is a
+        separate database read, and a key that does nothing for a beat looks
+        broken.
+        """
+        if self._selected is None:
+            self.notify("Nothing selected to delete.", severity="warning")
+            return
+        self._confirm_delete(self._selected)
+
+    @on(UsernameList.DeleteRequested, "#username-list")
+    def _delete_from_row(self, event: UsernameList.DeleteRequested) -> None:
+        """The ✕ on a row, which is not necessarily the selected row.
+
+        That is the point of having it: removing a username you can see should
+        not require opening it first, and opening it is what the keyboard path
+        makes you do.
+        """
+        self._confirm_delete(event.username)
+
+    def _confirm_delete(self, username: str) -> None:
+        """Ask, with figures, before erasing everything stored for a username.
 
         A scan is a dossier on a person, and there was no way to remove one --
         scanning the wrong name left a permanent local record with no in-app
@@ -400,20 +591,25 @@ class ResultsPane(Vertical):
         "are you sure?" with no figures is a question nobody can answer. It is
         the only destructive action in the app and it is the reason it is the
         only one that asks.
+
+        The figures come from the LISTING rather than from the loaded detail.
+        The ✕ acts on the row under the pointer, whose detail is not loaded and
+        may never be; a dialog that counted the selected username's results
+        while naming another one would be worse than not asking at all.
         """
-        record = self._record
-        if record is None or not record.get("known"):
+        listing = next(
+            (item for item in self._listings if item.username == username), None
+        )
+        if listing is None:
             self.notify("Nothing selected to delete.", severity="warning")
             return
 
-        username = str(record["username"])
-        found = record.get("accounts_found") or 0
-        checked = record.get("sites_checked") or 0
-        profile = "and its AI profile " if record.get("profile") is not None else ""
+        profile = "and its AI profile " if listing.has_profile else ""
         detail = (
             f"Delete everything stored for {username!r}?\n\n"
-            f"{count_of(checked, 'site result')} {profile}will be removed, "
-            f"including {count_of(found, 'account')} found.\n"
+            f"{count_of(listing.total_sites, 'site result')} {profile}will be "
+            f"removed, including {count_of(listing.claimed_sites, 'account')} "
+            f"found.\n"
             f"This cannot be undone, and the scan itself cannot be recovered "
             f"without running it again."
         )
@@ -434,10 +630,16 @@ class ResultsPane(Vertical):
         finally:
             await db.close()
 
-        # Forget the record too, or the detail pane keeps drawing a username
-        # that no longer exists until something else happens to reload it.
-        self._record = None
-        self._selected = None
+        if self._selected == username:
+            # Forget the record too, or the detail pane keeps drawing a username
+            # that no longer exists until something else happens to reload it.
+            self._record = None
+            self._selected = None
+        else:
+            # Deleting the row the POINTER was on must not move the reader off
+            # the row they were reading: the reload reopens the first username
+            # unless it is told which one to go back to.
+            self._pending_selection = self._selected
         self.notify(f"Deleted {username} ({count_of(removed, 'result')}).")
         self.action_reload()
 

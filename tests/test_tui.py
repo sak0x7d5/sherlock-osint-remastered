@@ -10,6 +10,7 @@ no test that renders a screen would notice.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import ClassVar
 
 import pytest
@@ -2850,6 +2851,181 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
         await db.close()
     assert selected not in remaining
     assert len(remaining) == 1
+
+
+def _delete_marks(table) -> dict[str, str]:
+    """Which rows are currently drawing a delete control, by username."""
+    from sherlock_project.tui.results_pane import UsernameList
+
+    return {
+        str(key.value): table.get_cell(key, UsernameList.DELETE_COLUMN).plain.strip()
+        for key in table.rows
+    }
+
+
+def _delete_cell(table, username: str) -> tuple[int, int]:
+    """Where `username`'s delete control is, in the list's own coordinates.
+
+    Measured off the table rather than written down: the column widths are
+    tuned to fit a fixed pane and a test that hard-codes an offset starts
+    clicking the wrong cell the first time one of them moves, which would look
+    like the control had stopped working.
+    """
+    x = sum(column.get_render_width(table) for column in table.ordered_columns[:-1])
+    return x + 1, table.header_height + table.get_row_index(username)
+
+
+@asynccontextmanager
+async def _list_with(**rows):
+    """The results tab, open, with its list loaded.
+
+    A context manager rather than the one-shot async generator the filter tests
+    use: these tests wait on the list with `_settle`, and a predicate that
+    closes over a variable bound by `async for` is a closure over a loop
+    variable -- which is a lint error, and a real trap the moment a helper
+    yields twice.
+    """
+    from sherlock_project.tui.results_pane import UsernameList
+
+    await _seed(**rows)
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.press("alt+2")
+        table = app.query_one("#username-list", UsernameList)
+        await _settle(app, pilot, lambda: table.row_count == len(rows))
+        assert table.row_count == len(rows)
+        yield app, table, pilot
+
+
+async def test_a_username_offers_a_delete_control_while_it_is_pointed_at():
+    """Erasing a username was a key with nothing on screen to say it existed.
+
+    `delete` worked on the selected row and the footer named the key, but the
+    list drew no control at all -- so the one action in the app that destroys a
+    dossier was the one you had to already know about.
+
+    Drawn on the pointed-at row ONLY. A ✕ on every row reads as a list of names
+    queued for deletion, and it parks an irreversible control one misclick from
+    each of them.
+    """
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+    ) as (_app, table, pilot):
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": "✕"}
+
+        # One row at a time: the control follows the pointer rather than
+        # accumulating behind it.
+        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "✕", "keeper": ""}
+
+        # Below the last row there is no row, whatever the row cursor does with
+        # that space -- so there is nothing to offer either.
+        x, _ = _delete_cell(table, "marcus")
+        await pilot.hover("#username-list", offset=(x, table.header_height + 12))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+        # And a control still drawn after the pointer has gone belongs to no
+        # row at all.
+        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
+        await pilot.pause()
+        await pilot.hover("#detail-tabs")
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+
+async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
+    """The ✕ acts on the row under the pointer, not on the open one.
+
+    That is the whole point of having it: removing a username you can see
+    should not mean opening it first, which is what the key makes you do.
+
+    And pressing it must not move the selection. Cancelling has to leave the
+    pane exactly as it was -- a dialog that swapped the detail on the right for
+    a username you then decided not to delete has already done something you
+    did not ask for.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.tui.confirm_screen import ConfirmScreen
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Reddit", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+    ) as (app, table, pilot):
+        pane = app.query_one(ResultsPane)
+        opened = pane._selected
+        other = next(
+            str(key.value) for key in table.rows if str(key.value) != opened
+        )
+        cursor = table.cursor_row
+
+        await pilot.click("#username-list", offset=_delete_cell(table, other))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ConfirmScreen)
+        detail = screen.query_one("#confirm-detail").render().plain
+        # The row that was pressed, counted from its own listing.
+        assert other in detail
+        assert opened not in detail
+        assert "cannot be undone" in detail
+
+        assert pane._selected == opened, "pressing ✕ moved the selection"
+        assert table.cursor_row == cursor
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        assert len(await db.list_usernames()) == 2, "cancelling deleted something"
+    finally:
+        await db.close()
+
+
+async def test_deleting_a_pointed_at_row_leaves_the_reader_where_they_were():
+    """Erasing the row the pointer was on must not move the reader off the row
+    they were reading.
+
+    The list reopens the FIRST username after a reload unless it is told
+    otherwise, so deleting a third party would otherwise swap the detail pane
+    for someone else's record as a side effect.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+        third=[("Forum", QueryStatus.CLAIMED)],
+    ) as (app, table, pilot):
+        pane = app.query_one(ResultsPane)
+        opened = pane._selected
+        doomed = next(
+            str(key.value) for key in table.rows if str(key.value) != opened
+        )
+
+        await pilot.click("#username-list", offset=_delete_cell(table, doomed))
+        await pilot.pause()
+        await pilot.click("#confirm-yes")
+        await _settle(app, pilot, lambda: table.row_count == 2)
+
+        assert table.row_count == 2
+        assert doomed not in _delete_marks(table)
+        assert pane._selected == opened
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        remaining = [item.username for item in await db.list_usernames()]
+    finally:
+        await db.close()
+    assert doomed not in remaining
+    assert opened in remaining
 
 
 async def test_the_progress_strip_sits_with_the_findings():
