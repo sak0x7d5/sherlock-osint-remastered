@@ -819,8 +819,8 @@ def describe_settings(values: dict[str, Any]) -> str:
     return "  ·  ".join(parts)
 
 
-def _pending_option(label: str, *, enabled: bool) -> str:
-    """One toggle that no longer describes the scan currently running.
+def _pending_note(*, enabled: bool) -> str:
+    """What a toggle flipped mid-scan actually applies to.
 
     Both toggles are read once, when the scan starts -- `use_ai` is passed to
     `run_scan_session` and the reporter's verbosity is fixed by its constructor
@@ -833,8 +833,8 @@ def _pending_option(label: str, *, enabled: bool) -> str:
     "from the next scan" alone still leaves the more urgent question open.
     """
     return (
-        f"{label} {'on' if enabled else 'off'} — from the next scan; "
-        f"this run was started {'without' if enabled else 'with'} it."
+        "Takes effect from the NEXT scan — this run was started "
+        f"{'without' if enabled else 'with'} it."
     )
 
 
@@ -844,58 +844,67 @@ def describe_options(
     use_ai: bool,
     verbose: bool,
     running: tuple[bool, bool] | None = None,
-) -> Text:
-    """What the two per-run toggles are doing, in one line each.
+) -> tuple[str, str]:
+    """Hover text for the two per-run toggles, as `(analysis, verbose)`.
 
-    The scan pane's answer to the hint under Build/Rebuild on the results tab:
-    a line that is always there, states what the control does FROM ITS CURRENT
-    STATE, and turns into a warning when that state cannot deliver what it
-    claims. A hover tooltip would say the same thing, and say it only to the
-    mouse -- this screen is reached with Tab and Enter as often as with a click,
-    and the toggles are read far more often than they are pressed.
+    Delivered as Textual tooltips rather than as lines under the row. The
+    toggles are read far more often than they are pressed, and a permanent
+    paragraph explaining two controls that never change during a scan is three
+    rows the counters and the feed want back -- but the explanation still has to
+    exist somewhere for the person meeting `analysis ‹ off ›` for the first
+    time. A tooltip is the shape that fits both: nothing on screen until asked,
+    and no width limit when it is.
 
-    Each line names its toggle. Two unlabelled sentences under two adjacent
-    buttons is a matching exercise, and the wrong pairing is the one that gets
-    read.
+    Each opens by naming its toggle and its state, because a floating box that
+    appears beside the pointer carries no other clue about which of the two
+    controls it belongs to.
 
     `running` is the pair the in-flight scan was actually started with, or None
-    when nothing is running. Only the toggles that DIFFER from it are reported
-    as pending, so a scan started with analysis on is not told that analysis
-    applies from the next scan -- it is already applying.
+    when nothing is running. Only a toggle that DIFFERS from it gets the pending
+    note, so a scan started with analysis on is not told that analysis applies
+    from the next scan -- it is already applying.
     """
     ran_with_ai, ran_verbose = running if running is not None else (use_ai, verbose)
 
-    line = Text()
+    if not use_ai:
+        # The consequence, not just the state: someone turning this off wants a
+        # faster scan and does not necessarily know they are also giving up the
+        # profile the RESULTS tab builds from what it stores.
+        analysis = (
+            "AI analysis — OFF\n\n"
+            "The scan finds accounts and reads nothing. No evidence is stored, "
+            "so the RESULTS tab cannot build a profile for this username."
+        )
+    elif not analysis_is_on(values):
+        # The one state the toggle cannot honour on its own, and the fix is two
+        # tabs away -- so the tooltip has to name where to go.
+        analysis = (
+            "AI analysis — ON, but no model is configured\n\n"
+            "Nothing will be extracted. Choose a model on the SETTINGS tab "
+            "first."
+        )
+    else:
+        analysis = (
+            "AI analysis — ON\n\n"
+            "A local model reads every hit and stores the facts it finds. That "
+            "evidence is what the RESULTS tab builds a profile from."
+        )
     if use_ai != ran_with_ai:
-        line.append(_pending_option("analysis", enabled=use_ai))
-    elif use_ai and not analysis_is_on(values):
-        # The one state the toggle cannot honour on its own. Yellow rather than
-        # dim because it is the difference between a scan that extracts and one
-        # that quietly does not, and the fix is two tabs away.
-        line.append(
-            "analysis on, but no model is configured — set one on the SETTINGS tab.",
-            style="yellow",
-        )
-    elif use_ai:
-        line.append(
-            "analysis on — a local model reads every hit and stores the facts it finds."
-        )
-    else:
-        # The consequence, not just the state: someone turning this off wants
-        # a faster scan and does not necessarily know they are also giving up
-        # the profile the results tab builds from what it stores.
-        line.append(
-            "analysis off — accounts only. No page is read, so no profile can be built."
-        )
+        analysis = f"{analysis}\n\n{_pending_note(enabled=use_ai)}"
 
-    line.append("\n")
-    if verbose != ran_verbose:
-        line.append(_pending_option("verbose", enabled=verbose))
-    elif verbose:
-        line.append(
-            "verbose on — ACTIVITY adds request traces, timings and failure "
-            "diagnostics."
+    if verbose:
+        verbose_text = (
+            "Verbose — ON\n\n"
+            "ACTIVITY adds a trace per AI request: token counts, timings, and "
+            "the diagnostics behind a model failure."
         )
     else:
-        line.append("verbose off — ACTIVITY carries warnings and failures only.")
-    return line
+        verbose_text = (
+            "Verbose — OFF\n\n"
+            "ACTIVITY carries only what has no panel of its own: warnings, "
+            "failures, and the reasons behind them."
+        )
+    if verbose != ran_verbose:
+        verbose_text = f"{verbose_text}\n\n{_pending_note(enabled=verbose)}"
+
+    return analysis, verbose_text

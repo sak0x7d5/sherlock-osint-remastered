@@ -305,6 +305,18 @@ class ResultsPane(Vertical):
         # the column there gives this table a horizontal scrollbar.
         extractions.add_column("site", key="site", width=15)
 
+        # Static, so it is hung once here rather than on every redraw: unlike
+        # the Build button's, this text does not depend on what the selected
+        # username has. Anchors are the least self-explanatory control in the
+        # app -- the word names the mechanism, not the thing you would type.
+        self.query_one("#profile-anchors", Button).tooltip = (
+            "Anchors\n\n"
+            "Facts you already know about the target — a real name, a city, an "
+            "employer. Pass 2 resolves the profile against them instead of "
+            "merging every name every site showed, which is the difference "
+            "between one person's profile and everyone who shares the username."
+        )
+
         self._set_building(False)
         # One timer for the pane; it costs an attribute check per tick when
         # nothing is building.
@@ -947,11 +959,28 @@ class ResultsPane(Vertical):
                 )
             )
             build.label = "Scan with analysis"
+            build.tooltip = (
+                "Scan with analysis — no evidence stored\n\n"
+                "Loads this username on the SCAN tab with analysis on. Nothing "
+                "starts until you press SCAN there."
+            )
             anchors.display = False
             return
 
         anchors.display = True
         build.label = "Rebuild profile" if has_profile else "Build profile"
+        # Hover text says what the button IS; the line below it says what
+        # pressing it would do RIGHT NOW -- how many sites of evidence, which
+        # anchors, and the warning when rebuilding would abandon an identity.
+        # Splitting it that way is what keeps the two from being one answer
+        # written twice: the mechanism never changes, the state changes on every
+        # redraw.
+        build.tooltip = (
+            f"{'Rebuild' if has_profile else 'Build'} profile\n\n"
+            "Runs the second AI pass, merging the facts Pass 1 already "
+            "extracted into one profile. Reads stored evidence only — no site "
+            "is contacted and no page is fetched again."
+        )
 
         line = Text()
         if has_profile:
