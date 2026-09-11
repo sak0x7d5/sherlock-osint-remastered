@@ -622,16 +622,26 @@ TabPane { padding: 0 2; }
 /* Username list left, detail right -- the master/detail shape, because the
    question is always "this one, tell me more".
 
-   The list column is a FIXED width, not a fraction. Its three columns add up to
-   a known number of cells, and at `1fr` of a narrow terminal the total came out
+   The list column is a FIXED width, not a fraction. Its columns add up to a
+   known number of cells, and at `1fr` of a narrow terminal the total came out
    under that: the last column was clipped to "si" and the count it held could
    not be read at all. Fixed, the list always fits and the detail absorbs the
    slack -- which is the right way round, since prose reflows and a table of
-   numbers does not. */
+   numbers does not.
+
+   38 is that total, and it is arithmetic rather than taste: 34 + 4. The cells
+   come to 34 (17 username + 7 found + 7 sites + 3 delete -- each column's width
+   plus one cell of padding on each side), and the 4 is what the widget spends
+   around them: 1 on its right padding, 1 on its border, and 2 on the vertical
+   scrollbar a list longer than the pane puts there. The old 34 did not count
+   that scrollbar, so a database with 40 usernames in it left the columns 30
+   cells and grew a HORIZONTAL scrollbar under a table of three short columns.
+   The delete control has to stay visible at the right-hand end of every row, so
+   the width is now the full list's, not the empty one's. */
 #results-body {
     layout: grid;
     grid-size: 2 1;
-    grid-columns: 34 1fr;
+    grid-columns: 38 1fr;
     grid-gutter: 0 2;
     height: 1fr;
 }

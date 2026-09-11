@@ -225,12 +225,16 @@ and anything you would rather not keep.
 The database stores captured page content, extracted fields, and synthesised
 profiles, keyed by username. It persists until you delete it.
 
+**Removing someone.** On the RESULTS tab of `sherlock ui`, hover a username and
+press the `✕` at the end of its row — or select it and press `delete`. Either
+way it names what will go and asks first, then erases that username's results,
+stored page content, extractions and profile. Nothing else is touched.
+
 > [!NOTE]
-> **There is currently no built-in way to delete a subject from the database.**
-> Removing someone means deleting the database file, or opening it with an
-> external SQLite tool and deleting that username's rows. Until a command exists
-> for it, pointing `SHERLOCK_DB` at a scratch file is the practical way to keep a
-> scan from being retained at all.
+> **There is no command-line equivalent yet.** Outside the UI, removing someone
+> still means deleting the database file or opening it with an external SQLite
+> tool. For scripted runs, pointing `SHERLOCK_DB` at a scratch file is the way
+> to keep a scan from being retained at all.
 
 ## Sites
 
