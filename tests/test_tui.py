@@ -2645,15 +2645,19 @@ async def test_the_key_names_what_is_on_screen_and_nothing_else():
         assert "rejected" not in key
 
 
-async def test_the_key_belongs_to_the_section_not_the_pane():
-    """The sections do not share a vocabulary.
+async def test_the_key_costs_a_row_only_where_the_symbols_contend():
+    """One row of this pane is a finding not shown, so the key has to earn it.
 
-    Every account row is a hit, so `● found` is the whole key there; UNRESOLVED
-    is the only place the blocked/inconclusive split is drawn. And PROFILE has
-    no symbols at all -- it must not pay a row for a key it does not have.
+    UNRESOLVED earns it: three symbols contend there, and telling them apart is
+    the tool's central claim. ACCOUNTS does not -- every row is a hit, so its
+    mark column is one symbol repeated down a list the tab already calls
+    ACCOUNTS, and a key there would spend a row to disambiguate nothing. Nor
+    does PROFILE, which draws no symbols at all.
+
+    This is also what keeps the line off the tab row, where the spare width
+    looks like it is: `Tabs` is a scrolling strip, so a key sharing that row
+    drops tabs rather than wrapping -- silently, and from the left.
     """
-    from textual.widgets import Static
-
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
@@ -2661,8 +2665,10 @@ async def test_the_key_belongs_to_the_section_not_the_pane():
         for _ in range(10):
             await pilot.pause()
 
-        assert "found" in _legend_text(app)
-        assert "inconclusive" not in _legend_text(app)
+        assert _legend_text(app) == "", (
+            "ACCOUNTS is one symbol repeated and is still paying a row for a "
+            "key that disambiguates nothing"
+        )
 
         await pilot.press("alt+right")
         for _ in range(6):
@@ -2672,7 +2678,7 @@ async def test_the_key_belongs_to_the_section_not_the_pane():
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
-        assert not app.query_one("#detail-legend", Static).display, (
+        assert _legend_text(app) == "", (
             "the profile section has no symbols and is still reserving a row "
             "for a key"
         )
