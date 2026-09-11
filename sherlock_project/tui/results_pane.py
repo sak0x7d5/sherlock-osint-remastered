@@ -109,6 +109,12 @@ SECTION_FOR_TAB = {
     TAB_PROFILE: SEC_PROFILE,
 }
 
+# Set on `#profile-actions` while the only thing on offer is a trip to the scan
+# tab. A class rather than per-widget style writes, because what changes is the
+# WEIGHT of the whole row -- layout, chrome, alignment -- and three of those
+# live in the stylesheet already. See the rules it drives in `theme.py`.
+NO_EVIDENCE = "-no-evidence"
+
 from sherlock_project.database import (
     SherlockDB,
     StoredUsernameListing,
@@ -384,7 +390,10 @@ class ResultsPane(Vertical):
                             # is the one thing this must not do.
                             yield Static(id="profile-status")
                             with Grid(id="profile-buttons"):
-                                yield Static()
+                                # Named, because the pointer state removes it:
+                                # a right-aligning spacer is exactly wrong when
+                                # the action belongs under the sentence.
+                                yield Static(id="profile-spacer")
                                 yield Button("Anchors", id="profile-anchors")
                                 yield Button(
                                     "Build profile",
@@ -986,18 +995,36 @@ class ResultsPane(Vertical):
         if not evidence:
             # Nothing to merge. Say what is missing and what fixes it, rather
             # than offering a button that would build an empty profile.
+            #
+            # This control is a POINTER, not a commit: pressing it scans
+            # nothing, it switches tabs and sets the scan up. Dressed as a
+            # primary block it was indistinguishable from SCAN, which starts a
+            # 680-site run, and from `Build profile`, which can block for
+            # minutes on a cold model -- the app's own rule is that chrome
+            # weight tracks what a control commits, which is why the scan
+            # pane's toggles are flat. The class carries that rule here.
+            actions.add_class(NO_EVIDENCE)
             hint.update(
-                Text(
-                    "No AI evidence stored — this username was scanned without "
-                    "analysis.\nScan it again with analysis on to collect what "
-                    "a profile is built from.",
-                    style="dim",
+                Text.assemble(
+                    ("No AI evidence stored\n", "bold"),
+                    (
+                        (
+                            "This username was scanned without analysis, so "
+                            "the second pass has nothing to merge. Scanning "
+                            "again with analysis on collects it."
+                        ),
+                        "dim",
+                    ),
                 )
             )
-            build.label = "Scan with analysis"
+            # Named for where it goes and what it carries: pressing it opens
+            # the scan tab with this username and analysis already set, so the
+            # label promises the trip rather than a build that cannot happen.
+            build.label = "▸ Scan this username with analysis"
             anchors.display = False
             return
 
+        actions.remove_class(NO_EVIDENCE)
         anchors.display = True
         build.label = "Rebuild profile" if has_profile else "Build profile"
 
@@ -1145,6 +1172,14 @@ class ResultsPane(Vertical):
             )
         profile = record.get("profile")
         if profile is None:
+            if record.get("known") and not self._extraction_count(record):
+                # The actions block answers this case exactly -- what is
+                # missing and what fixes it. This line answers it vaguely and
+                # wrongly: it offers a model-configured scan, but this username
+                # HAS been scanned; what it lacks is the analysis pass. Two
+                # paragraphs disagreeing about one state is what made the empty
+                # profile tab read as improvised.
+                return Group(title)
             return Group(
                 title,
                 Text(
