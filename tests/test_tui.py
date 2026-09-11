@@ -2940,6 +2940,48 @@ async def test_a_username_offers_a_delete_control_while_it_is_pointed_at():
         assert _delete_marks(table) == {"marcus": "", "keeper": ""}
 
 
+async def test_the_delete_control_keeps_its_own_colours_on_the_selected_row():
+    """It came out white, in the cursor's colour, on the row most likely to use it.
+
+    `DataTable` sends the cursor's colours through twice -- once as the base
+    style under the cell and again over the top of it -- so a cell cannot hold
+    a colour of its own on the selected row while `cursor_foreground_priority`
+    is "css". The control was drawn as part of the highlight it sat in: no red,
+    and no block. Both of those ARE the affordance, so both have to survive the
+    cursor.
+    """
+    from sherlock_project.tui.results_pane import DELETE_STYLE
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+    ) as (_app, table, pilot):
+        table.focus()
+        await pilot.pause()
+        assert table.cursor_row == 0, "this test is about the SELECTED row"
+
+        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
+        await pilot.pause()
+
+        wanted = table.get_component_rich_style(DELETE_STYLE)
+        drawn = next(
+            (
+                segment
+                for segment in table.render_line(table.header_height)
+                if "✕" in segment.text
+            ),
+            None,
+        )
+        assert drawn is not None, "no control drawn on the selected row"
+        assert drawn.style is not None
+        # The theme's readable red, not whatever the cursor paints with.
+        assert drawn.style.color == wanted.color
+        # And its own block, so the control is still a control in there.
+        assert drawn.style.bgcolor == wanted.bgcolor
+        assert drawn.style.bgcolor != table.get_component_rich_style(
+            "datatable--cursor"
+        ).bgcolor
+
+
 async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
     """The ✕ acts on the row under the pointer, not on the open one.
 
