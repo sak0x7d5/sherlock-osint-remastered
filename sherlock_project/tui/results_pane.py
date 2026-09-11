@@ -24,6 +24,14 @@ list means something different once you know six sites gave no answer, and now
 you can see that without leaving the accounts. Hiding the number was the only
 real cost of switching, so it is the one thing that does not get hidden.
 
+**A symbol column comes with a key.** The mark column is two cells wide and
+its header is blank, which left the distinction this tool exists to make --
+blocked is not inconclusive is not rejected -- drawn in symbols nobody had been
+shown a glossary for. The live feed on the scan pane does not have that problem
+because it prints the word beside every symbol; a table has no room for that,
+so the sentence goes above the column instead, naming the symbols that section
+is actually drawing and disappearing on the one section that draws none.
+
 **Everything that is not interactive is still a Rich renderable inside a
 `Static`.** Widgets earn their keep when something can be clicked or focused --
 the accounts and unresolved lists are, so they are tables; the profile is not,
@@ -106,6 +114,8 @@ from sherlock_project.tui.theme import (
     elapsed_label,
     phase_line,
     spinner,
+    status_from_name,
+    status_key,
     status_style,
 )
 
@@ -157,6 +167,12 @@ class ResultsPane(Vertical):
         self._anchors_for: str | None = None
         # Row key -> the URL that row is about, so Enter can open it.
         self._account_urls: dict[str, str] = {}
+        # Which statuses each section is currently DRAWING, so the key above
+        # the table names those and only those. Filled by the fill methods
+        # rather than listed here as what each section may contain: a key
+        # offering `rejected` when nothing was rejected is noise in a line
+        # whose whole job is to be short enough to read in passing.
+        self._section_statuses: dict[str, list[QueryStatus]] = {}
         # Live state for a rebuild in progress.
         self._build_reporter: TuiReporter | None = None
         self._build_started = 0.0
@@ -177,6 +193,11 @@ class ResultsPane(Vertical):
                     Tab("PROFILE", id=TAB_PROFILE),
                     id="detail-tabs",
                 )
+                # Above the tables, not below them: a key is read before the
+                # rows it explains or it is read too late. It belongs to the
+                # section rather than to the pane, so it sits under the strip
+                # that switches them and changes with it.
+                yield Static(id="detail-legend")
                 # Each section owns its own scrolling, and only one is mounted
                 # visible at a time -- which is the whole fix for the double
                 # scrollbar.
@@ -435,6 +456,8 @@ class ResultsPane(Vertical):
         self.query_one(f"#{SEC_UNRESOLVED}", DataTable).clear()
         self.query_one("#detail-profile", Static).update("")
         self._account_urls.clear()
+        self._section_statuses.clear()
+        self._redraw_legend()
         self._set_tab_counts(accounts=0, unresolved=0)
 
     def _set_tab_counts(self, *, accounts: int, unresolved: int) -> None:
@@ -461,6 +484,33 @@ class ResultsPane(Vertical):
         section = SECTION_FOR_TAB.get(event.tab.id or "")
         if section is not None:
             self.query_one("#detail-switch", ContentSwitcher).current = section
+            self._redraw_legend()
+
+    def _redraw_legend(self) -> None:
+        """Name the symbols the section on screen is actually using.
+
+        Per section, because the sections do not share a vocabulary: every
+        account row is a hit, so `● found` is the whole key there, while
+        UNRESOLVED is the one place the distinction between "the site blocked
+        us" and "the rules did not decide" is drawn -- and that distinction is
+        the tool's central claim, made in two cells of a table nobody has been
+        given a glossary for.
+
+        Hidden rather than blanked when there is nothing to explain. A blank
+        line still occupies a row, and PROFILE has no symbols at all; it should
+        not pay for a key it does not have.
+        """
+        current = self.query_one("#detail-switch", ContentSwitcher).current
+        statuses = self._section_statuses.get(current or "", [])
+        legend = self.query_one("#detail-legend", Static)
+        legend.display = bool(statuses)
+        if statuses:
+            # "key" spelled out, dim, in front. Without it the line is a
+            # symbol followed by a word directly above a table of symbols
+            # followed by words -- which is to say, it reads as the first row.
+            legend.update(
+                Text.assemble(("key  ", "dim"), status_key(statuses))
+            )
 
     def action_next_section(self) -> None:
         self.query_one("#detail-tabs", Tabs).action_next_tab()
@@ -495,6 +545,7 @@ class ResultsPane(Vertical):
         )
         self._fill_accounts(accounts)
         self._fill_unresolved(unresolved)
+        self._redraw_legend()
         self._set_tab_counts(accounts=len(accounts), unresolved=len(unresolved))
         self._seed_build_anchors(record)
         self.query_one("#detail-profile", Static).update(
@@ -512,6 +563,7 @@ class ResultsPane(Vertical):
         """
         table = self.query_one(f"#{SEC_UNRESOLVED}", DataTable)
         table.clear()
+        self._section_statuses[SEC_UNRESOLVED] = []
         if not unresolved:
             table.add_row(
                 Text(""),
@@ -519,12 +571,20 @@ class ResultsPane(Vertical):
                 Text("every site gave an answer", style="dim italic"),
             )
             return
+        drawn: list[QueryStatus] = []
         for entry in unresolved:
-            style = status_style(
-                QueryStatus.WAF
-                if entry["reason"].startswith("blocked")
-                else QueryStatus.UNKNOWN
-            )
+            # The stored status, not a prefix match on the sentence written
+            # from it. Reading the symbol back out of its own explanation meant
+            # anything that did not start with "blocked" was drawn as
+            # inconclusive -- so a username the site's own rules reject, which
+            # `show` reports as "username format rejected" and has its own ✕,
+            # arrived here wearing the symbol for "we could not tell". That is
+            # exactly the conflation the unresolved list exists to prevent, and
+            # a key naming the symbols would have printed the wrong word beside
+            # it with the same confidence.
+            status = status_from_name(entry.get("status"))
+            style = status_style(status)
+            drawn.append(status)
             detail = entry["reason"]
             if entry.get("transport") == "http":
                 # Often the whole explanation for an inconclusive result, so it
@@ -537,11 +597,15 @@ class ResultsPane(Vertical):
                 Text(str(entry["site_name"]), overflow="ellipsis", no_wrap=True),
                 Text(detail, style="dim", overflow="ellipsis", no_wrap=True),
             )
+        self._section_statuses[SEC_UNRESOLVED] = drawn
 
     def _fill_accounts(self, accounts: list[dict[str, Any]]) -> None:
         table = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
         table.clear()
         self._account_urls.clear()
+        self._section_statuses[SEC_ACCOUNTS] = (
+            [QueryStatus.CLAIMED] if accounts else []
+        )
         if not accounts:
             # One row rather than an empty table, so the section reads as
             # answered rather than as still loading.
