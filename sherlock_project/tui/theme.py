@@ -456,6 +456,32 @@ TabPane { padding: 0 2; }
 }
 .panel-accent { border: round $accent; }
 
+/* Buttons wear the app's colour, not Textual's. `variant="primary"` resolves to
+   $primary -- #0178D4, a blue that appears nowhere else in this chrome, where
+   every title, active tab and affordance is $accent. Left at the default, SCAN
+   and `Build profile` were the only blue objects on screen, which is how a
+   deliberate palette ends up looking like an unfinished one.
+   The token itself is left alone: $primary still does honest work as the
+   selection wash on `.row-selected` and `.counter-row:focus`, where a tint is
+   wanted and an identity is not. Only the buttons are restated.
+   `color` is deliberately not set -- Textual's `auto 87%` picks the contrasting
+   foreground for whatever background lands here, which measures 153/255 against
+   this amber. Focus still reverses, because nothing here sets `text-style`. */
+Button.-primary {
+    background: $accent;
+    border-top: tall $accent-lighten-3;
+    border-bottom: tall $accent-darken-3;
+}
+Button.-primary:hover {
+    background: $accent-darken-2;
+    border-top: tall $accent;
+}
+Button.-primary.-active {
+    background: $accent;
+    border-top: tall $accent-darken-3;
+    border-bottom: tall $accent-lighten-3;
+}
+
 /* ---- scan pane ------------------------------------------------------- */
 
 /* The target row. A grid, not a horizontal box, because the label, the field
@@ -769,6 +795,56 @@ TabPane { padding: 0 2; }
     grid-columns: 1fr 12 20;
     grid-gutter: 0 2;
     height: 3;
+}
+/* Fill the column rather than floating inside it. `Button` defaults to
+   `width: auto; min-width: 16`, so "Build profile" measured 16 cells in its
+   20-cell column and stopped four cells short of the pane's right edge --
+   out of line with the tables above it, which do reach it. */
+#profile-anchors, #profile-build { width: 100%; }
+
+/* The POINTER state: no stored evidence, so the only thing on offer is a trip
+   to the scan tab. It is not a commit and it must not look like one.
+
+   Two defects made the raised version wrong rather than merely heavy. Textual's
+   grid SKIPS hidden children, so hiding `#profile-anchors` here slid the build
+   button out of the 20-cell column into the 12-cell one and clipped its label
+   to "Scan with" -- the same silent truncation `#target-row` above documents,
+   arrived at by a different route. And right-aligning it is dialog-footer
+   placement borrowed into a content pane: the eye finishes the sentence at the
+   left margin and then has to cross fifty empty cells to find the action.
+
+   Flat, left-aligned and auto-width answers all three. It cannot clip at any
+   width, it reads straight down one column with the text that asks for it, and
+   it carries the weight the scan pane's toggles carry -- which is the rule
+   this file already states twice: chrome proportional to what a control
+   commits, so that nothing out-shouts the thing that actually starts work. */
+#profile-actions.-no-evidence #profile-buttons { layout: horizontal; height: 1; }
+#profile-actions.-no-evidence #profile-spacer { display: none; }
+#profile-actions.-no-evidence #profile-build {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $panel;
+    color: $accent;
+    text-style: bold;
+}
+#profile-actions.-no-evidence #profile-build:hover {
+    background: $panel-lighten-2;
+}
+/* Both cues are load-bearing, for the reason `.counter-row` gives: without the
+   hover tint a flat control does not look pressable, and without a focus
+   marker someone arriving by Tab cannot see where they are.
+   The focus rule is NOT optional polish. The ID selector above sets
+   `text-style`, which outranks Textual's own `Button:focus` reverse style and
+   cancels it -- leaving an 8/255 background shift as the only signal, which is
+   no signal. This restores one, in the same amber wash `.counter-row:focus`
+   uses for the same job. */
+#profile-actions.-no-evidence #profile-build:focus {
+    background: $accent 30%;
+    color: $text;
+    text-style: bold;
 }
 
 /* ---- settings pane --------------------------------------------------- */
