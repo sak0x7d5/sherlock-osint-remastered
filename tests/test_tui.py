@@ -2054,13 +2054,20 @@ async def test_hidden_anchors_cannot_reach_a_scan(monkeypatch):
 
         await pilot.press(*"alice")
         await pilot.press("enter")
-        await pilot.pause()
+        # `_settle`, not `pause()`: starting a scan hands off to a @work
+        # worker, and `wait_for_idle` is satisfied while that worker's I/O is
+        # still outstanding -- so the assert could read `captured` before the
+        # session had been called at all. That is a KeyError rather than a
+        # wrong value, which is how it failed on CI while passing locally.
+        await _settle(app, pilot, lambda: "anchors" in captured)
         assert captured["anchors"] == [], "hidden anchors reached the scan"
 
         # Turned on, the same anchors are used rather than needing retyping.
         await pilot.click("#toggle-ai")
         await pilot.press("ctrl+r")
-        await pilot.pause()
+        # Same race, and `captured` is reused across both runs -- so the wait
+        # is for the value to CHANGE, not merely for the key to exist.
+        await _settle(app, pilot, lambda: bool(captured.get("anchors")))
         assert [a.field for a in captured["anchors"]] == ["full_name"]
 
 
