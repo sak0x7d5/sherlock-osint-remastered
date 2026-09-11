@@ -115,6 +115,29 @@ class SherlockDB:
             await connection
             connection.row_factory = aiosqlite.Row
             await connection.execute("PRAGMA foreign_keys = ON")
+            # More than one connection to this file is open at a time -- the
+            # results pane loads its listing on one while a delete writes on
+            # another, and a scan writes while the pane reads. Under the
+            # default rollback journal a reader blocks a writer's COMMIT, and
+            # with no busy timeout sqlite does not wait: it raises
+            # "database is locked" immediately. That is not theoretical, it is
+            # `delete_username` failing mid-transaction with the usernames row
+            # already deleted and the results rows not.
+            #
+            # WAL is the fix rather than a longer timeout, because a timeout
+            # only converts the error into a stall -- the UI would freeze for
+            # the length of whatever read is in flight. Under WAL readers and
+            # one writer proceed concurrently and neither waits.
+            #
+            # The timeout stays as well, for the case WAL does not cover: two
+            # WRITERS still serialise, so a scan saving results while a delete
+            # commits needs somewhere to wait.
+            #
+            # Not applicable to `:memory:`, which has no file to journal --
+            # sqlite reports "memory" back and ignores the request, so this is
+            # left unguarded rather than special-cased.
+            await connection.execute("PRAGMA journal_mode = WAL")
+            await connection.execute("PRAGMA busy_timeout = 5000")
             await self._initialize_tables()
         except BaseException as exc:
             try:

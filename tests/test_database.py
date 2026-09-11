@@ -1179,3 +1179,45 @@ async def test_get_extraction_model_counts_ignores_sites_without_extractions(
 
     assert await db.get_extraction_model_counts("blue") == {}
     assert await db.get_extraction_model_counts("nobody") == {}
+
+
+async def test_a_delete_survives_a_read_held_open_on_another_connection(tmp_path):
+    """Two connections to one file is this app's normal state, not an edge case.
+
+    The results pane loads its listing on its own connection while a delete
+    commits on another, and a scan writes while the pane reads. Under sqlite's
+    default rollback journal a reader blocks the writer's COMMIT, and with no
+    busy timeout sqlite does not wait for it -- it raises "database is locked"
+    at once, which leaves `delete_username` half applied: the transaction that
+    was meant to take both tables together fails partway.
+
+    This reproduced deterministically here before the WAL pragma went in, and
+    it is what failed CI on macOS and windows while ubuntu stayed green -- the
+    race is real on every platform and only the timing of it differs, which is
+    exactly the kind of fault that a timing-dependent test lets through.
+    """
+    path = str(tmp_path / "sherlock.db")
+
+    writer = await SherlockDB.create(path)
+    reader = await SherlockDB.create(path)
+    try:
+        for username in ("marcus", "keeper"):
+            await writer.save_result(
+                username=username,
+                site_name="GitHub",
+                status=str(QueryStatus.CLAIMED),
+                response_text=None,
+            )
+
+        # A read transaction left open, the way an in-flight query holds one.
+        await reader.db.execute("BEGIN")
+        async with reader.db.execute("SELECT * FROM results") as cur:
+            await cur.fetchone()
+
+        assert await writer.delete_username("keeper") == 1
+        remaining = [item.username for item in await writer.list_usernames()]
+        assert remaining == ["marcus"]
+    finally:
+        await reader.db.rollback()
+        await reader.close()
+        await writer.close()
