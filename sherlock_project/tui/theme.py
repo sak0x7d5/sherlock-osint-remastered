@@ -14,6 +14,13 @@ distinction the whole tool exists to make. `show` already refuses to fold "the
 site blocked us" into "the rules did not decide"; this keeps that refusal on
 screen.
 
+A glyph nobody has been taught is not a signal either, so every glyph is drawn
+somewhere that also says what it means: `status_cell` prints the word beside it
+on every row of the live feed, and `status_key` is that same sentence for the
+places with room for a symbol and none for a word -- the two-cell mark column
+of a table. Both read the glyph AND the word out of `STATUS_STYLES`, so a key
+can never disagree with the column it sits above.
+
 **Numbers line up in fixed columns.** Counts are read by comparing them to each
 other, and a ragged left edge makes that a reading exercise instead of a glance.
 The settings screen already learned this -- see LABEL_WIDTH there.
@@ -26,6 +33,7 @@ screen uses them and this does too.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -124,6 +132,63 @@ def status_cell(status: QueryStatus) -> Text:
         (f"{style.glyph} ", style.style),
         (style.label, style.style),
     )
+
+
+# How far apart the entries of a key sit. Three spaces, not the usual two: the
+# entries are a symbol and a word, and at two the symbol of the next entry
+# crowds the word of the last one into "inconclusive ▲ blocked" -- one run of
+# text rather than two things being named.
+KEY_GAP = "   "
+
+
+def status_from_name(name: str | None) -> QueryStatus:
+    """A stored status string back into the enum, falling back rather than raising.
+
+    The database holds `str(QueryStatus)`, and a row written by an older version
+    can hold a spelling this one no longer knows. Reading one is a display
+    problem, and a display problem must not take down the pane reporting it --
+    the same rule `status_style` follows, for the same reason.
+    """
+    try:
+        return QueryStatus(name)
+    except ValueError:
+        return QueryStatus.UNKNOWN
+
+
+def status_key(statuses: Iterable[QueryStatus]) -> Text:
+    """The symbol-to-word key for a set of statuses: `● found   ▲ blocked`.
+
+    Colour is never the only signal, which is why every status carries a glyph
+    -- but a glyph nobody has been taught is not a signal either. The live feed
+    teaches its own, because `status_cell` prints the word beside every symbol
+    it draws. A two-cell column in a table cannot, and that is the whole gap
+    this fills: it is the sentence the column has no room for, placed where the
+    column is.
+
+    Built from `STATUS_STYLES` rather than written out beside the table it
+    explains. A key that can drift from the cells above it is worse than no key
+    -- it is a wrong answer given confidently -- so the glyph, the colour and
+    the word all come from the same row of the same table the cells are drawn
+    from, and a status renamed there is renamed here.
+
+    Only the glyph keeps its colour; the word is dim. The glyph is the half
+    being matched by eye against the column, and a key at the same weight as
+    the findings competes with them for attention it does not deserve.
+
+    Duplicates collapse and the order is always `STATUS_ORDER`, so the key reads
+    the same way every time whatever order the rows happened to arrive in.
+    """
+    wanted = set(statuses)
+    line = Text()
+    for status in STATUS_ORDER:
+        if status not in wanted:
+            continue
+        style = status_style(status)
+        if line:
+            line.append(KEY_GAP)
+        line.append(f"{style.glyph} ", style=style.style)
+        line.append(style.label, style="dim")
+    return line
 
 
 def stat_row(
@@ -620,6 +685,21 @@ TabPane { padding: 0 2; }
     text-style: bold;
 }
 #detail-tabs:focus .underline--bar { color: $accent; background: $surface; }
+
+/* The key for the symbol column, directly above the column it explains.
+
+   The mark column is two cells wide and its header is blank, so there is
+   nowhere inside it to say that ▲ means the site blocked us and ? means the
+   rules did not decide. The feed on the scan pane does not need this -- it
+   prints the word beside every symbol -- but these tables have no room for
+   that, and an unexplained symbol is a colour-only signal by another route.
+
+   `height: auto` and the widget hidden outright when a section has no symbols,
+   rather than left blank: a key nobody needs must not cost the table a row.
+   No bottom padding for the same reason -- the pane is short, the tabs above
+   already separate it from the header, and every row here is a finding not
+   shown. */
+#detail-legend { height: auto; }
 
 /* Exactly one scroll region visible at a time -- the whole point of switching
    rather than stacking. `overflow-x: hidden` because a long URL would otherwise

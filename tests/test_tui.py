@@ -26,6 +26,7 @@ from sherlock_project.tui.scan_pane import CounterRow, ScanPane
 from sherlock_project.tui.settings_pane import SettingsPane
 from sherlock_project.tui.theme import (
     SPINNER_FRAMES,
+    STATUS_ORDER,
     STATUS_STYLES,
     elapsed_label,
     phase_line,
@@ -33,6 +34,8 @@ from sherlock_project.tui.theme import (
     spinner,
     stat_row,
     status_cell,
+    status_from_name,
+    status_key,
     status_style,
 )
 
@@ -825,6 +828,60 @@ def test_counter_rows_are_a_fixed_width_so_digits_stack():
     # Every line ends with its digits, so the units column lines up.
     for row in rows:
         assert row.plain.rstrip() == row.plain
+
+
+def test_a_glyph_nobody_has_been_taught_is_not_a_signal_either():
+    """The key says, in words, what each symbol means.
+
+    Every status carries a glyph so colour is never the only signal -- but the
+    feed is the only place that teaches them, because `status_cell` prints the
+    word beside the symbol on every row. A two-cell column in a table cannot do
+    that, and an unexplained ▲ is a colour-only signal by another route.
+    """
+    for status in QueryStatus:
+        style = status_style(status)
+        rendered = status_key([status]).plain
+        assert style.glyph in rendered
+        assert style.label in rendered
+
+
+def test_the_key_cannot_drift_from_the_cells_it_explains():
+    """Built from `STATUS_STYLES`, not written out beside the table.
+
+    A key that can disagree with the column above it is worse than no key: it
+    is a wrong answer given confidently. Rename a status in the one table and
+    the key renames with it, or this fails.
+    """
+    for status, style in STATUS_STYLES.items():
+        assert f"{style.glyph} {style.label}" in status_key([status]).plain
+
+
+def test_the_key_reads_the_same_way_every_time():
+    """`STATUS_ORDER`, whatever order the rows happened to arrive in, and each
+    symbol named once however many rows wear it."""
+    scrambled = status_key(
+        [QueryStatus.WAF, QueryStatus.CLAIMED, QueryStatus.WAF]
+    ).plain
+    assert scrambled == status_key([QueryStatus.CLAIMED, QueryStatus.WAF]).plain
+    positions = [
+        scrambled.index(status_style(s).label)
+        for s in STATUS_ORDER
+        if status_style(s).label in scrambled
+    ]
+    assert positions == sorted(positions)
+    assert scrambled.count("blocked") == 1
+
+
+def test_an_unknown_stored_status_does_not_take_down_the_pane():
+    """A row written by an older version can hold a spelling this one dropped.
+
+    Reading one is a display problem, and a display problem must not crash the
+    pane reporting it -- the same rule `status_style` follows.
+    """
+    assert status_from_name("Claimed") is QueryStatus.CLAIMED
+    assert status_from_name("Illegal") is QueryStatus.ILLEGAL
+    assert status_from_name("Whatever") is QueryStatus.UNKNOWN
+    assert status_from_name(None) is QueryStatus.UNKNOWN
 
 
 def test_status_cell_is_text_not_markup():
@@ -2523,6 +2580,134 @@ async def test_unresolved_sites_are_listed_not_only_counted():
 
         assert app.query_one("#detail-switch", ContentSwitcher).current == "sec-unresolved"
         assert app.query_one("#sec-unresolved", DataTable).row_count == 1
+
+
+def _legend_text(app) -> str:
+    """What the key is actually SHOWING.
+
+    Its `display`, not just its content: a key that is correct and not on
+    screen explains exactly as much as no key at all, and reading only the
+    renderable would let it be hidden without a single test noticing.
+    """
+    from textual.widgets import Static
+
+    legend = app.query_one("#detail-legend", Static)
+    return legend.render().plain if legend.display else ""
+
+
+async def test_the_symbol_column_comes_with_a_key():
+    """Nothing on this screen said what ▲ meant.
+
+    The mark column is two cells wide and its header is blank, so the
+    distinction the whole tool exists to make -- "the site blocked us" is not
+    "the rules did not decide" -- was being drawn in symbols the operator had
+    never been shown a glossary for. The feed on the scan pane teaches its own
+    because it prints the word beside every symbol; a table has no room for
+    that, so the sentence goes above the column instead.
+    """
+    await _seed(
+        marcus=[
+            ("GitHub", QueryStatus.CLAIMED),
+            ("Slow", QueryStatus.UNKNOWN),
+            ("Cloudflared", QueryStatus.WAF),
+        ]
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        key = _legend_text(app)
+        for glyph, word in (("?", "inconclusive"), ("▲", "blocked")):
+            assert f"{glyph} {word}" in key, f"the key does not explain {glyph}"
+
+
+async def test_the_key_names_what_is_on_screen_and_nothing_else():
+    """A key offering `rejected` when nothing was rejected is noise in a line
+    whose whole job is to be short enough to read in passing."""
+    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        key = _legend_text(app)
+        assert "inconclusive" in key
+        assert "blocked" not in key
+        assert "rejected" not in key
+
+
+async def test_the_key_belongs_to_the_section_not_the_pane():
+    """The sections do not share a vocabulary.
+
+    Every account row is a hit, so `● found` is the whole key there; UNRESOLVED
+    is the only place the blocked/inconclusive split is drawn. And PROFILE has
+    no symbols at all -- it must not pay a row for a key it does not have.
+    """
+    from textual.widgets import Static
+
+    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+
+        assert "found" in _legend_text(app)
+        assert "inconclusive" not in _legend_text(app)
+
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+        assert "inconclusive" in _legend_text(app)
+
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+        assert not app.query_one("#detail-legend", Static).display, (
+            "the profile section has no symbols and is still reserving a row "
+            "for a key"
+        )
+
+
+async def test_a_rejected_username_is_not_drawn_as_inconclusive():
+    """The symbol came from a prefix match on its own explanation.
+
+    Anything whose reason did not start with "blocked" was drawn with the
+    inconclusive `?`, so a username the site's own rules reject -- which `show`
+    reports as "username format rejected" and which has its own ✕ -- arrived
+    wearing the symbol for "we could not tell". That is exactly the conflation
+    the unresolved list exists to prevent, and a key naming the symbols would
+    have printed the wrong word beside it just as confidently.
+    """
+    from textual.widgets import DataTable
+
+    await _seed(marcus=[("StrictSite", QueryStatus.ILLEGAL)])
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+        await pilot.press("alt+right")
+        for _ in range(6):
+            await pilot.pause()
+
+        row = app.query_one("#sec-unresolved", DataTable).get_row_at(0)
+        mark = str(row[0])
+        assert mark == status_style(QueryStatus.ILLEGAL).glyph
+        assert mark != status_style(QueryStatus.UNKNOWN).glyph
+
+        key = _legend_text(app)
+        assert "rejected" in key
+        assert "inconclusive" not in key
 
 
 async def test_deleting_a_username_removes_both_tables(db: SherlockDB):
