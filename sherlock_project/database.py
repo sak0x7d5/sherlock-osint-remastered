@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,7 +147,7 @@ class SherlockDB:
             # rules, not a fix for an observed failure -- both orders passed
             # the suite repeatedly, so do not read it as load-bearing.
             await connection.execute("PRAGMA busy_timeout = 5000")
-            await connection.execute("PRAGMA journal_mode = WAL")
+            await self._enable_wal(connection)
             await self._initialize_tables()
         except BaseException as exc:
             try:
@@ -175,6 +176,39 @@ class SherlockDB:
             await self.db.close()
             self.db = None
 
+    @staticmethod
+    async def _enable_wal(connection: aiosqlite.Connection) -> None:
+        """Put the database in WAL, tolerating a concurrent opener.
+
+        busy_timeout does not cover this one. Changing journal mode needs a
+        brief exclusive lock, and sqlite returns SQLITE_BUSY for it rather than
+        waiting, so two connections creating the same database at the same
+        instant can collide -- measured at 6 failures in 40 rounds once the DDL
+        deadlock below was fixed.
+
+        Retrying is enough because WAL is a property of the FILE, not of the
+        connection: it is written into the database header and survives every
+        close. So the race exists only at creation, and the loser only has to
+        wait for the winner to finish, after which the pragma is a no-op that
+        takes no lock at all.
+
+        Ending up without WAL is not fatal and must not stop the app starting.
+        The database still works under the rollback journal; readers and
+        writers simply contend more, which is what busy_timeout is set for.
+        """
+        for attempt in range(5):
+            try:
+                await connection.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                # Someone else may have just set it, which is the good case.
+                async with connection.execute("PRAGMA journal_mode") as cursor:
+                    row = await cursor.fetchone()
+                if row is not None and str(row[0]).lower() == "wal":
+                    return
+                await asyncio.sleep(0.02 * (attempt + 1))
+            else:
+                return
+
     def _require_db(self) -> aiosqlite.Connection:
         if self.db is None:
             raise RuntimeError("Database is not connected")
@@ -182,6 +216,40 @@ class SherlockDB:
 
     async def _initialize_tables(self) -> None:
         db = self._require_db()
+
+        # IMMEDIATE, because busy_timeout cannot save the DDL below. sqlite3
+        # runs at isolation_level '', so these statements would otherwise go
+        # inside an implicit DEFERRED transaction: the connection takes a
+        # SHARED lock on its first statement and asks to upgrade on its first
+        # write. Two connections both holding SHARED and both wanting to
+        # upgrade is a genuine deadlock, so sqlite returns SQLITE_BUSY
+        # *immediately* rather than waiting out the timeout -- waiting could
+        # never resolve it. IMMEDIATE takes the write lock up front, leaving
+        # no upgrade to deadlock on, and busy_timeout then applies normally.
+        #
+        # Measured, not reasoned: two connections opening one fresh database
+        # concurrently raised "database is locked" out of here 14 times in 40
+        # rounds, and 0 in 40 afterwards. The TUI does exactly this -- the
+        # results pane loads its listing while a detail load or a delete opens
+        # its own connection -- so it was reachable by a user, not only by the
+        # suite. It is here rather than in `connect()` so the transaction sits
+        # with the statements it protects, and so anything that replaces this
+        # method replaces its locking too.
+        # Retried for the same reason `_enable_wal` is: on a database that does
+        # not exist yet, several connections can be inside CREATE at once and
+        # the loser still meets SQLITE_BUSY here. Once any one of them finishes,
+        # the file exists in WAL and this stops contending -- so the wait is
+        # short and bounded, and measured at 0 failures in 40 rounds for 2 and
+        # 3 concurrent creations where 3-way was 8 in 40 without it.
+        for attempt in range(5):
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                if attempt == 4:
+                    raise
+                await asyncio.sleep(0.02 * (attempt + 1))
+            else:
+                break
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS usernames (

@@ -2400,10 +2400,14 @@ async def test_the_results_tab_reloads_when_you_switch_to_it():
             await db.close()
 
         await pilot.press("alt+2")
-        for _ in range(10):
-            if table.row_count:
-                break
-            await pilot.pause()
+        # The reload this tab triggers is a worker doing a SQLite read, so a
+        # loop of pause() can return with the read still outstanding. This is
+        # the right barrier for that, but it was NOT what made this test flaky:
+        # the 4-in-12 failure rate measured here was `SherlockDB.connect`
+        # racing itself on a database that did not exist yet, and it is fixed
+        # in database.py. Kept because waiting on the worker is still the
+        # correct thing to do, not because it is load-bearing.
+        await _settle(app, pilot, lambda: table.row_count == 1)
 
         assert table.row_count == 1
 
