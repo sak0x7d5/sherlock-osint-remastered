@@ -37,8 +37,8 @@ $ sherlock show hackerman1337
 full URL behind every value.</sub>
 
 <!-- TODO: add a screenshot of `sherlock ui` here (docs/images/ui.png).
-     docs/images/demo.png is upstream's screenshot of the old URL-list output
-     and is deliberately not used. -->
+     Upstream's demo.png showed the old URL-list output, i.e. the thing this
+     fork replaces, so it was removed rather than reused. -->
 
 ## Why this exists
 
