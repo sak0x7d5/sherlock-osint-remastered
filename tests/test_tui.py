@@ -16,6 +16,7 @@ from typing import ClassVar
 import pytest
 from rich.console import Console
 from textual.screen import ModalScreen
+from textual.worker import WorkerCancelled
 
 from sherlock_project.database import SherlockDB
 from sherlock_project.result import QueryResult, QueryStatus
@@ -2779,9 +2780,23 @@ async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
     bounded loop because these flows CHAIN workers -- the delete finishes, and
     only then does the reload it triggers start -- so one barrier does not
     always cover the whole sequence.
+
+    WorkerCancelled is swallowed because in these flows it is the NORMAL case,
+    not a failure. `ResultsPane._load` is `@work(exclusive=True)`, so a second
+    reload cancels the first by design, and `Worker.wait()` re-raises that as
+    WorkerCancelled -- `wait_for_complete` only absorbs `asyncio.CancelledError`,
+    which is a different exception. Treating a superseded worker as an error
+    made this helper fail on Windows CI with "Worker was cancelled, and did not
+    complete" on a delete that had worked perfectly; the reload simply replaced
+    a reload still in flight. WorkerFailed is deliberately NOT caught: that one
+    means a worker raised, and hiding it would turn a real error into a silent
+    timeout here.
     """
     for _ in range(tries):
-        await app.workers.wait_for_complete()
+        try:
+            await app.workers.wait_for_complete()
+        except WorkerCancelled:
+            pass
         await pilot.pause()
         if predicate is None or predicate():
             return
