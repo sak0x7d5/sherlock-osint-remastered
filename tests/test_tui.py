@@ -2502,9 +2502,7 @@ async def test_focus_does_not_restyle_the_section_tabs():
 
     app = SherlockUI()
     async with app.run_test(size=(100, 26)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         blurred = strip_styles(app)
 
         app.query_one("#detail-tabs", Tabs).focus()
@@ -2530,9 +2528,7 @@ async def test_the_detail_pane_has_exactly_one_scroll_region():
 
     app = SherlockUI()
     async with app.run_test(size=(100, 26)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         detail = app.query_one("#result-detail")
         scrolling = [
@@ -2566,9 +2562,7 @@ async def test_the_section_labels_carry_their_counts():
     )
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         assert "2" in str(app.query_one("#tab-accounts", Tab).label)
         assert "1" in str(app.query_one("#tab-unresolved", Tab).label)
@@ -2584,9 +2578,7 @@ async def test_unresolved_sites_are_listed_not_only_counted():
     )
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         await pilot.press("alt+right")
         for _ in range(5):
@@ -2630,9 +2622,7 @@ async def test_the_symbol_column_comes_with_a_key():
     )
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
@@ -2648,9 +2638,7 @@ async def test_the_key_names_what_is_on_screen_and_nothing_else():
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
@@ -2677,9 +2665,7 @@ async def test_the_key_costs_a_row_only_where_the_symbols_contend():
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         assert _legend_text(app) == "", (
             "ACCOUNTS is one symbol repeated and is still paying a row for a "
@@ -2715,9 +2701,7 @@ async def test_a_rejected_username_is_not_drawn_as_inconclusive():
     await _seed(marcus=[("StrictSite", QueryStatus.ILLEGAL)])
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
@@ -2802,6 +2786,26 @@ async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
             return
 
 
+async def _open_results(app, pilot) -> None:
+    """Switch to RESULTS without racing the app's own mount.
+
+    `alt+2` activates a tab whose handler reaches for ResultsPane to reload its
+    list. Pressed as a test's FIRST action, that can arrive before the DOM has
+    finished mounting, and the failure surfaces inside the app rather than the
+    test: `NoMatches: No nodes match 'ResultsPane'`.
+
+    A `for _ in range(10): await pilot.pause()` preamble never prevented it --
+    `wait_for_idle` is satisfied while the results loader's SQLite read is
+    outstanding on a thread executor, so every iteration can pass in
+    microseconds with nothing mounted. adf2088 established this and fixed the
+    seven sites that open the PROFILE section; these are the rest, found when
+    two of them failed on Windows for the same reason.
+    """
+    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
+    await pilot.press("alt+2")
+    await _settle(app, pilot)
+
+
 async def _open_profile_section(app, pilot) -> None:
     """Open RESULTS, then its PROFILE section, waiting on state not on counts.
 
@@ -2847,9 +2851,7 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         await pilot.press("delete")
         await pilot.pause()
@@ -3393,9 +3395,7 @@ async def test_an_existing_profile_offers_a_rebuild():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
         assert "Rebuild" in str(app.query_one("#profile-build", Button).label)
 
 
@@ -3429,9 +3429,7 @@ async def test_a_rebuild_keeps_the_profiles_own_anchors():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         pane = app.query_one(ResultsPane)
         assert [a.field for a in pane._build_anchors] == ["name"], (
@@ -3464,9 +3462,7 @@ async def test_rebuilding_an_anchored_profile_with_no_anchors_is_warned_about():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         pane = app.query_one(ResultsPane)
         # Someone clears them in the editor.
