@@ -136,8 +136,17 @@ class SherlockDB:
             # Not applicable to `:memory:`, which has no file to journal --
             # sqlite reports "memory" back and ignores the request, so this is
             # left unguarded rather than special-cased.
-            await connection.execute("PRAGMA journal_mode = WAL")
+            #
+            # busy_timeout goes FIRST so that nothing below it can hit a lock
+            # with no willingness to wait: switching journal mode takes a brief
+            # exclusive lock, and `_initialize_tables()` runs DDL, which is a
+            # write, so two connections opening at once do contend. At the
+            # default timeout of zero the second one would fail rather than
+            # wait. This ordering is a precaution reasoned from the locking
+            # rules, not a fix for an observed failure -- both orders passed
+            # the suite repeatedly, so do not read it as load-bearing.
             await connection.execute("PRAGMA busy_timeout = 5000")
+            await connection.execute("PRAGMA journal_mode = WAL")
             await self._initialize_tables()
         except BaseException as exc:
             try:

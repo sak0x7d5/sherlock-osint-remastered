@@ -2783,6 +2783,36 @@ async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
             return
 
 
+async def _open_profile_section(app, pilot) -> None:
+    """Open RESULTS, then its PROFILE section, waiting on state not on counts.
+
+    Every pane is composed at app start, so `alt+2` is normally safe. But a key
+    pressed before the DOM has finished mounting reaches an app that cannot
+    answer for it: activating RESULTS runs a handler that reaches for
+    ResultsPane to reload its list, and on the slowest runner that raised
+    `NoMatches: No nodes match 'ResultsPane'` -- inside the app, not the test.
+
+    So the wait is for the pane to EXIST before driving it, and then for the
+    section to have actually switched. A `for _ in range(12): await
+    pilot.pause()` preamble never guaranteed either: `wait_for_idle` is
+    satisfied while the results loader's SQLite read is outstanding on a thread
+    executor, so all twelve iterations can pass in microseconds with nothing
+    mounted.
+    """
+    from sherlock_project.tui.results_pane import SEC_PROFILE
+
+    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
+    await pilot.press("alt+2")
+    await _settle(app, pilot, lambda: bool(app.query("#profile-actions")))
+    await pilot.press("alt+right")
+    await pilot.press("alt+right")
+    await _settle(
+        app,
+        pilot,
+        lambda: app.query_one("#detail-switch").current == SEC_PROFILE,
+    )
+
+
 async def test_delete_asks_first_and_cancelling_keeps_everything():
     """The only irreversible action in the app, and the only one that asks.
 
@@ -3156,13 +3186,7 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "scanned without analysis" in hint
@@ -3204,13 +3228,7 @@ async def test_the_pointer_state_does_not_stick_to_the_next_username():
 
     app = SherlockUI()
     async with app.run_test(size=(110, 34)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         pane = app.query_one(ResultsPane)
         actions = app.query_one("#profile-actions")
@@ -3249,13 +3267,7 @@ async def test_the_pointer_button_draws_its_whole_label(size):
 
     app = SherlockUI()
     async with app.run_test(size=size) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         button = app.query_one("#profile-build", Button)
         drawn = " ".join(
@@ -3286,13 +3298,7 @@ async def test_the_pointer_button_stays_operable_by_mouse_and_keyboard():
 
     app = SherlockUI()
     async with app.run_test(size=(110, 34)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         button = app.query_one("#profile-build", Button)
         assert button in app.screen.focus_chain
@@ -3330,13 +3336,7 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "Evidence from 3 sites is ready" in hint
@@ -3487,13 +3487,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         await pilot.click("#profile-build")
         for _ in range(30):
@@ -3532,13 +3526,7 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         await pilot.click("#profile-build")
         for _ in range(25):
