@@ -204,15 +204,18 @@ def test_the_unresolved_caveat_survives_and_points_in_app():
     "3 blocked" is a number; "a site that never answered is not a site where
     nobody was home" is the distinction this tool refuses to blur. It also used
     to recommend `sherlock show --unresolved`, a command nobody in the app can
-    run -- the third instance of that bug.
+    run -- the third instance of that bug. The same trap catches any rename:
+    this must name a control the app actually has, so pointing at the retired
+    UNRESOLVED tab is as broken as pointing at the flag was.
     """
     log = " ".join(line.plain for line in _scanned_reporter().snapshot_log())
 
     assert "gave no answer" in log
     assert "inconclusive" in log and "blocked by bot protection" in log
     assert 'Not the same as "not found"' in log
-    assert "UNRESOLVED tab" in log
+    assert "found only" in log and "SITES" in log
     assert "--unresolved" not in log
+    assert "UNRESOLVED tab" not in log
 
 
 def test_per_site_ai_narration_stays_out_of_the_log():
@@ -2423,7 +2426,7 @@ async def test_a_section_tab_and_its_pane_have_different_ids():
     """`query_one` returns whichever the walk reaches first, not what you meant.
 
     The section tabs and the panes they select started out sharing one id each,
-    which made `query_one("#sec-accounts")` ambiguous -- it happened to work, by
+    which made `query_one("#sec-sites")` ambiguous -- it happened to work, by
     walk order, until a test asked for the other one and got a `DataTable` where
     it wanted a `Tab`.
 
@@ -2463,7 +2466,7 @@ async def test_focus_does_not_restyle_the_section_tabs():
         rendered = []
         for strip in app.screen._compositor.render_strips():
             text = "".join(segment.text for segment in strip)
-            if "ACCOUNTS" not in text:
+            if "SITES" not in text:
                 continue
             # Only the tab labels. The row also carries the border between the
             # master list and the detail, and that cell legitimately changes
@@ -2472,7 +2475,7 @@ async def test_focus_does_not_restyle_the_section_tabs():
             for segment in strip:
                 if any(
                     word in segment.text
-                    for word in ("ACCOUNTS", "UNRESOLVED", "PROFILE")
+                    for word in ("SITES", "PROFILE")
                 ):
                     rendered.append(
                         (
@@ -2532,14 +2535,16 @@ async def test_the_detail_pane_has_exactly_one_scroll_region():
         assert not any(w.show_horizontal_scrollbar for w in scrolling)
 
 
-async def test_the_section_labels_carry_their_counts():
-    """The one thing switching would otherwise hide.
+async def test_the_counts_survive_the_merge_into_one_table():
+    """The number the two-tab layout existed to keep visible.
 
-    An account list means something different once six sites gave no answer,
-    and behind a bare tab that number is invisible until someone thinks to
-    look. So it goes on the tab.
+    An account list means something different once a site gave no answer, and
+    behind a bare tab that number was invisible until someone thought to look
+    -- so it used to live on the tab labels. One table makes that arrangement
+    unnecessary, and the line above the table carries both numbers instead,
+    next to the control that acts on them.
     """
-    from textual.widgets import Tab
+    from textual.widgets import Static
 
     await _seed(
         marcus=[
@@ -2549,40 +2554,104 @@ async def test_the_section_labels_carry_their_counts():
         ]
     )
     app = SherlockUI()
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(110, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
 
-        assert "2" in str(app.query_one("#tab-accounts", Tab).label)
-        assert "1" in str(app.query_one("#tab-unresolved", Tab).label)
+        counts = app.query_one("#sites-counts", Static).render().plain
+        assert "2 found" in counts
+        assert "1 unresolved" in counts
 
 
-async def test_unresolved_sites_are_listed_not_only_counted():
-    """There was no in-app equivalent of `show --unresolved`, and a UI needs one
-    more than the CLI does -- there is no pipe to fall back on."""
-    from textual.widgets import DataTable
+async def test_filtering_to_hits_says_what_it_is_hiding():
+    """The whole risk of merging the two lists, closed in one line.
+
+    `show` refuses to let "we could not tell" read as "nobody was home". A
+    filter that silently dropped the unanswered rows would undo that in the one
+    place someone is most likely to conclude a scan found nothing -- so with
+    the filter on, the count of what it is holding back is stated, not dropped.
+    """
+    from textual.widgets import DataTable, Static
 
     await _seed(
         marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)]
     )
     app = SherlockUI()
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(110, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
 
-        await pilot.press("alt+right")
-        for _ in range(5):
+        table = app.query_one("#sec-sites", DataTable)
+        assert table.row_count == 1, "found only should open showing just hits"
+        counts = app.query_one("#sites-counts", Static).render().plain
+        assert "1 unresolved" in counts and "hidden" in counts
+
+        await pilot.press("f")
+        for _ in range(8):
             await pilot.pause()
 
-        from textual.widgets import ContentSwitcher
-
-        assert app.query_one("#detail-switch", ContentSwitcher).current == "sec-unresolved"
-        assert app.query_one("#sec-unresolved", DataTable).row_count == 1
+        assert table.row_count == 2, "f did not reveal the unresolved rows"
+        assert "hidden" not in app.query_one("#sites-counts", Static).render().plain
 
 
-def _legend_text(app) -> str:
+async def test_the_filter_is_the_same_control_as_the_scan_toggles():
+    """One visual language for "press to change this", across the whole app.
+
+    The `‹ on ›` brackets mean that on the settings editor and on `analysis`
+    and `verbose`; a checkbox or a bare keybinding here would be a second
+    dialect for the same idea. The button also reports its own state, which is
+    the part a keybinding cannot do.
+    """
+    from textual.widgets import Button
+
+    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+
+        toggle = app.query_one("#toggle-found-only", Button)
+        assert "toggle" in toggle.classes, "not the scan pane's toggle styling"
+        assert str(toggle.label) == "found only ‹ on ›"
+
+        await pilot.press("f")
+        for _ in range(8):
+            await pilot.pause()
+        # The whole label, not a clipped one: a Button measures itself when it
+        # is first drawn, and `off` is a character wider than `on`.
+        assert str(toggle.label) == "found only ‹ off ›"
+        assert toggle.size.width >= len(str(toggle.label))
+
+
+async def test_unresolved_sites_are_listed_not_only_counted():
+    """There was no in-app equivalent of `show --unresolved`, and a UI needs one
+    more than the CLI does -- there is no pipe to fall back on."""
+    from textual.widgets import ContentSwitcher, DataTable
+
+    await _seed(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)]
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(110, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+        await pilot.press("f")
+        for _ in range(8):
+            await pilot.pause()
+
+        assert app.query_one("#detail-switch", ContentSwitcher).current == "sec-sites"
+        rows = app.query_one("#sec-sites", DataTable)
+        details = " ".join(
+            str(cell) for i in range(rows.row_count) for cell in rows.get_row_at(i)
+        )
+        assert "Slow" in details and "timed out" in details
+
+
+def _key_text(app) -> str:
     """What the key is actually SHOWING.
 
     Its `display`, not just its content: a key that is correct and not on
@@ -2591,8 +2660,8 @@ def _legend_text(app) -> str:
     """
     from textual.widgets import Static
 
-    legend = app.query_one("#detail-legend", Static)
-    return legend.render().plain if legend.display else ""
+    keys = app.query_one("#detail-keys", Static)
+    return keys.render().plain if keys.display else ""
 
 
 async def test_the_symbol_column_comes_with_a_key():
@@ -2603,7 +2672,7 @@ async def test_the_symbol_column_comes_with_a_key():
     "the rules did not decide" -- was being drawn in symbols the operator had
     never been shown a glossary for. The feed on the scan pane teaches its own
     because it prints the word beside every symbol; a table has no room for
-    that, so the sentence goes above the column instead.
+    that, so the glossary goes in the header band instead.
     """
     await _seed(
         marcus=[
@@ -2613,75 +2682,93 @@ async def test_the_symbol_column_comes_with_a_key():
         ]
     )
     app = SherlockUI()
-    async with app.run_test(size=(110, 30)) as pilot:
+    async with app.run_test(size=(120, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
 
-        key = _legend_text(app)
-        for glyph, word in (("?", "inconclusive"), ("▲", "blocked")):
+        key = _key_text(app)
+        for glyph, word in (
+            ("●", "found"),
+            ("?", "inconclusive"),
+            ("▲", "blocked"),
+            ("✕", "rejected"),
+        ):
             assert f"{glyph} {word}" in key, f"the key does not explain {glyph}"
 
 
-async def test_the_key_names_what_is_on_screen_and_nothing_else():
-    """A key offering `rejected` when nothing was rejected is noise in a line
-    whose whole job is to be short enough to read in passing."""
-    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
+async def test_the_key_is_a_glossary_not_a_summary_of_one_record():
+    """It names the app's vocabulary, and stays the same size doing it.
+
+    Data-aware, it would have to be rebuilt per username -- and a bordered
+    block that changes height between records moves the table underneath it.
+    The statuses it names are fixed, and `absent` is not among them: `show`
+    does not list absent sites at all, so a key offering `· absent` would name
+    a symbol that cannot appear in this table.
+    """
+    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)], quiet=[])
     app = SherlockUI()
-    async with app.run_test(size=(110, 30)) as pilot:
+    async with app.run_test(size=(120, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
 
-        key = _legend_text(app)
-        assert "inconclusive" in key
-        assert "blocked" not in key
-        assert "rejected" not in key
+        key = _key_text(app)
+        # Only hits stored, yet the key still explains the rest.
+        assert "inconclusive" in key and "rejected" in key
+        assert "absent" not in key
 
 
-async def test_the_key_costs_a_row_only_where_the_symbols_contend():
-    """One row of this pane is a finding not shown, so the key has to earn it.
+async def test_the_key_is_visible_from_both_sections():
+    """It lives in the header band, which every section shares.
 
-    UNRESOLVED earns it: three symbols contend there, and telling them apart is
-    the tool's central claim. ACCOUNTS does not -- every row is a hit, so its
-    mark column is one symbol repeated down a list the tab already calls
-    ACCOUNTS, and a key there would spend a row to disambiguate nothing. Nor
-    does PROFILE, which draws no symbols at all.
-
-    This is also what keeps the line off the tab row, where the spare width
-    looks like it is: `Tabs` is a scrolling strip, so a key sharing that row
-    drops tabs rather than wrapping -- silently, and from the left.
+    It used to be section-scoped and cost a row of findings; in the header it
+    is drawn in space that was empty at every width, so it is simply always
+    there -- including on PROFILE, where it costs nothing to leave alone.
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
-    async with app.run_test(size=(110, 30)) as pilot:
+    async with app.run_test(size=(120, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
-
-        assert _legend_text(app) == "", (
-            "ACCOUNTS is one symbol repeated and is still paying a row for a "
-            "key that disambiguates nothing"
-        )
+        assert "found" in _key_text(app)
 
         await pilot.press("alt+right")
-        for _ in range(6):
+        for _ in range(8):
             await pilot.pause()
-        assert "inconclusive" in _legend_text(app)
+        assert "found" in _key_text(app)
 
-        await pilot.press("alt+right")
-        for _ in range(6):
+
+async def test_the_key_stands_down_when_the_header_cannot_afford_it():
+    """A bordered box is 30 cells, and the header does not shorten -- it wraps.
+
+    Measured at an 80-column terminal, the timestamp beside it broke into six
+    lines where there were two, and the table was pushed down by all of them. A
+    glossary is worth a lot less than being able to read the record it is a
+    glossary for, so below the threshold the box goes rather than the record.
+    """
+    await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
+
+    app = SherlockUI()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
             await pilot.pause()
-        assert _legend_text(app) == "", (
-            "the profile section has no symbols and is still reserving a row "
-            "for a key"
+        assert "found" in _key_text(app), "wide enough, and the key is missing"
+
+        await pilot.resize_terminal(80, 30)
+        for _ in range(10):
+            await pilot.pause()
+        assert _key_text(app) == "", (
+            "at 80 columns the key is still on screen, wrapping the header "
+            "it sits beside into a column of broken timestamps"
         )
+
+        await pilot.resize_terminal(120, 30)
+        for _ in range(10):
+            await pilot.pause()
+        assert "found" in _key_text(app), "the key did not come back"
 
 
 async def test_a_rejected_username_is_not_drawn_as_inconclusive():
@@ -2691,29 +2778,54 @@ async def test_a_rejected_username_is_not_drawn_as_inconclusive():
     inconclusive `?`, so a username the site's own rules reject -- which `show`
     reports as "username format rejected" and which has its own ✕ -- arrived
     wearing the symbol for "we could not tell". That is exactly the conflation
-    the unresolved list exists to prevent, and a key naming the symbols would
-    have printed the wrong word beside it just as confidently.
+    keeping these rows honest exists to prevent, and the key would have printed
+    the wrong word beside it just as confidently.
     """
     from textual.widgets import DataTable
 
     await _seed(marcus=[("StrictSite", QueryStatus.ILLEGAL)])
     app = SherlockUI()
-    async with app.run_test(size=(110, 30)) as pilot:
+    async with app.run_test(size=(120, 30)) as pilot:
         await pilot.press("alt+2")
         for _ in range(10):
             await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
+        await pilot.press("f")
+        for _ in range(8):
             await pilot.pause()
 
-        row = app.query_one("#sec-unresolved", DataTable).get_row_at(0)
+        row = app.query_one("#sec-sites", DataTable).get_row_at(0)
         mark = str(row[0])
         assert mark == status_style(QueryStatus.ILLEGAL).glyph
         assert mark != status_style(QueryStatus.UNKNOWN).glyph
 
-        key = _legend_text(app)
-        assert "rejected" in key
-        assert "inconclusive" not in key
+
+async def test_hits_come_before_the_rows_that_answered_nothing():
+    """Interleaved by name, a handful of findings scatters through hundreds of
+    rows that are not findings."""
+    from textual.widgets import DataTable
+
+    await _seed(
+        marcus=[
+            ("Zulip", QueryStatus.CLAIMED),
+            ("Aardvark", QueryStatus.UNKNOWN),
+            ("Basecamp", QueryStatus.WAF),
+        ]
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(10):
+            await pilot.pause()
+        await pilot.press("f")
+        for _ in range(8):
+            await pilot.pause()
+
+        table = app.query_one("#sec-sites", DataTable)
+        marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+        assert marks[0] == status_style(QueryStatus.CLAIMED).glyph, (
+            f"a hit is not the first row: {marks}"
+        )
+        assert status_style(QueryStatus.CLAIMED).glyph not in marks[1:]
 
 
 async def test_deleting_a_username_removes_both_tables(db: SherlockDB):
@@ -2931,7 +3043,6 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
         for _ in range(12):
             await pilot.pause()
         await pilot.press("alt+right")
-        await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
 
@@ -2957,7 +3068,6 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
         await pilot.press("alt+2")
         for _ in range(12):
             await pilot.pause()
-        await pilot.press("alt+right")
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
@@ -3115,7 +3225,6 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
         for _ in range(12):
             await pilot.pause()
         await pilot.press("alt+right")
-        await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
 
@@ -3159,7 +3268,6 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
         await pilot.press("alt+2")
         for _ in range(12):
             await pilot.pause()
-        await pilot.press("alt+right")
         await pilot.press("alt+right")
         for _ in range(6):
             await pilot.pause()
