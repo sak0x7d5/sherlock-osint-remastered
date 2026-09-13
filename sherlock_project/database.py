@@ -88,6 +88,19 @@ class StoredUsernameListing:
     has_profile: bool
 
 
+# How hard to wait out a lock sqlite refuses to wait out itself. Two rounds of
+# backoff, so ~1.1s in total before giving up rather than ~0.2s.
+#
+# The first budget was derived on Linux, where 8 connections creating one
+# database at once measured 0 failures in 40 rounds. Windows failed it: NTFS
+# takes mandatory locks and its file operations are slower, so the losers of
+# the race need longer than Linux losers do. Retrying costs nothing when there
+# is no contention -- the loop exits on the first attempt -- so the budget is
+# sized for the slowest platform rather than the fastest.
+_LOCK_RETRY_ATTEMPTS = 8
+_LOCK_RETRY_BASE_SECONDS = 0.03
+
+
 class SherlockDB:
     def __init__(self, database_path: str) -> None:
         self.database_path = database_path
@@ -196,7 +209,7 @@ class SherlockDB:
         The database still works under the rollback journal; readers and
         writers simply contend more, which is what busy_timeout is set for.
         """
-        for attempt in range(5):
+        for attempt in range(_LOCK_RETRY_ATTEMPTS):
             try:
                 await connection.execute("PRAGMA journal_mode = WAL")
             except sqlite3.OperationalError:
@@ -205,7 +218,7 @@ class SherlockDB:
                     row = await cursor.fetchone()
                 if row is not None and str(row[0]).lower() == "wal":
                     return
-                await asyncio.sleep(0.02 * (attempt + 1))
+                await asyncio.sleep(_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
             else:
                 return
 
@@ -241,13 +254,13 @@ class SherlockDB:
         # the file exists in WAL and this stops contending -- so the wait is
         # short and bounded, and measured at 0 failures in 40 rounds for 2 and
         # 3 concurrent creations where 3-way was 8 in 40 without it.
-        for attempt in range(5):
+        for attempt in range(_LOCK_RETRY_ATTEMPTS):
             try:
                 await db.execute("BEGIN IMMEDIATE")
             except sqlite3.OperationalError:
-                if attempt == 4:
+                if attempt == _LOCK_RETRY_ATTEMPTS - 1:
                     raise
-                await asyncio.sleep(0.02 * (attempt + 1))
+                await asyncio.sleep(_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
             else:
                 break
 

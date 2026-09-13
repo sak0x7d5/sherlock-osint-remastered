@@ -1947,12 +1947,18 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
         assert app.screen.query_one("#resume-view", Button)
 
         await pilot.click("#resume-view")
-        for _ in range(20):
-            await pilot.pause()
 
         from textual.widgets import TabbedContent
 
-        assert app.query_one(TabbedContent).active == "tab-results"
+        tabs = app.query_one(TabbedContent)
+        # Wait on the tab actually switching, not on a fixed number of pauses:
+        # this click dismisses a screen and then activates RESULTS, whose
+        # handler reloads the pane off a SQLite read, and `pause()` returns
+        # while that read is still outstanding. macOS CI asserted here and got
+        # 'tab-scan'.
+        await _settle(app, pilot, lambda: tabs.active == "tab-results")
+
+        assert tabs.active == "tab-results"
         assert captured == {}, "viewing results must not start a scan"
 
 
@@ -2581,8 +2587,7 @@ async def test_unresolved_sites_are_listed_not_only_counted():
         await _open_results(app, pilot)
 
         await pilot.press("alt+right")
-        for _ in range(5):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         from textual.widgets import ContentSwitcher
 
@@ -2624,8 +2629,7 @@ async def test_the_symbol_column_comes_with_a_key():
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         key = _legend_text(app)
         for glyph, word in (("?", "inconclusive"), ("▲", "blocked")):
@@ -2640,8 +2644,7 @@ async def test_the_key_names_what_is_on_screen_and_nothing_else():
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         key = _legend_text(app)
         assert "inconclusive" in key
@@ -2673,13 +2676,11 @@ async def test_the_key_costs_a_row_only_where_the_symbols_contend():
         )
 
         await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _settle(app, pilot)
         assert "inconclusive" in _legend_text(app)
 
         await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _settle(app, pilot)
         assert _legend_text(app) == "", (
             "the profile section has no symbols and is still reserving a row "
             "for a key"
@@ -2703,8 +2704,7 @@ async def test_a_rejected_username_is_not_drawn_as_inconclusive():
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         row = app.query_one("#sec-unresolved", DataTable).get_row_at(0)
         mark = str(row[0])
