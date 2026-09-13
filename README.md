@@ -8,14 +8,14 @@ who they belong to, with every claim traced back to the page it came from.**
 ![Regression](https://github.com/sak0x7d5/sherlock-osint-remastered/actions/workflows/regression.yml/badge.svg)
 
 ```console
-$ sherlock show hackerman1337
+$ sherlock-rm show hackerman1337
 [*] Stored results for 'hackerman1337' (last scanned 2026-09-10 14:22:07 · 680 sites checked · nothing written)
 [+] GitHub: https://github.com/hackerman1337
 [+] Mastodon: https://mastodon.social/@hackerman1337
 [+] Last.fm: https://last.fm/user/hackerman1337
 [+] Bandcamp: https://bandcamp.com/hackerman1337 (no browser)
 [!] 34 sites of 680 gave no answer: 21 inconclusive, 13 blocked by bot protection
-    Not the same as "not found". List them: sherlock show hackerman1337 --unresolved
+    Not the same as "not found". List them: sherlock-rm show hackerman1337 --unresolved
 [*] AI profile for 'hackerman1337' (built 2026-09-10 14:31:52 · extracted by Qwen3-8B-Q4_K_M)
 ╭─ Profile: hackerman1337 ──────────────────────────────────────────────────────╮
 │ [!] No anchors used, so these values may describe different people who share  │
@@ -36,7 +36,7 @@ $ sherlock show hackerman1337
 <sub>Illustrative output. `--sources` replaces each `3 sites: …` summary with the
 full URL behind every value.</sub>
 
-<!-- TODO: add a screenshot of `sherlock ui` here (docs/images/ui.png).
+<!-- TODO: add a screenshot of `sherlock-rm ui` here (docs/images/ui.png).
      Upstream's demo.png showed the old URL-list output, i.e. the thing this
      fork replaces, so it was removed rather than reused. -->
 
@@ -88,25 +88,50 @@ determined is reported as undetermined rather than as absent, and none of it is
 thrown away between runs.
 
 > [!IMPORTANT]
-> This is an **independent derivative** of the [Sherlock Project](https://github.com/sherlock-project/sherlock).
-> It is not affiliated with, endorsed by, or supported by it, and it is **not**
-> the `sherlock-project` package on PyPI. Do not report issues found here to
-> upstream. See [NOTICE.md](NOTICE.md) for what is inherited, what is new, and
-> which upstream services this still calls.
+> **This is not Sherlock, and it does not speak for Sherlock.**
+>
+> It began as a fork of the [Sherlock Project](https://github.com/sherlock-project/sherlock)
+> and has since become a different tool:
+>
+> - **Independent.** Not affiliated with, endorsed by, or supported by the
+>   Sherlock Project or its maintainers. Please do not report anything you find
+>   here to them, or anything you find there to us.
+> - **Not their package.** `pip install sherlock-project` installs *upstream's*
+>   release. This one installs as `sherlock-rm` and does not collide with it.
+> - **Overwhelmingly new code.** 86% of the Python here is in files that do not
+>   exist upstream — the stealth-browser fetch engine, the SQLite persistence
+>   layer, bounded content extraction, the two-pass local-model pipeline, and
+>   the terminal UI. What is inherited is the site-iteration and result
+>   modelling, the scan loop's argument surface, and the TXT output format.
+> - **Different data, too.** Scans run on the
+>   [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset, not
+>   upstream's manifest, which is retained only for `--json`.
+> - **Attribution is kept, not minimised.** Upstream's copyright stays in
+>   [LICENSE](LICENSE) because the MIT licence requires it and because it is
+>   accurate. [NOTICE.md](NOTICE.md) itemises exactly what is inherited, what is
+>   new, what is third-party, and which upstream services this still calls.
+
+> [!NOTE]
+> **A rename is coming.** `sherlock-rm` is an interim name. Carrying "sherlock"
+> invites exactly the confusion the box above spends five bullets dispelling,
+> and the project has outgrown being described as a version of something else.
+> A new name will land before the first tagged release; the repository will
+> redirect, and the command will change with it.
 
 ## Install
 
 Needs **Python 3.13+** (see [Requirements](#requirements) — the floor is real).
-There is no published package: `pip install sherlock-project` installs
-**upstream's** release, not this work.
+There is no published package yet, so install from the repository.
+`pip install sherlock-project` installs **upstream's** release, not this work.
 
-**One line, no clone.** This puts a real `sherlock` command on your PATH, which
-is what every example below assumes:
+**One line, no clone.** This puts a `sherlock-rm` command on your PATH, which is
+what every example below assumes. The name is deliberate: it does not collide
+with upstream's `sherlock`, so you can keep both installed.
 
 ```bash
 pipx install git+https://github.com/sak0x7d5/sherlock-osint-remastered
 # or: uv tool install git+https://github.com/sak0x7d5/sherlock-osint-remastered
-sherlock --version
+sherlock-rm --version
 ```
 
 **Docker**, if you would rather not have Python 3.13 on the host — which is the
@@ -136,7 +161,7 @@ pip install .
 
 ```bash
 poetry install
-poetry run sherlock --help
+poetry run sherlock-rm --help
 tox
 ```
 
@@ -154,7 +179,7 @@ below becomes `poetry run sherlock ...` (or run `poetry shell` once).
   server for you — you never start or stop one:
 
   ```
-  sherlock setup ai
+  sherlock-rm setup ai
   ```
 
   It looks where models usually already are (LM Studio, the llama.cpp and
@@ -185,7 +210,7 @@ Download a `Q4_K_M` build from [Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/
 into wherever you keep `.gguf` files, then point Sherlock at that folder once:
 
 ```bash
-sherlock setup ai --models-dir <folder>
+sherlock-rm setup ai --models-dir <folder>
 ```
 
 You do not start `llama-server` yourself — Sherlock starts and stops the one it
@@ -194,7 +219,7 @@ uses.
 Smaller models will run, and mostly cost you Pass 1 precision — they invent
 fields or file facts under the wrong heading. Larger models help most in Pass 2,
 where the merge decisions live. Whatever you pick is recorded against every
-extraction, and `sherlock show` names it, so a profile built by a model you no
+extraction, and `sherlock-rm show` names it, so a profile built by a model you no
 longer trust is identifiable rather than silently mixed in.
 
 ## Quick start
@@ -202,32 +227,32 @@ longer trust is identifiable rather than silently mixed in.
 Scan a username:
 
 ```bash
-sherlock someusername
+sherlock-rm someusername
 ```
 
 Scan several at once:
 
 ```bash
-sherlock user1 user2 user3
+sherlock-rm user1 user2 user3
 ```
 
 Scan, then have the local model read what it found:
 
 ```bash
-sherlock setup ai
-sherlock --ai someusername
+sherlock-rm setup ai
+sherlock-rm --ai someusername
 ```
 
 Look at what is already stored, without scanning or writing anything:
 
 ```bash
-sherlock show someusername
+sherlock-rm show someusername
 ```
 
 Trade accuracy for speed by skipping the browser entirely:
 
 ```bash
-sherlock --no-webbrowser someusername
+sherlock-rm --no-webbrowser someusername
 ```
 
 ## How the analysis works
@@ -244,7 +269,7 @@ merged into one profile. Fields that several sites agree on are marked
 confident; fields resting on weaker or conflicting evidence are separated out
 rather than blended in. Each value carries the sites that support it.
 
-`sherlock show <user> --sources` prints the full URL behind every value.
+`sherlock-rm show <user> --sources` prints the full URL behind every value.
 `--json` emits the whole thing machine-readably.
 
 ### Anchoring
@@ -255,7 +280,7 @@ something true about your subject, pass it as an anchor and accounts that
 contradict it are weighted accordingly:
 
 ```bash
-sherlock --ai --anchor "name=Jane Doe" --anchor "verified:location=Berlin" janedoe
+sherlock-rm --ai --anchor "name=Jane Doe" --anchor "verified:location=Berlin" janedoe
 ```
 
 ## Accuracy, honestly
@@ -272,7 +297,7 @@ confirm, and a fast "not found" never gets mistaken for a settled answer.
 
 **UNKNOWN is a real answer.** The site rules are two-sided — one pattern proves
 presence, another proves absence. When neither matches, the result is
-inconclusive rather than a guess. `sherlock show <user> --unresolved` lists
+inconclusive rather than a guess. `sherlock-rm show <user> --unresolved` lists
 those sites. Sites blocked by bot protection or rejecting the username's format
 land here too, and they are *not* the same as sites where the username was free.
 
@@ -283,7 +308,7 @@ each claim actually rests on.
 ### How long a scan takes
 
 <!-- TODO: fill these from a real run before publishing. Suggested method:
-     `time sherlock --fresh <user>` and `time sherlock --fresh --no-webbrowser <user>`
+     `time sherlock-rm --fresh <user>` and `time sherlock-rm --fresh --no-webbrowser <user>`
      on a stated connection and machine, best of three, 680 sites, --concurrency 30.
      Blackbird publishes 731 sites in 44s for comparison, so leaving this blank
      reads worse than a slow honest number. -->
@@ -340,7 +365,7 @@ and anything you would rather not keep.
 The database stores captured page content, extracted fields, and synthesised
 profiles, keyed by username. It persists until you delete it.
 
-**Removing someone.** On the RESULTS tab of `sherlock ui`, hover a username and
+**Removing someone.** On the RESULTS tab of `sherlock-rm ui`, hover a username and
 press the `✕` at the end of its row — or select it and press `delete`. Either
 way it names what will go and asks first, then erases that username's results,
 stored page content, extractions and profile. Nothing else is touched.
@@ -388,14 +413,14 @@ uses.
 ## Commands
 
 ```
-sherlock USERNAME...        Scan for a username
-sherlock show USERNAME      Read what is stored. Never scans, never writes
-sherlock ui                 Full-screen interface: scan, results and settings
-sherlock setup ai           Configure the local model endpoint
-sherlock settings           Edit stored defaults for scans, output and AI
+sherlock-rm USERNAME...        Scan for a username
+sherlock-rm show USERNAME      Read what is stored. Never scans, never writes
+sherlock-rm ui                 Full-screen interface: scan, results and settings
+sherlock-rm setup ai           Configure the local model endpoint
+sherlock-rm settings           Edit stored defaults for scans, output and AI
 ```
 
-`sherlock ui` puts all three in one place and needs a terminal; without one it
+`sherlock-rm ui` puts all three in one place and needs a terminal; without one it
 says so and exits rather than failing.
 
 > [!NOTE]
@@ -439,7 +464,7 @@ says so and exits rather than failing.
 </details>
 
 <details>
-<summary><strong><code>sherlock show</code> options</strong></summary>
+<summary><strong><code>sherlock-rm show</code> options</strong></summary>
 
 | Option | Effect |
 | - | - |

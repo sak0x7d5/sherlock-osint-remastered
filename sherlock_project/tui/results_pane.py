@@ -593,7 +593,7 @@ class ResultsPane(Vertical):
         be looked at and never taken away, and every investigation ends by
         retyping the command line anyway.
 
-        Deliberately the same payload `sherlock show --json` produces, from the
+        Deliberately the same payload `sherlock-rm show --json` produces, from the
         same function, so a file written here and one written there are the same
         file. `ensure_ascii` is on for the reason that command documents:
         profiles carry names outside cp1252 and Windows encodes redirected
@@ -1217,7 +1217,7 @@ class ResultsPane(Vertical):
                 Text(
                     "A profile is stored but no longer matches the current "
                     "format. Rebuild it from the CLI:\n"
-                    f"  sherlock {record['username']} --ai-synthesize-only",
+                    f"  sherlock-rm {record['username']} --ai-synthesize-only",
                     style="yellow",
                 ),
             )

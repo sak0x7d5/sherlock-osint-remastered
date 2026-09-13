@@ -1,4 +1,4 @@
-"""Tests for `sherlock show`, the read-only view of stored results.
+"""Tests for `sherlock-rm show`, the read-only view of stored results.
 
 The behaviour worth protecting here is negative: showing must never write.
 Before this command existed, the only way to display a pass-two profile was
