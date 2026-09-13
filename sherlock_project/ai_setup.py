@@ -128,7 +128,7 @@ def _ask_for_models_folder(
     """Ask where the models are. One question, no searching.
 
     Reached only when discovery came up empty, and only when someone is there
-    to answer. The alternative -- printing `sherlock setup ai --models-dir
+    to answer. The alternative -- printing `sherlock-rm setup ai --models-dir
     <folder>` and exiting -- ends the session by handing back a command,
     which is the thing the whole flow is meant to avoid.
 
@@ -197,7 +197,7 @@ def _select_model(
         except EOFError:
             # isatty() is not a reliable interactivity test on Windows, so the
             # guard above can be skipped even when nothing can answer. NUL is a
-            # character device, which means `sherlock setup ai < NUL` --
+            # character device, which means `sherlock-rm setup ai < NUL` --
             # explicitly "I have no keyboard" -- reports isatty() as True.
             # Measured: piped stdin gives False, NUL gives True.
             #
@@ -221,7 +221,7 @@ def _select_model(
 
 
 def build_setup_parser() -> ArgumentParser:
-    parser = ArgumentParser(prog="sherlock setup ai")
+    parser = ArgumentParser(prog="sherlock-rm setup ai")
     parser.add_argument(
         "--base-url",
         help="llama-server URL. Defaults to http://127.0.0.1:8080.",
@@ -288,9 +288,9 @@ def _report_settings(
             Text("Nothing stored at ", style="dim").append(Text(str(path))),
             soft_wrap=True,
         )
-        console.print("Configure it with `sherlock setup ai`.")
+        console.print("Configure it with `sherlock-rm setup ai`.")
         # 1, not 2: nothing is broken, the answer is "nothing is stored". Same
-        # convention as `sherlock show`, so a script can branch on it.
+        # convention as `sherlock-rm show`, so a script can branch on it.
         return 1
 
     for label, value in (
@@ -459,7 +459,7 @@ async def run_ai_setup(
         output.print("[red]\\[x] No models available.[/red]")
         output.print(
             "Point Sherlock at the folder your .gguf files are in:\n"
-            "  sherlock setup ai --models-dir <folder>\n"
+            "  sherlock-rm setup ai --models-dir <folder>\n"
             "Any layout works -- it searches inside."
         )
         return 2

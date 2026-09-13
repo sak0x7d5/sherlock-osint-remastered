@@ -693,7 +693,7 @@ class TerminalReporter(QueryNotify):
             f"answer: {', '.join(parts)}"
         )
         self.hint(
-            f'Not the same as "not found". List them: sherlock show '
+            f'Not the same as "not found". List them: sherlock-rm show '
             f"{username} --unresolved"
         )
 
@@ -842,7 +842,7 @@ class TerminalReporter(QueryNotify):
         flag on both was the same defect as recommending `--verbose` and
         `--unresolved` inside the UI -- advice for a place the reader is not.
         """
-        return f"Redo them with the configured model: sherlock {username} --ai --fresh"
+        return f"Redo them with the configured model: sherlock-rm {username} --ai --fresh"
 
     def ai_cached_evidence(
         self,

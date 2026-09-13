@@ -21,7 +21,7 @@ def isolated_user_state(tmp_path, monkeypatch):
 
     Settings and the database resolve to per-user locations, not to the working
     directory, so without this the suite reads whatever the developer last saved
-    with `sherlock settings`. That is not hypothetical: a stored
+    with `sherlock-rm settings`. That is not hypothetical: a stored
     `webbrowser = false` made eight tests in test_synthesis_cli.py fail with
     `KeyError: 'concurrency'` minutes after being saved, with no change to the
     tests or the code.

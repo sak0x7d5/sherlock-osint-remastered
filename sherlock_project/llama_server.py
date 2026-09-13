@@ -232,7 +232,7 @@ class ManagedLlamaServer:
             raise LlamaServerError(
                 f"Could not find {SERVER_EXECUTABLE}. Install llama.cpp and "
                 "make sure it is on your PATH, or point Sherlock at it with "
-                "`sherlock setup ai --server-binary <path>`."
+                "`sherlock-rm setup ai --server-binary <path>`."
             )
 
         configured = self._settings.models_dir

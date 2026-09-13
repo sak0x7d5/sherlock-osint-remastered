@@ -205,7 +205,7 @@ def test_the_unresolved_caveat_survives_and_points_in_app():
 
     "3 blocked" is a number; "a site that never answered is not a site where
     nobody was home" is the distinction this tool refuses to blur. It also used
-    to recommend `sherlock show --unresolved`, a command nobody in the app can
+    to recommend `sherlock-rm show --unresolved`, a command nobody in the app can
     run -- the third instance of that bug.
     """
     log = " ".join(line.plain for line in _scanned_reporter().snapshot_log())
@@ -1345,7 +1345,7 @@ def test_navigation_keys_avoid_flow_control_and_function_keys():
     - Function keys need Fn held on most laptops, and F1 is commonly grabbed
       for help by the terminal or the desktop before the app sees it.
 
-    `sherlock settings` keeps ctrl+s to save because it shipped that way and
+    `sherlock-rm settings` keeps ctrl+s to save because it shipped that way and
     changing a key underneath people is worse than the caveat; this asserts
     nothing NEW picks one of these.
     """
@@ -3577,11 +3577,11 @@ async def test_the_ui_refuses_to_draw_without_a_terminal(capsys):
     """A full-screen app that takes over a CI log is worse than no app."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui([], interactive=False, console=console) == 0
-    assert "sherlock <username>" in capsys.readouterr().out
+    assert "sherlock-rm <username>" in capsys.readouterr().out
 
 
 async def test_unknown_arguments_are_reported_rather_than_ignored(capsys):
-    """Someone typing `sherlock ui --fresh` has an expectation about that run
+    """Someone typing `sherlock-rm ui --fresh` has an expectation about that run
     which this cannot meet, so silently dropping the flag would be worse."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui(["--fresh"], console=console) == 2

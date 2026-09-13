@@ -211,7 +211,7 @@ def test_scan_summary_reports_unresolved_sites_separately_from_absent() -> None:
     assert "1 blocked by bot protection" in rendered
     assert "1 rejected the username format" in rendered
     assert 'Not the same as "not found"' in rendered
-    assert "sherlock show target --unresolved" in rendered
+    assert "sherlock-rm show target --unresolved" in rendered
 
 
 def test_scan_summary_counters_reset_between_usernames() -> None:
@@ -228,9 +228,9 @@ def test_scan_summary_counters_reset_between_usernames() -> None:
 
     rendered = output.getvalue()
     assert "1 site of 1 gave no answer" in rendered
-    assert "sherlock show first --unresolved" in rendered
+    assert "sherlock-rm show first --unresolved" in rendered
     # The clean second scan says nothing about the first scan's failure.
-    assert "sherlock show second --unresolved" not in rendered
+    assert "sherlock-rm show second --unresolved" not in rendered
     assert rendered.count("gave no answer") == 1
 
 
@@ -1428,7 +1428,7 @@ def test_other_model_extractions_are_reported_once_and_only_on_mismatch():
     assert "9 from vendor/small" in text
     assert "3 from an unrecorded model" in text
     # The remedy has to be nameable, or the warning is just bad news.
-    assert "sherlock blue --ai --fresh" in text
+    assert "sherlock-rm blue --ai --fresh" in text
 
 
 def test_other_model_extractions_uses_singular_for_one():
