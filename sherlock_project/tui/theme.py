@@ -480,6 +480,32 @@ TabPane { padding: 0 2; }
 }
 .panel-accent { border: round $accent; }
 
+/* Buttons wear the app's colour, not Textual's. `variant="primary"` resolves to
+   $primary -- #0178D4, a blue that appears nowhere else in this chrome, where
+   every title, active tab and affordance is $accent. Left at the default, SCAN
+   and `Build profile` were the only blue objects on screen, which is how a
+   deliberate palette ends up looking like an unfinished one.
+   The token itself is left alone: $primary still does honest work as the
+   selection wash on `.row-selected` and `.counter-row:focus`, where a tint is
+   wanted and an identity is not. Only the buttons are restated.
+   `color` is deliberately not set -- Textual's `auto 87%` picks the contrasting
+   foreground for whatever background lands here, which measures 153/255 against
+   this amber. Focus still reverses, because nothing here sets `text-style`. */
+Button.-primary {
+    background: $accent;
+    border-top: tall $accent-lighten-3;
+    border-bottom: tall $accent-darken-3;
+}
+Button.-primary:hover {
+    background: $accent-darken-2;
+    border-top: tall $accent;
+}
+Button.-primary.-active {
+    background: $accent;
+    border-top: tall $accent-darken-3;
+    border-bottom: tall $accent-lighten-3;
+}
+
 /* ---- scan pane ------------------------------------------------------- */
 
 /* The target row. A grid, not a horizontal box, because the label, the field
@@ -646,16 +672,35 @@ TabPane { padding: 0 2; }
 /* Username list left, detail right -- the master/detail shape, because the
    question is always "this one, tell me more".
 
-   The list column is a FIXED width, not a fraction. Its three columns add up to
-   a known number of cells, and at `1fr` of a narrow terminal the total came out
+   The list column is a FIXED width, not a fraction. Its columns add up to a
+   known number of cells, and at `1fr` of a narrow terminal the total came out
    under that: the last column was clipped to "si" and the count it held could
    not be read at all. Fixed, the list always fits and the detail absorbs the
    slack -- which is the right way round, since prose reflows and a table of
-   numbers does not. */
+   numbers does not.
+
+   38 is that total, and it is arithmetic rather than taste: 34 + 4. The cells
+   come to 34 (15 username + 7 found + 7 sites + 5 delete -- each column's width
+   plus one cell of padding on each side), and the 4 is what the widget spends
+   around them: 1 on its right padding, 1 on its border, and 2 on the vertical
+   scrollbar a list longer than the pane puts there. The old 34 did not count
+   that scrollbar, so a database with 40 usernames in it left the columns 30
+   cells and grew a HORIZONTAL scrollbar under a table of three short columns.
+   The delete control has to stay visible at the right-hand end of every row, so
+   the width is now the full list's, not the empty one's.
+
+   38 and not a cell more, which is measured rather than chosen: at 40 an
+   80-column terminal leaves the section strip 32 cells for 33 of tabs, and
+   `Tabs` is a scrolling strip -- squeezed, it drops tabs silently and from the
+   LEFT, so ACCOUNTS arrives as "CCOUNTS" and then goes entirely. The detail
+   absorbs what this column takes, which is the rule it was fixed for, but the
+   strip in it has a floor. The four cells the control needed came out of the
+   username column instead; the URLs beside it ellipsize a little earlier, which
+   they already did at that width. */
 #results-body {
     layout: grid;
     grid-size: 2 1;
-    grid-columns: 34 1fr;
+    grid-columns: 38 1fr;
     grid-gutter: 0 2;
     height: 1fr;
 }
@@ -663,6 +708,32 @@ TabPane { padding: 0 2; }
     height: 1fr;
     border-right: solid $panel-lighten-2;
     padding: 0 1 0 0;
+}
+/* The delete control, drawn on the row under the pointer. Deliberately the same
+   shape as `#add-anchor`: a block of `$panel` with a coloured symbol on it,
+   which is this app's existing way of saying that a symbol is a button. A bare
+   glyph in a column of numbers reads as another value, and a value is not
+   something you press. No border, for the reason that button has none either --
+   a raised box around one character out-shouts the rows it sits among.
+
+   Red because it deletes; it is the only red in the pane, which is the point.
+   `$text-error` and not `$error`: the two are the same colour in the dark theme
+   until you put them on something. Measured against this block, `$error` comes
+   out at 1.51:1 in the dark theme -- a red smudge on grey -- while `$text-error`,
+   which is the token that exists to be READ, gives 4.62:1 dark and 6.24:1
+   light. `$panel` rather than the lighter panel tints for the same reason:
+   every step lighter costs the glyph contrast, and `$panel-lighten-2` takes it
+   to 2.79:1.
+
+   This survives the SELECTED row, which is what `cursor_foreground_priority`
+   and `cursor_background_priority` are set to "renderable" for -- see
+   UsernameList. Left at their defaults the cursor repaints the control in its
+   own colours, and a delete button painted as part of the row highlight is not
+   a delete button. */
+#username-list > .username-list--delete {
+    background: $panel;
+    color: $text-error;
+    text-style: bold;
 }
 #result-detail { height: 1fr; }
 /* Identity left, key right. The right half of this band was empty at every
@@ -786,6 +857,56 @@ TabPane { padding: 0 2; }
     grid-columns: 1fr 12 20;
     grid-gutter: 0 2;
     height: 3;
+}
+/* Fill the column rather than floating inside it. `Button` defaults to
+   `width: auto; min-width: 16`, so "Build profile" measured 16 cells in its
+   20-cell column and stopped four cells short of the pane's right edge --
+   out of line with the tables above it, which do reach it. */
+#profile-anchors, #profile-build { width: 100%; }
+
+/* The POINTER state: no stored evidence, so the only thing on offer is a trip
+   to the scan tab. It is not a commit and it must not look like one.
+
+   Two defects made the raised version wrong rather than merely heavy. Textual's
+   grid SKIPS hidden children, so hiding `#profile-anchors` here slid the build
+   button out of the 20-cell column into the 12-cell one and clipped its label
+   to "Scan with" -- the same silent truncation `#target-row` above documents,
+   arrived at by a different route. And right-aligning it is dialog-footer
+   placement borrowed into a content pane: the eye finishes the sentence at the
+   left margin and then has to cross fifty empty cells to find the action.
+
+   Flat, left-aligned and auto-width answers all three. It cannot clip at any
+   width, it reads straight down one column with the text that asks for it, and
+   it carries the weight the scan pane's toggles carry -- which is the rule
+   this file already states twice: chrome proportional to what a control
+   commits, so that nothing out-shouts the thing that actually starts work. */
+#profile-actions.-no-evidence #profile-buttons { layout: horizontal; height: 1; }
+#profile-actions.-no-evidence #profile-spacer { display: none; }
+#profile-actions.-no-evidence #profile-build {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $panel;
+    color: $accent;
+    text-style: bold;
+}
+#profile-actions.-no-evidence #profile-build:hover {
+    background: $panel-lighten-2;
+}
+/* Both cues are load-bearing, for the reason `.counter-row` gives: without the
+   hover tint a flat control does not look pressable, and without a focus
+   marker someone arriving by Tab cannot see where they are.
+   The focus rule is NOT optional polish. The ID selector above sets
+   `text-style`, which outranks Textual's own `Button:focus` reverse style and
+   cancels it -- leaving an 8/255 background shift as the only signal, which is
+   no signal. This restores one, in the same amber wash `.counter-row:focus`
+   uses for the same job. */
+#profile-actions.-no-evidence #profile-build:focus {
+    background: $accent 30%;
+    color: $text;
+    text-style: bold;
 }
 
 /* ---- settings pane --------------------------------------------------- */

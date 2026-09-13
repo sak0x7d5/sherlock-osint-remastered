@@ -439,8 +439,16 @@ class TerminalReporter(QueryNotify):
                         status="installing runtime",
                     )
             else:
+                # No progress row to animate on this path, so the run goes
+                # quiet for the length of the download. Saying how long that
+                # is, and that it happens once, is the whole difference
+                # between a wait and an apparent hang.
                 self.warning(
                     "Web scanner runtime is missing; installing it now"
+                )
+                self.hint(
+                    "One-off download of a browser build; it can take a few "
+                    "minutes before the scan starts."
                 )
         elif status == "starting":
             if self._web_scanner_started_at is None:
@@ -685,7 +693,7 @@ class TerminalReporter(QueryNotify):
             f"answer: {', '.join(parts)}"
         )
         self.hint(
-            f'Not the same as "not found". List them: sherlock show '
+            f'Not the same as "not found". List them: sherlock-rm show '
             f"{username} --unresolved"
         )
 
@@ -834,7 +842,7 @@ class TerminalReporter(QueryNotify):
         flag on both was the same defect as recommending `--verbose` and
         `--unresolved` inside the UI -- advice for a place the reader is not.
         """
-        return f"Redo them with the configured model: sherlock {username} --ai --fresh"
+        return f"Redo them with the configured model: sherlock-rm {username} --ai --fresh"
 
     def ai_cached_evidence(
         self,

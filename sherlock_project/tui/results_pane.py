@@ -85,10 +85,11 @@ from typing import Any, ClassVar
 
 from rich.console import Console, Group
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import (
     Button,
@@ -98,6 +99,7 @@ from textual.widgets import (
     Tab,
     Tabs,
 )
+from textual.widgets.data_table import CellDoesNotExist
 
 # Section ids. The tab and the pane it selects need SEPARATE ids even though
 # they are the same section: two widgets sharing one id makes `query_one`
@@ -115,6 +117,12 @@ SECTION_FOR_TAB = {
     TAB_SITES: SEC_SITES,
     TAB_PROFILE: SEC_PROFILE,
 }
+
+# Set on `#profile-actions` while the only thing on offer is a trip to the scan
+# tab. A class rather than per-widget style writes, because what changes is the
+# WEIGHT of the whole row -- layout, chrome, alignment -- and three of those
+# live in the stylesheet already. See the rules it drives in `theme.py`.
+NO_EVIDENCE = "-no-evidence"
 
 from sherlock_project.database import (
     SherlockDB,
@@ -151,6 +159,13 @@ PROFILE_RENDER_WIDTH = 96
 # Fixed rather than derived from the rows on screen. The key is a glossary for
 # the app's vocabulary, not a summary of one record -- and a bordered block
 # that changes height between usernames would move the table under it.
+KEY_STATUSES: tuple[QueryStatus, ...] = (
+    QueryStatus.CLAIMED,
+    QueryStatus.UNKNOWN,
+    QueryStatus.WAF,
+    QueryStatus.ILLEGAL,
+)
+
 # Detail-pane width below which the key is taken off screen. The box is 30
 # cells and the line it sits beside is 32 (`last scanned` plus a timestamp), so
 # under their sum the header does not shorten -- it WRAPS. Measured at an
@@ -159,12 +174,202 @@ PROFILE_RENDER_WIDTH = 96
 # less than being able to read the record it is a glossary for.
 KEY_MIN_DETAIL_WIDTH = 64
 
-KEY_STATUSES: tuple[QueryStatus, ...] = (
-    QueryStatus.CLAIMED,
-    QueryStatus.UNKNOWN,
-    QueryStatus.WAF,
-    QueryStatus.ILLEGAL,
-)
+# The delete control, and the nothing a row shows the rest of the time. Three
+# cells each, so the control is a BLOCK rather than a lone character: the same
+# shape the `+` beside ANCHORS uses, which is the app's existing answer to "this
+# symbol is a button". A bare glyph in a column of numbers reads as another
+# value, and a value is not something you press.
+#
+# `✕` rather than a wastebasket emoji: the emoji is two cells wide in some
+# terminals and one in others, so a column sized for it is wrong somewhere, and
+# it falls back to a hollow box wherever the font has no colour glyph for it.
+# `✕` is already this app's mark for a rejected result, so the visual vocabulary
+# is not growing to pay for this either.
+#
+# `Text` and not a markup string, for the reason every cell here is: `str` cells
+# are parsed as markup, and cell content in this pane sits next to user data.
+DELETE_LABEL = " ✕ "
+NO_DELETE = Text("   ")
+
+# The stylesheet names the control's colours; this names the style. Component
+# classes are how a widget exposes a part of itself to CSS, so the chip follows
+# the theme like everything else instead of carrying a literal red into a file
+# whose first rule is that colours are semantic tokens.
+DELETE_STYLE = "username-list--delete"
+
+
+class UsernameList(DataTable):
+    """The stored-username picker, with a delete control on the pointed-at row.
+
+    Erasing a username was already possible and reachable only by pressing
+    `delete`. The footer named the key, but the list itself showed no sign that
+    a row could be removed at all -- so the one action in the app that destroys
+    a dossier was the one with no control to press, and the documented answer
+    for "remove this person" was still to open the database in an external
+    SQLite tool.
+
+    **The control is drawn on the hovered row only.** A dim `✕` on every row was
+    the alternative and it is worse in both directions: a column of delete marks
+    reads as a list of things queued for deletion, and it parks an irreversible
+    control one misclick away from every name on screen. Drawn under the
+    pointer, it is exactly as present as the row it belongs to, and the row
+    tint that `DataTable` already paints on hover says which row that is.
+
+    **Clicking it does not select the row.** Cancelling the confirmation has to
+    leave the pane exactly as it was, and moving the cursor on the way to a
+    dialog you then dismiss is a change nobody asked for -- it would also swap
+    the detail on the right for a username you decided not to touch. The base
+    class moves the cursor in its own click handler, so this one runs first
+    (subclass before base, in MRO order) and calls `prevent_default()`, which
+    stops the dispatcher before `DataTable._on_click` is reached.
+
+    Nothing here erases anything. The list knows which row was pointed at and
+    that is all it knows; what a username costs to delete, and the asking, are
+    the pane's business.
+    """
+
+    DELETE_COLUMN = "delete"
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {DELETE_STYLE}
+
+    class DeleteRequested(Message):
+        """The ✕ on a row was pressed. Deleting is the pane's decision."""
+
+        def __init__(self, username_list: UsernameList, username: str) -> None:
+            super().__init__()
+            self.username_list = username_list
+            self.username = username
+
+        @property
+        def control(self) -> UsernameList:
+            """The list the control was on.
+
+            Named `control` because that is the attribute `@on(..., selector)`
+            matches against -- the same contract `DataTable.RowSelected` and
+            every other framework message keeps, so this one can be handled
+            exactly like them.
+            """
+            return self.username_list
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # What the cursor is allowed to repaint. `DataTable` sends its cursor
+        # colours through TWICE: once as the base style under the cell, and
+        # again over the top of it -- "css" priority means that second pass
+        # happens, and a cell cannot keep a colour of its own on the selected
+        # row at all. The control came out white there, in the cursor's own
+        # colour, on the row it is most likely to be used from; a delete button
+        # painted as part of the row highlight is not a delete button.
+        #
+        # "renderable" drops the second pass and leaves those colours as the
+        # base, which is what a base is for. A cell that states no colour still
+        # takes the cursor's -- the username and the site total do, so a
+        # selected row still reads as selected -- and a cell that states one
+        # keeps it: the control, and the hit count, whose green is the only
+        # thing on the row saying an account was found.
+        #
+        # Set here rather than as class attributes because these are `__init__`
+        # arguments: assigned in the class body they are overwritten by the
+        # defaults the moment `DataTable.__init__` runs. Both are named even
+        # though the background already defaults to "renderable", so a change
+        # to that default cannot silently take the control's block with it.
+        self.cursor_foreground_priority = "renderable"
+        self.cursor_background_priority = "renderable"
+        # Which row is currently drawing its ✕, so the one before it can be
+        # cleared without repainting the column on every mouse move.
+        self._marked_row: int | None = None
+
+    def _delete_chip(self) -> Text:
+        """The control, in the theme's colours.
+
+        Resolved per draw rather than built once at import: a component style
+        is only knowable once the widget has an app and a theme behind it, and
+        the theme can change while the app is running.
+        """
+        return Text(DELETE_LABEL, style=self.get_component_rich_style(DELETE_STYLE))
+
+    def clear(self, columns: bool = False) -> UsernameList:
+        # Row indices do not survive a reload: the same number is a different
+        # username afterwards, or no row at all. Forgetting the mark here is
+        # what stops a ✕ being left behind on a row nobody is pointing at --
+        # and it means that after a delete the control has to be re-hovered,
+        # which is the right amount of friction for the second one.
+        self._marked_row = None
+        return super().clear(columns)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self._mark(self._row_under(event.style.meta))
+
+    def on_leave(self, _: events.Leave) -> None:
+        # The pointer can leave the list without a last move across an empty
+        # row, and a ✕ still drawn once it has gone is a button belonging to
+        # nothing.
+        self._mark(None)
+
+    def on_click(self, event: events.Click) -> None:
+        row = self._row_under(event.style.meta)
+        if row is None:
+            return
+        cell = Coordinate(row, event.style.meta.get("column", -1))
+        if not self.is_valid_coordinate(cell):
+            return
+        key = self.coordinate_to_cell_key(cell)
+        if key.column_key.value != self.DELETE_COLUMN:
+            return
+        username = key.row_key.value
+        if not username:
+            return
+        # The click was the button. Nobody else acts on it -- least of all the
+        # base class, which would move the cursor onto the row being deleted.
+        event.prevent_default()
+        event.stop()
+        self.post_message(self.DeleteRequested(self, str(username)))
+
+    @staticmethod
+    def _row_under(meta: dict[str, Any]) -> int | None:
+        """Which row the pointer is on, or None if it is not on one.
+
+        `out_of_bounds` is `DataTable`'s word for the empty space past the last
+        row, which it still reports as the nearest row so a row cursor keeps its
+        highlight down there. A button has to be stricter than a highlight:
+        there is no row under the pointer, so there is no control to offer.
+        Row -1 is the header, which is not a username either.
+        """
+        if not meta or meta.get("out_of_bounds"):
+            return None
+        row = meta.get("row")
+        if not isinstance(row, int) or row < 0:
+            return None
+        return row
+
+    def _mark(self, row: int | None) -> None:
+        """Move the delete control onto `row`, or off the list entirely."""
+        if row == self._marked_row:
+            return
+        for index, glyph in (
+            (self._marked_row, NO_DELETE),
+            (row, self._delete_chip()),
+        ):
+            if index is None:
+                continue
+            cell = Coordinate(index, 0)
+            if not self.is_valid_coordinate(cell):
+                continue
+            try:
+                self.update_cell(
+                    self.coordinate_to_cell_key(cell).row_key,
+                    self.DELETE_COLUMN,
+                    # A copy, for the same reason the rows are built with one:
+                    # the table keeps what it is given, and a renderable shared
+                    # between cells is shared until something edits it.
+                    glyph.copy(),
+                )
+            except CellDoesNotExist:
+                # The column is added by whoever builds the list. Without it
+                # there is no control to draw, which is not a reason to take
+                # the pane down from inside a mouse handler.
+                continue
+        self._marked_row = row
 
 
 class ResultsPane(Vertical):
@@ -226,7 +431,7 @@ class ResultsPane(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("STORED USERNAMES", classes="pane-title")
         with Grid(id="results-body"):
-            yield DataTable(id="username-list", cursor_type="row")
+            yield UsernameList(id="username-list", cursor_type="row")
             with Vertical(id="result-detail"):
                 # Identity left, key right. The right half of this band was
                 # empty at every width -- a username and a timestamp do not
@@ -267,7 +472,10 @@ class ResultsPane(Vertical):
                             # is the one thing this must not do.
                             yield Static(id="profile-status")
                             with Grid(id="profile-buttons"):
-                                yield Static()
+                                # Named, because the pointer state removes it:
+                                # a right-aligning spacer is exactly wrong when
+                                # the action belongs under the sentence.
+                                yield Static(id="profile-spacer")
                                 yield Button("Anchors", id="profile-anchors")
                                 yield Button(
                                     "Build profile",
@@ -276,16 +484,27 @@ class ResultsPane(Vertical):
                                 )
 
     def on_mount(self) -> None:
-        table = self.query_one("#username-list", DataTable)
-        # Widths chosen to fit the fixed 34-cell column the stylesheet gives
-        # this list, padding included. At their previous size the last column
+        table = self.query_one("#username-list", UsernameList)
+        # Widths chosen to fit the fixed column the stylesheet gives this list,
+        # padding and scrollbar included. At their previous size the last column
         # was clipped to "si" and its number could not be read.
-        table.add_column("username", key="username", width=15)
+        #
+        # 13 rather than 15 because the delete control took two cells from
+        # somewhere and this was the cheapest place: the alternative was two
+        # more cells of pane, which costs the section strip opposite a tab --
+        # see the arithmetic in theme.py. A name too long for 13 ellipsizes;
+        # a tab that has scrolled out of the strip is simply gone.
+        table.add_column("username", key="username", width=13)
         # "found" before "sites": the hit count is what someone is scanning the
         # list for, and the total is context for it. Reversed, the eye lands on
         # the larger, less interesting number first on every row.
         table.add_column("found", key="found", width=5)
         table.add_column("sites", key="sites", width=5)
+        # The delete control's column: unlabelled, as wide as the control, and
+        # empty on every row the pointer is not on. Added LAST, so it sits at
+        # the end of the row: a control that acts on the whole row belongs after
+        # the facts about that row, not in front of them.
+        table.add_column("", key=UsernameList.DELETE_COLUMN, width=3)
 
         sites = self.query_one(f"#{SEC_SITES}", DataTable)
         sites.add_column("", key="mark", width=2)
@@ -335,7 +554,7 @@ class ResultsPane(Vertical):
         self._fill_list()
 
     def _fill_list(self) -> None:
-        table = self.query_one("#username-list", DataTable)
+        table = self.query_one("#username-list", UsernameList)
         table.clear()
         if not self._listings:
             self._set_detail(
@@ -356,6 +575,11 @@ class ResultsPane(Vertical):
                     style="bold green" if listing.claimed_sites else "dim",
                 ),
                 Text(str(listing.total_sites), style="dim"),
+                # The delete control's cell, empty until the pointer is on this
+                # row. Its own `Text`, not the shared blank: a cell's value is
+                # kept by the table, and one object shared by every row is one
+                # edit away from every row changing together.
+                NO_DELETE.copy(),
                 key=listing.username,
             )
         # Open on whichever row was asked for, otherwise the first. The list is
@@ -413,7 +637,7 @@ class ResultsPane(Vertical):
         be looked at and never taken away, and every investigation ends by
         retyping the command line anyway.
 
-        Deliberately the same payload `sherlock show --json` produces, from the
+        Deliberately the same payload `sherlock-rm show --json` produces, from the
         same function, so a file written here and one written there are the same
         file. `ensure_ascii` is on for the reason that command documents:
         profiles carry names outside cp1252 and Windows encodes redirected
@@ -433,7 +657,34 @@ class ResultsPane(Vertical):
         self.notify(f"Wrote {target}")
 
     def action_delete_username(self) -> None:
-        """Erase everything stored for the selected username, after confirming.
+        """Erase the selected username: the keyboard half of the row's ✕.
+
+        One action with two ways in, not two actions. The key asks about the
+        SELECTED row, the control asks about the row under the pointer, and
+        both land in `_confirm_delete` with the same question.
+
+        Reads the selection rather than the loaded record, so it works in the
+        moment between picking a row and its detail arriving -- the detail is a
+        separate database read, and a key that does nothing for a beat looks
+        broken.
+        """
+        if self._selected is None:
+            self.notify("Nothing selected to delete.", severity="warning")
+            return
+        self._confirm_delete(self._selected)
+
+    @on(UsernameList.DeleteRequested, "#username-list")
+    def _delete_from_row(self, event: UsernameList.DeleteRequested) -> None:
+        """The ✕ on a row, which is not necessarily the selected row.
+
+        That is the point of having it: removing a username you can see should
+        not require opening it first, and opening it is what the keyboard path
+        makes you do.
+        """
+        self._confirm_delete(event.username)
+
+    def _confirm_delete(self, username: str) -> None:
+        """Ask, with figures, before erasing everything stored for a username.
 
         A scan is a dossier on a person, and there was no way to remove one --
         scanning the wrong name left a permanent local record with no in-app
@@ -444,20 +695,25 @@ class ResultsPane(Vertical):
         "are you sure?" with no figures is a question nobody can answer. It is
         the only destructive action in the app and it is the reason it is the
         only one that asks.
+
+        The figures come from the LISTING rather than from the loaded detail.
+        The ✕ acts on the row under the pointer, whose detail is not loaded and
+        may never be; a dialog that counted the selected username's results
+        while naming another one would be worse than not asking at all.
         """
-        record = self._record
-        if record is None or not record.get("known"):
+        listing = next(
+            (item for item in self._listings if item.username == username), None
+        )
+        if listing is None:
             self.notify("Nothing selected to delete.", severity="warning")
             return
 
-        username = str(record["username"])
-        found = record.get("accounts_found") or 0
-        checked = record.get("sites_checked") or 0
-        profile = "and its AI profile " if record.get("profile") is not None else ""
+        profile = "and its AI profile " if listing.has_profile else ""
         detail = (
             f"Delete everything stored for {username!r}?\n\n"
-            f"{count_of(checked, 'site result')} {profile}will be removed, "
-            f"including {count_of(found, 'account')} found.\n"
+            f"{count_of(listing.total_sites, 'site result')} {profile}will be "
+            f"removed, including {count_of(listing.claimed_sites, 'account')} "
+            f"found.\n"
             f"This cannot be undone, and the scan itself cannot be recovered "
             f"without running it again."
         )
@@ -478,10 +734,16 @@ class ResultsPane(Vertical):
         finally:
             await db.close()
 
-        # Forget the record too, or the detail pane keeps drawing a username
-        # that no longer exists until something else happens to reload it.
-        self._record = None
-        self._selected = None
+        if self._selected == username:
+            # Forget the record too, or the detail pane keeps drawing a username
+            # that no longer exists until something else happens to reload it.
+            self._record = None
+            self._selected = None
+        else:
+            # Deleting the row the POINTER was on must not move the reader off
+            # the row they were reading: the reload reopens the first username
+            # unless it is told which one to go back to.
+            self._pending_selection = self._selected
         self.notify(f"Deleted {username} ({count_of(removed, 'result')}).")
         self.action_reload()
 
@@ -869,18 +1131,36 @@ class ResultsPane(Vertical):
         if not evidence:
             # Nothing to merge. Say what is missing and what fixes it, rather
             # than offering a button that would build an empty profile.
+            #
+            # This control is a POINTER, not a commit: pressing it scans
+            # nothing, it switches tabs and sets the scan up. Dressed as a
+            # primary block it was indistinguishable from SCAN, which starts a
+            # 680-site run, and from `Build profile`, which can block for
+            # minutes on a cold model -- the app's own rule is that chrome
+            # weight tracks what a control commits, which is why the scan
+            # pane's toggles are flat. The class carries that rule here.
+            actions.add_class(NO_EVIDENCE)
             hint.update(
-                Text(
-                    "No AI evidence stored — this username was scanned without "
-                    "analysis.\nScan it again with analysis on to collect what "
-                    "a profile is built from.",
-                    style="dim",
+                Text.assemble(
+                    ("No AI evidence stored\n", "bold"),
+                    (
+                        (
+                            "This username was scanned without analysis, so "
+                            "the second pass has nothing to merge. Scanning "
+                            "again with analysis on collects it."
+                        ),
+                        "dim",
+                    ),
                 )
             )
-            build.label = "Scan with analysis"
+            # Named for where it goes and what it carries: pressing it opens
+            # the scan tab with this username and analysis already set, so the
+            # label promises the trip rather than a build that cannot happen.
+            build.label = "▸ Scan this username with analysis"
             anchors.display = False
             return
 
+        actions.remove_class(NO_EVIDENCE)
         anchors.display = True
         build.label = "Rebuild profile" if has_profile else "Build profile"
 
@@ -1022,12 +1302,20 @@ class ResultsPane(Vertical):
                 Text(
                     "A profile is stored but no longer matches the current "
                     "format. Rebuild it from the CLI:\n"
-                    f"  sherlock {record['username']} --ai-synthesize-only",
+                    f"  sherlock-rm {record['username']} --ai-synthesize-only",
                     style="yellow",
                 ),
             )
         profile = record.get("profile")
         if profile is None:
+            if record.get("known") and not self._extraction_count(record):
+                # The actions block answers this case exactly -- what is
+                # missing and what fixes it. This line answers it vaguely and
+                # wrongly: it offers a model-configured scan, but this username
+                # HAS been scanned; what it lacks is the analysis pass. Two
+                # paragraphs disagreeing about one state is what made the empty
+                # profile tab read as improvised.
+                return Group(title)
             return Group(
                 title,
                 Text(

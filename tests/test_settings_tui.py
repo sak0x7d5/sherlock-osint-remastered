@@ -373,7 +373,7 @@ async def test_the_editor_is_launched_from_inside_the_running_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """`sherlock settings` is reached from inside main()'s event loop.
+    """`sherlock-rm settings` is reached from inside main()'s event loop.
 
     App.run() calls asyncio.run() internally, so the synchronous form dies with
     "asyncio.run() cannot be called from a running event loop" and leaves an

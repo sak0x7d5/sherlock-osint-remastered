@@ -1,6 +1,6 @@
 """The settings editor, as a pane two different hosts can mount.
 
-It began as a whole `App` behind `sherlock settings`, which was right while that
+It began as a whole `App` behind `sherlock-rm settings`, which was right while that
 was the only way to reach it. The unified UI needs the same editor as one tab
 among several, and an `App` cannot be a tab -- it owns the terminal, the event
 loop and the exit. So the editor is a widget, and both hosts mount it: the

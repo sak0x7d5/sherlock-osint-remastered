@@ -1,4 +1,4 @@
-"""`sherlock ui` -- the three panes, and the shell that holds them.
+"""`sherlock-rm ui` -- the three panes, and the shell that holds them.
 
 **Three tabs, and the fourth one was cut deliberately.** Scan, Results,
 Settings. The obvious fourth is an AI/model screen, and it does not exist
@@ -67,7 +67,7 @@ class SherlockUI(App[None]):
     #   are on screen here.
     # - ctrl+q and ctrl+s are XON/XOFF. On a terminal with flow control still
     #   enabled they are eaten by the tty before the app is ever told, and the
-    #   symptom is a key that silently does nothing. (`sherlock settings` has
+    #   symptom is a key that silently does nothing. (`sherlock-rm settings` has
     #   used ctrl+s to save since before this screen existed; it is left alone
     #   rather than changed underneath people, but it carries the same caveat.)
     # - Function keys were the first attempt and are worse than they look: on
@@ -168,7 +168,7 @@ class SherlockUI(App[None]):
     def _settings_closed(self, event: SettingsPane.Closed) -> None:
         """Escape in settings leaves the tab; it does not leave the app.
 
-        The standalone `sherlock settings` exits on this message because exiting
+        The standalone `sherlock-rm settings` exits on this message because exiting
         is what "done" means there. Here the same keystroke means "back to
         work", so it re-reads the settings the scan pane runs on -- a
         concurrency change that only took effect after a restart would be a
@@ -185,7 +185,7 @@ def _can_draw(interactive: bool | None = None) -> bool:
 
     stdout because this draws, and a redirected stdout is the case where drawing
     is wrong; stdin because a full-screen app with no key source would simply
-    hang. The same test `sherlock settings` makes, for the same reason -- a
+    hang. The same test `sherlock-rm settings` makes, for the same reason -- a
     full-screen app that takes over a CI log is worse than the crash it
     replaces.
     """
@@ -204,11 +204,11 @@ async def run_ui(
     output = console or Console(highlight=False)
     if argv:
         # No flags yet, and silently ignoring one would be worse than saying so:
-        # someone typing `sherlock ui --fresh` has a expectation about that run
+        # someone typing `sherlock-rm ui --fresh` has a expectation about that run
         # that this cannot meet.
         output.print(
             Text(
-                f"sherlock ui takes no arguments (got {' '.join(argv)}).",
+                f"sherlock-rm ui takes no arguments (got {' '.join(argv)}).",
                 style="yellow",
             )
         )
@@ -218,7 +218,7 @@ async def run_ui(
         output.print(
             Text(
                 "No terminal to draw on, so the UI was not opened.\n"
-                "Use the command line instead: sherlock <username>",
+                "Use the command line instead: sherlock-rm <username>",
                 style="dim",
             )
         )

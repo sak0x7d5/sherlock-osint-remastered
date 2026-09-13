@@ -192,7 +192,7 @@ def _read_settings(path: Path) -> SherlockSettings:
             payload = tomllib.load(config_file)
     except FileNotFoundError as error:
         raise AIConfigNotFound(
-            "AI is not configured. Run `sherlock setup ai` first."
+            "AI is not configured. Run `sherlock-rm setup ai` first."
         ) from error
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise AIConfigError(
@@ -238,7 +238,7 @@ def load_settings_or_default(
     A config file that does not exist is NOT such a case, and reporting it as
     one was wrong on the most-seen path there is. Every fresh install has no
     config file, so a first plain scan opened with "Stored settings could not
-    be read: AI is not configured. Run `sherlock setup ai` first." -- three
+    be read: AI is not configured. Run `sherlock-rm setup ai` first." -- three
     claims, none of them true: nothing failed to be read, nothing was stored
     to lose, and a scan with no `--ai` needs no model at all. Absent means "no
     stored preferences", which is what the defaults already express, so there
@@ -279,7 +279,7 @@ def load_ai_settings(
     settings = _read_settings(path or ai_config_path(environment)).ai
     if settings is None:
         raise AIConfigError(
-            "AI is not configured. Run `sherlock setup ai` first."
+            "AI is not configured. Run `sherlock-rm setup ai` first."
         )
     base_url_override = environment.get("LLAMA_SERVER_BASE_URL")
     if base_url_override:

@@ -10,11 +10,13 @@ no test that renders a screen would notice.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import ClassVar
 
 import pytest
 from rich.console import Console
 from textual.screen import ModalScreen
+from textual.worker import WorkerCancelled
 
 from sherlock_project.database import SherlockDB
 from sherlock_project.result import QueryResult, QueryStatus
@@ -203,10 +205,10 @@ def test_the_unresolved_caveat_survives_and_points_in_app():
 
     "3 blocked" is a number; "a site that never answered is not a site where
     nobody was home" is the distinction this tool refuses to blur. It also used
-    to recommend `sherlock show --unresolved`, a command nobody in the app can
-    run -- the third instance of that bug. The same trap catches any rename:
-    this must name a control the app actually has, so pointing at the retired
-    UNRESOLVED tab is as broken as pointing at the flag was.
+    to recommend `sherlock-rm show --unresolved`, a command nobody in the app
+    can run -- the third instance of that bug. The same trap catches any
+    rename: this must name a control the app actually HAS, so pointing at the
+    retired UNRESOLVED tab is as broken as pointing at the flag was.
     """
     log = " ".join(line.plain for line in _scanned_reporter().snapshot_log())
 
@@ -1346,7 +1348,7 @@ def test_navigation_keys_avoid_flow_control_and_function_keys():
     - Function keys need Fn held on most laptops, and F1 is commonly grabbed
       for help by the terminal or the desktop before the app sees it.
 
-    `sherlock settings` keeps ctrl+s to save because it shipped that way and
+    `sherlock-rm settings` keeps ctrl+s to save because it shipped that way and
     changing a key underneath people is worse than the caveat; this asserts
     nothing NEW picks one of these.
     """
@@ -1414,8 +1416,7 @@ async def _start_scan_and_capture(monkeypatch, press):
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await press(pilot, app)
-        await pilot.pause()
-        await pilot.pause()
+        await _settle(app, pilot, lambda: bool(launched))
     return launched
 
 
@@ -1461,8 +1462,7 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await pilot.press("enter")
-        for _ in range(10):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: "use_ai" in captured)
         # Nothing stored for this username, so no prompt and no re-scan.
         assert captured["use_ai"] is False
         assert captured["fresh"] is False
@@ -1470,8 +1470,8 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
         # The analysis toggle reaches the scan.
         await pilot.click("#toggle-ai")
         await pilot.press("ctrl+r")
-        for _ in range(10):
-            await pilot.pause()
+        # `captured` carries the previous run's value, so wait for the CHANGE.
+        await _settle(app, pilot, lambda: captured.get("use_ai") is True)
         assert captured["use_ai"] is True
 
 
@@ -1630,7 +1630,7 @@ async def test_an_empty_username_is_refused_rather_than_scanned(monkeypatch):
     app = SherlockUI()
     async with app.run_test() as pilot:
         await pilot.press("enter")
-        await pilot.pause()
+        await _settle(app, pilot)
     assert launched == []
 
 
@@ -1656,9 +1656,19 @@ async def test_stopping_a_scan_leaves_other_work_alone(monkeypatch):
         bystander = app.run_worker(asyncio.sleep(60), group="bystander")
         await pilot.press(*"alice")
         await pilot.press("enter")
-        await pilot.pause()
-
         pane = app.query_one(ScanPane)
+        # NOT `_settle` here: its barrier is `workers.wait_for_complete()`, and
+        # this scan sleeps for a minute on purpose -- waiting for it to finish
+        # is waiting for the thing the test is about to cancel. What is needed
+        # is the opposite: wait for the chain to have STARTED it. The sleep is
+        # load-bearing rather than padding, because `peek_stored` runs on
+        # aiosqlite's thread executor and only a real timer yields to it --
+        # `pause()` alone returns while that read is still outstanding.
+        for _ in range(50):
+            if pane._scan_running:
+                break
+            await pilot.pause()
+            await asyncio.sleep(0.02)
         assert pane._scan_running is True
 
         await pilot.press("escape")
@@ -1852,8 +1862,7 @@ async def test_an_unknown_username_scans_without_asking(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"nobody")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: captured.get("username") == "nobody")
 
         assert not isinstance(app.screen, ModalScreen)
         assert captured.get("username") == "nobody"
@@ -1875,8 +1884,7 @@ async def test_a_known_username_asks_before_scanning_again(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: isinstance(app.screen, ResumeScreen))
 
         assert isinstance(app.screen, ResumeScreen)
         # The counts are the content -- "scanned before, continue?" is a
@@ -1900,12 +1908,10 @@ async def test_choosing_re_scan_passes_fresh(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: app.screen.query("#resume-fresh"))
 
         await pilot.click("#resume-fresh")
-        for _ in range(15):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: captured.get("fresh") is True)
 
     assert captured.get("fresh") is True
 
@@ -1935,8 +1941,7 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
-        for _ in range(20):
-            await pilot.pause()
+        await _settle(app, pilot, lambda: app.screen.query("#resume-detail"))
 
         detail = app.screen.query_one("#resume-detail").render().plain
         assert "Nothing is left to check" in detail
@@ -1945,12 +1950,18 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
         assert app.screen.query_one("#resume-view", Button)
 
         await pilot.click("#resume-view")
-        for _ in range(20):
-            await pilot.pause()
 
         from textual.widgets import TabbedContent
 
-        assert app.query_one(TabbedContent).active == "tab-results"
+        tabs = app.query_one(TabbedContent)
+        # Wait on the tab actually switching, not on a fixed number of pauses:
+        # this click dismisses a screen and then activates RESULTS, whose
+        # handler reloads the pane off a SQLite read, and `pause()` returns
+        # while that read is still outstanding. macOS CI asserted here and got
+        # 'tab-scan'.
+        await _settle(app, pilot, lambda: tabs.active == "tab-results")
+
+        assert tabs.active == "tab-results"
         assert captured == {}, "viewing results must not start a scan"
 
 
@@ -2056,13 +2067,20 @@ async def test_hidden_anchors_cannot_reach_a_scan(monkeypatch):
 
         await pilot.press(*"alice")
         await pilot.press("enter")
-        await pilot.pause()
+        # `_settle`, not `pause()`: starting a scan hands off to a @work
+        # worker, and `wait_for_idle` is satisfied while that worker's I/O is
+        # still outstanding -- so the assert could read `captured` before the
+        # session had been called at all. That is a KeyError rather than a
+        # wrong value, which is how it failed on CI while passing locally.
+        await _settle(app, pilot, lambda: "anchors" in captured)
         assert captured["anchors"] == [], "hidden anchors reached the scan"
 
         # Turned on, the same anchors are used rather than needing retyping.
         await pilot.click("#toggle-ai")
         await pilot.press("ctrl+r")
-        await pilot.pause()
+        # Same race, and `captured` is reused across both runs -- so the wait
+        # is for the value to CHANGE, not merely for the key to exist.
+        await _settle(app, pilot, lambda: bool(captured.get("anchors")))
         assert [a.field for a in captured["anchors"]] == ["full_name"]
 
 
@@ -2392,10 +2410,14 @@ async def test_the_results_tab_reloads_when_you_switch_to_it():
             await db.close()
 
         await pilot.press("alt+2")
-        for _ in range(10):
-            if table.row_count:
-                break
-            await pilot.pause()
+        # The reload this tab triggers is a worker doing a SQLite read, so a
+        # loop of pause() can return with the read still outstanding. This is
+        # the right barrier for that, but it was NOT what made this test flaky:
+        # the 4-in-12 failure rate measured here was `SherlockDB.connect`
+        # racing itself on a database that did not exist yet, and it is fixed
+        # in database.py. Kept because waiting on the worker is still the
+        # correct thing to do, not because it is load-bearing.
+        await _settle(app, pilot, lambda: table.row_count == 1)
 
         assert table.row_count == 1
 
@@ -2489,9 +2511,7 @@ async def test_focus_does_not_restyle_the_section_tabs():
 
     app = SherlockUI()
     async with app.run_test(size=(100, 26)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         blurred = strip_styles(app)
 
         app.query_one("#detail-tabs", Tabs).focus()
@@ -2517,9 +2537,7 @@ async def test_the_detail_pane_has_exactly_one_scroll_region():
 
     app = SherlockUI()
     async with app.run_test(size=(100, 26)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         detail = app.query_one("#result-detail")
         scrolling = [
@@ -2555,9 +2573,7 @@ async def test_the_counts_survive_the_merge_into_one_table():
     )
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         counts = app.query_one("#sites-counts", Static).render().plain
         assert "2 found" in counts
@@ -2579,9 +2595,7 @@ async def test_filtering_to_hits_says_what_it_is_hiding():
     )
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         table = app.query_one("#sec-sites", DataTable)
         assert table.row_count == 1, "found only should open showing just hits"
@@ -2589,8 +2603,7 @@ async def test_filtering_to_hits_says_what_it_is_hiding():
         assert "1 unresolved" in counts and "hidden" in counts
 
         await pilot.press("f")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         assert table.row_count == 2, "f did not reveal the unresolved rows"
         assert "hidden" not in app.query_one("#sites-counts", Static).render().plain
@@ -2609,17 +2622,14 @@ async def test_the_filter_is_the_same_control_as_the_scan_toggles():
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         toggle = app.query_one("#toggle-found-only", Button)
         assert "toggle" in toggle.classes, "not the scan pane's toggle styling"
         assert str(toggle.label) == "found only ‹ on ›"
 
         await pilot.press("f")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
         # The whole label, not a clipped one: a Button measures itself when it
         # is first drawn, and `off` is a character wider than `on`.
         assert str(toggle.label) == "found only ‹ off ›"
@@ -2636,12 +2646,9 @@ async def test_unresolved_sites_are_listed_not_only_counted():
     )
     app = SherlockUI()
     async with app.run_test(size=(110, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("f")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         assert app.query_one("#detail-switch", ContentSwitcher).current == "sec-sites"
         rows = app.query_one("#sec-sites", DataTable)
@@ -2683,9 +2690,7 @@ async def test_the_symbol_column_comes_with_a_key():
     )
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         key = _key_text(app)
         for glyph, word in (
@@ -2709,9 +2714,7 @@ async def test_the_key_is_a_glossary_not_a_summary_of_one_record():
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)], quiet=[])
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         key = _key_text(app)
         # Only hits stored, yet the key still explains the rest.
@@ -2729,14 +2732,11 @@ async def test_the_key_is_visible_from_both_sections():
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         assert "found" in _key_text(app)
 
         await pilot.press("alt+right")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
         assert "found" in _key_text(app)
 
 
@@ -2752,22 +2752,18 @@ async def test_the_key_stands_down_when_the_header_cannot_afford_it():
 
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         assert "found" in _key_text(app), "wide enough, and the key is missing"
 
         await pilot.resize_terminal(80, 30)
-        for _ in range(10):
-            await pilot.pause()
+        await _settle(app, pilot)
         assert _key_text(app) == "", (
             "at 80 columns the key is still on screen, wrapping the header "
             "it sits beside into a column of broken timestamps"
         )
 
         await pilot.resize_terminal(120, 30)
-        for _ in range(10):
-            await pilot.pause()
+        await _settle(app, pilot)
         assert "found" in _key_text(app), "the key did not come back"
 
 
@@ -2786,12 +2782,9 @@ async def test_a_rejected_username_is_not_drawn_as_inconclusive():
     await _seed(marcus=[("StrictSite", QueryStatus.ILLEGAL)])
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("f")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         row = app.query_one("#sec-sites", DataTable).get_row_at(0)
         mark = str(row[0])
@@ -2813,12 +2806,9 @@ async def test_hits_come_before_the_rows_that_answered_nothing():
     )
     app = SherlockUI()
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
         await pilot.press("f")
-        for _ in range(8):
-            await pilot.pause()
+        await _settle(app, pilot)
 
         table = app.query_one("#sec-sites", DataTable)
         marks = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
@@ -2876,12 +2866,77 @@ async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
     bounded loop because these flows CHAIN workers -- the delete finishes, and
     only then does the reload it triggers start -- so one barrier does not
     always cover the whole sequence.
+
+    WorkerCancelled is swallowed because in these flows it is the NORMAL case,
+    not a failure. `ResultsPane._load` is `@work(exclusive=True)`, so a second
+    reload cancels the first by design, and `Worker.wait()` re-raises that as
+    WorkerCancelled -- `wait_for_complete` only absorbs `asyncio.CancelledError`,
+    which is a different exception. Treating a superseded worker as an error
+    made this helper fail on Windows CI with "Worker was cancelled, and did not
+    complete" on a delete that had worked perfectly; the reload simply replaced
+    a reload still in flight. WorkerFailed is deliberately NOT caught: that one
+    means a worker raised, and hiding it would turn a real error into a silent
+    timeout here.
     """
     for _ in range(tries):
-        await app.workers.wait_for_complete()
+        try:
+            await app.workers.wait_for_complete()
+        except WorkerCancelled:
+            pass
         await pilot.pause()
         if predicate is None or predicate():
             return
+
+
+async def _open_results(app, pilot) -> None:
+    """Switch to RESULTS without racing the app's own mount.
+
+    `alt+2` activates a tab whose handler reaches for ResultsPane to reload its
+    list. Pressed as a test's FIRST action, that can arrive before the DOM has
+    finished mounting, and the failure surfaces inside the app rather than the
+    test: `NoMatches: No nodes match 'ResultsPane'`.
+
+    A `for _ in range(10): await pilot.pause()` preamble never prevented it --
+    `wait_for_idle` is satisfied while the results loader's SQLite read is
+    outstanding on a thread executor, so every iteration can pass in
+    microseconds with nothing mounted. adf2088 established this and fixed the
+    seven sites that open the PROFILE section; these are the rest, found when
+    two of them failed on Windows for the same reason.
+    """
+    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
+    await pilot.press("alt+2")
+    await _settle(app, pilot)
+
+
+async def _open_profile_section(app, pilot) -> None:
+    """Open RESULTS, then its PROFILE section, waiting on state not on counts.
+
+    Every pane is composed at app start, so `alt+2` is normally safe. But a key
+    pressed before the DOM has finished mounting reaches an app that cannot
+    answer for it: activating RESULTS runs a handler that reaches for
+    ResultsPane to reload its list, and on the slowest runner that raised
+    `NoMatches: No nodes match 'ResultsPane'` -- inside the app, not the test.
+
+    So the wait is for the pane to EXIST before driving it, and then for the
+    section to have actually switched. A `for _ in range(12): await
+    pilot.pause()` preamble never guaranteed either: `wait_for_idle` is
+    satisfied while the results loader's SQLite read is outstanding on a thread
+    executor, so all twelve iterations can pass in microseconds with nothing
+    mounted.
+    """
+    from sherlock_project.tui.results_pane import SEC_PROFILE
+
+    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
+    await pilot.press("alt+2")
+    await _settle(app, pilot, lambda: bool(app.query("#profile-actions")))
+    # One press, not two: ACCOUNTS and UNRESOLVED are one SITES section now, so
+    # a second would wrap past PROFILE and back to it.
+    await pilot.press("alt+right")
+    await _settle(
+        app,
+        pilot,
+        lambda: app.query_one("#detail-switch").current == SEC_PROFILE,
+    )
 
 
 async def test_delete_asks_first_and_cancelling_keeps_everything():
@@ -2899,9 +2954,7 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(10):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         await pilot.press("delete")
         await pilot.pause()
@@ -2962,6 +3015,223 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
         await db.close()
     assert selected not in remaining
     assert len(remaining) == 1
+
+
+def _delete_marks(table) -> dict[str, str]:
+    """Which rows are currently drawing a delete control, by username."""
+    from sherlock_project.tui.results_pane import UsernameList
+
+    return {
+        str(key.value): table.get_cell(key, UsernameList.DELETE_COLUMN).plain.strip()
+        for key in table.rows
+    }
+
+
+def _delete_cell(table, username: str) -> tuple[int, int]:
+    """Where `username`'s delete control is, in the list's own coordinates.
+
+    Measured off the table rather than written down: the column widths are
+    tuned to fit a fixed pane and a test that hard-codes an offset starts
+    clicking the wrong cell the first time one of them moves, which would look
+    like the control had stopped working.
+    """
+    x = sum(column.get_render_width(table) for column in table.ordered_columns[:-1])
+    return x + 1, table.header_height + table.get_row_index(username)
+
+
+@asynccontextmanager
+async def _list_with(**rows):
+    """The results tab, open, with its list loaded.
+
+    A context manager rather than the one-shot async generator the filter tests
+    use: these tests wait on the list with `_settle`, and a predicate that
+    closes over a variable bound by `async for` is a closure over a loop
+    variable -- which is a lint error, and a real trap the moment a helper
+    yields twice.
+    """
+    from sherlock_project.tui.results_pane import UsernameList
+
+    await _seed(**rows)
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.press("alt+2")
+        table = app.query_one("#username-list", UsernameList)
+        await _settle(app, pilot, lambda: table.row_count == len(rows))
+        assert table.row_count == len(rows)
+        yield app, table, pilot
+
+
+async def test_a_username_offers_a_delete_control_while_it_is_pointed_at():
+    """Erasing a username was a key with nothing on screen to say it existed.
+
+    `delete` worked on the selected row and the footer named the key, but the
+    list drew no control at all -- so the one action in the app that destroys a
+    dossier was the one you had to already know about.
+
+    Drawn on the pointed-at row ONLY. A ✕ on every row reads as a list of names
+    queued for deletion, and it parks an irreversible control one misclick from
+    each of them.
+    """
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+    ) as (_app, table, pilot):
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": "✕"}
+
+        # One row at a time: the control follows the pointer rather than
+        # accumulating behind it.
+        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "✕", "keeper": ""}
+
+        # Below the last row there is no row, whatever the row cursor does with
+        # that space -- so there is nothing to offer either.
+        x, _ = _delete_cell(table, "marcus")
+        await pilot.hover("#username-list", offset=(x, table.header_height + 12))
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+        # And a control still drawn after the pointer has gone belongs to no
+        # row at all.
+        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
+        await pilot.pause()
+        await pilot.hover("#detail-tabs")
+        await pilot.pause()
+        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+
+
+async def test_the_delete_control_keeps_its_own_colours_on_the_selected_row():
+    """It came out white, in the cursor's colour, on the row most likely to use it.
+
+    `DataTable` sends the cursor's colours through twice -- once as the base
+    style under the cell and again over the top of it -- so a cell cannot hold
+    a colour of its own on the selected row while `cursor_foreground_priority`
+    is "css". The control was drawn as part of the highlight it sat in: no red,
+    and no block. Both of those ARE the affordance, so both have to survive the
+    cursor.
+    """
+    from sherlock_project.tui.results_pane import DELETE_STYLE
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+    ) as (_app, table, pilot):
+        table.focus()
+        await pilot.pause()
+        assert table.cursor_row == 0, "this test is about the SELECTED row"
+
+        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
+        await pilot.pause()
+
+        wanted = table.get_component_rich_style(DELETE_STYLE)
+        drawn = next(
+            (
+                segment
+                for segment in table.render_line(table.header_height)
+                if "✕" in segment.text
+            ),
+            None,
+        )
+        assert drawn is not None, "no control drawn on the selected row"
+        assert drawn.style is not None
+        # The theme's readable red, not whatever the cursor paints with.
+        assert drawn.style.color == wanted.color
+        # And its own block, so the control is still a control in there.
+        assert drawn.style.bgcolor == wanted.bgcolor
+        assert drawn.style.bgcolor != table.get_component_rich_style(
+            "datatable--cursor"
+        ).bgcolor
+
+
+async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
+    """The ✕ acts on the row under the pointer, not on the open one.
+
+    That is the whole point of having it: removing a username you can see
+    should not mean opening it first, which is what the key makes you do.
+
+    And pressing it must not move the selection. Cancelling has to leave the
+    pane exactly as it was -- a dialog that swapped the detail on the right for
+    a username you then decided not to delete has already done something you
+    did not ask for.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.tui.confirm_screen import ConfirmScreen
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Reddit", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+    ) as (app, table, pilot):
+        pane = app.query_one(ResultsPane)
+        opened = pane._selected
+        other = next(
+            str(key.value) for key in table.rows if str(key.value) != opened
+        )
+        cursor = table.cursor_row
+
+        await pilot.click("#username-list", offset=_delete_cell(table, other))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ConfirmScreen)
+        detail = screen.query_one("#confirm-detail").render().plain
+        # The row that was pressed, counted from its own listing.
+        assert other in detail
+        assert opened not in detail
+        assert "cannot be undone" in detail
+
+        assert pane._selected == opened, "pressing ✕ moved the selection"
+        assert table.cursor_row == cursor
+
+        await pilot.press("escape")
+        await _settle(app, pilot)
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        assert len(await db.list_usernames()) == 2, "cancelling deleted something"
+    finally:
+        await db.close()
+
+
+async def test_deleting_a_pointed_at_row_leaves_the_reader_where_they_were():
+    """Erasing the row the pointer was on must not move the reader off the row
+    they were reading.
+
+    The list reopens the FIRST username after a reload unless it is told
+    otherwise, so deleting a third party would otherwise swap the detail pane
+    for someone else's record as a side effect.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+        keeper=[("Reddit", QueryStatus.CLAIMED)],
+        third=[("Forum", QueryStatus.CLAIMED)],
+    ) as (app, table, pilot):
+        pane = app.query_one(ResultsPane)
+        opened = pane._selected
+        doomed = next(
+            str(key.value) for key in table.rows if str(key.value) != opened
+        )
+
+        await pilot.click("#username-list", offset=_delete_cell(table, doomed))
+        await pilot.pause()
+        await pilot.click("#confirm-yes")
+        await _settle(app, pilot, lambda: table.row_count == 2)
+
+        assert table.row_count == 2
+        assert doomed not in _delete_marks(table)
+        assert pane._selected == opened
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        remaining = [item.username for item in await db.list_usernames()]
+    finally:
+        await db.close()
+    assert doomed not in remaining
+    assert opened in remaining
 
 
 async def test_the_progress_strip_sits_with_the_findings():
@@ -3033,26 +3303,151 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
     button there would produce an empty profile and look broken rather than say
     why.
     """
+    from textual.geometry import Region
     from textual.widgets import Button, Static
 
     await _results_with("noevidence")
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "scanned without analysis" in hint
-        assert "Scan with analysis" in str(
+        # Named for the trip it makes, not for a build it cannot do.
+        assert "Scan this username with analysis" in str(
             app.query_one("#profile-build", Button).label
         )
         # No point offering anchors for a build that cannot happen.
         assert app.query_one("#profile-anchors", Button).display is False
+        # And the pane says so once. The profile block's "No profile stored,
+        # scanning builds one" is wrong here -- this username HAS been
+        # scanned -- so the actions block is left to answer alone.
+        block = app.query_one("#detail-profile", Static)
+        drawn = " ".join(
+            strip.text
+            for strip in block.render_lines(
+                Region(0, 0, block.region.width, block.region.height)
+            )
+        )
+        assert "No profile stored" not in drawn
+
+
+async def test_the_pointer_state_does_not_stick_to_the_next_username():
+    """The flat treatment is a state, not a setting.
+
+    It is carried by a class on `#profile-actions`, and a class that is added
+    on one row and never removed is the classic way a master/detail pane starts
+    lying: click a username with no evidence, click one with evidence, and the
+    commit button would still be wearing the pointer's flat chrome -- and the
+    Anchors button would still be laid out beside a spacer the stylesheet had
+    hidden. Both directions are checked, because only removing it is the bug.
+    """
+    from textual.widgets import Button
+
+    from sherlock_project.tui.results_pane import NO_EVIDENCE
+
+    await _results_with("bare")
+    await _results_with("stocked", extractions=2)
+
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await _open_profile_section(app, pilot)
+
+        pane = app.query_one(ResultsPane)
+        actions = app.query_one("#profile-actions")
+        build = app.query_one("#profile-build", Button)
+        spacer = app.query_one("#profile-spacer")
+
+        for username, pointer in (("bare", True), ("stocked", False),
+                                  ("bare", True)):
+            pane.select_username(username)
+            for _ in range(14):
+                await pilot.pause()
+            assert actions.has_class(NO_EVIDENCE) is pointer, username
+            # And the layout that the class drives actually followed it.
+            assert spacer.display is not pointer, username
+            assert build.region.height == (1 if pointer else 3), username
+
+
+@pytest.mark.parametrize("size", [(110, 34), (80, 30), (140, 40)])
+async def test_the_pointer_button_draws_its_whole_label(size):
+    """The pixels, unusually -- because the attribute was never the bug.
+
+    This file prefers assertions about decisions, and one holds here: a control
+    that cannot say what it does is not a control. But `Button.label` read back
+    as "Scan with analysis" for the entire time the screen said "Scan with".
+    `#profile-buttons` is a `1fr 12 20` grid and Textual SKIPS hidden children
+    when it assigns cells, so hiding `#profile-anchors` in this state slid the
+    build button out of the 20-cell column into the 12-cell one: ten usable
+    cells for an eighteen-character label, clipped with no ellipsis to admit it.
+    Only a render can catch that, and only across widths -- a fixed column hides
+    the fault at whatever size it was last eyeballed at.
+    """
+    from textual.geometry import Region
+    from textual.widgets import Button
+
+    await _results_with("noevidence")
+
+    app = SherlockUI()
+    async with app.run_test(size=size) as pilot:
+        await _open_profile_section(app, pilot)
+
+        button = app.query_one("#profile-build", Button)
+        drawn = " ".join(
+            strip.text
+            for strip in button.render_lines(
+                Region(0, 0, button.region.width, button.region.height)
+            )
+        )
+        for word in str(button.label).split():
+            assert word in drawn, (
+                f"{word!r} clipped out of the button at {size}: {drawn!r}"
+            )
+
+
+async def test_the_pointer_button_stays_operable_by_mouse_and_keyboard():
+    """Flattening the chrome must not flatten the affordance.
+
+    It loses its border here, which is a look, not a demotion: it is still a
+    Button, so it stays in the Tab order and stays pressable both ways. The
+    focus rule matters as much as the hover one -- the ID selector that styles
+    it outranks Textual's `Button:focus`, so without an explicit focus style
+    the only remaining cue is an 8/255 background shift and a keyboard user is
+    left with no idea where they are.
+    """
+    from textual.widgets import Button
+
+    await _results_with("noevidence")
+
+    app = SherlockUI()
+    async with app.run_test(size=(110, 34)) as pilot:
+        await _open_profile_section(app, pilot)
+
+        button = app.query_one("#profile-build", Button)
+        assert button in app.screen.focus_chain
+
+        app.set_focus(button)
+        for _ in range(3):
+            await pilot.pause()
+        focused = button.styles.background
+        app.set_focus(None)
+        for _ in range(3):
+            await pilot.pause()
+        blurred = button.styles.background
+        # Not merely different -- different enough to see across the row.
+        assert focused != blurred
+        delta = abs(
+            focused.rgb[0] * 0.2126
+            + focused.rgb[1] * 0.7152
+            + focused.rgb[2] * 0.0722
+            - (
+                blurred.rgb[0] * 0.2126
+                + blurred.rgb[1] * 0.7152
+                + blurred.rgb[2] * 0.0722
+            )
+        )
+        assert delta > 15, f"focus is invisible: {blurred} -> {focused}"
 
 
 async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
@@ -3065,12 +3460,7 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "Evidence from 3 sites is ready" in hint
@@ -3108,9 +3498,7 @@ async def test_an_existing_profile_offers_a_rebuild():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
         assert "Rebuild" in str(app.query_one("#profile-build", Button).label)
 
 
@@ -3144,9 +3532,7 @@ async def test_a_rebuild_keeps_the_profiles_own_anchors():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         pane = app.query_one(ResultsPane)
         assert [a.field for a in pane._build_anchors] == ["name"], (
@@ -3179,9 +3565,7 @@ async def test_rebuilding_an_anchored_profile_with_no_anchors_is_warned_about():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
 
         pane = app.query_one(ResultsPane)
         # Someone clears them in the editor.
@@ -3221,12 +3605,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         await pilot.click("#profile-build")
         for _ in range(30):
@@ -3265,12 +3644,7 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
-        await pilot.press("alt+right")
-        for _ in range(6):
-            await pilot.pause()
+        await _open_profile_section(app, pilot)
 
         await pilot.click("#profile-build")
         for _ in range(25):
@@ -3306,11 +3680,11 @@ async def test_the_ui_refuses_to_draw_without_a_terminal(capsys):
     """A full-screen app that takes over a CI log is worse than no app."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui([], interactive=False, console=console) == 0
-    assert "sherlock <username>" in capsys.readouterr().out
+    assert "sherlock-rm <username>" in capsys.readouterr().out
 
 
 async def test_unknown_arguments_are_reported_rather_than_ignored(capsys):
-    """Someone typing `sherlock ui --fresh` has an expectation about that run
+    """Someone typing `sherlock-rm ui --fresh` has an expectation about that run
     which this cannot meet, so silently dropping the flag would be worse."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui(["--fresh"], console=console) == 2

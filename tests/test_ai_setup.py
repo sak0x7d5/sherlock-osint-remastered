@@ -390,11 +390,11 @@ async def test_show_reports_an_unconfigured_install_without_failing_hard(
     )
     text = output.getvalue()
 
-    # 1 is "nothing stored", matching `sherlock show`; 2 is reserved for
+    # 1 is "nothing stored", matching `sherlock-rm show`; 2 is reserved for
     # something being wrong.
     assert result == 1
     assert "not configured" in text
-    assert "sherlock setup ai" in text
+    assert "sherlock-rm setup ai" in text
     assert FakeSetupProvider.close_calls == 0
 
 
@@ -445,7 +445,7 @@ async def test_setup_survives_a_terminal_that_cannot_answer(
     """A prompt with nothing behind it must not raise a traceback.
 
     isatty() is not a reliable interactivity test on Windows: NUL is a
-    character device, so `sherlock setup ai < NUL` -- explicitly "I have no
+    character device, so `sherlock-rm setup ai < NUL` -- explicitly "I have no
     keyboard" -- reports True and skips the non-interactive guard. Reaching the
     prompt anyway used to end in an unhandled EOFError out of rich.
     """

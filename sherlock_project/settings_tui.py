@@ -1,4 +1,4 @@
-"""`sherlock settings` -- the standalone host for the settings editor.
+"""`sherlock-rm settings` -- the standalone host for the settings editor.
 
 The editor itself moved to `tui/settings_pane.py` when the unified UI needed the
 same rows as one tab among several. What stays here is everything that is about
@@ -155,7 +155,7 @@ def _print_settings(
 
 def build_settings_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        prog="sherlock settings",
+        prog="sherlock-rm settings",
         description=(
             "Edit stored defaults for scans, output and the local AI model. "
             "A command-line flag always overrides these for a single run."

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 from collections.abc import Callable
 from time import perf_counter
 from typing import Any, Literal, Protocol
@@ -20,6 +21,22 @@ from cloakbrowser import binary_info, ensure_binary, launch_async
 BrowserStatus = Literal["installing", "starting", "ready"]
 BrowserStatusCallback = Callable[[BrowserStatus], None]
 CancellationCallback = Callable[[], None]
+
+def _settle_result(future: "asyncio.Future[None]") -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+def _settle_exception(
+    future: "asyncio.Future[None]",
+    error: BaseException,
+) -> None:
+    # Skipped once the future is resolved: a cancelled download has nobody
+    # left to raise at, and setting an exception nothing will ever retrieve
+    # only earns a warning at interpreter shutdown.
+    if not future.done():
+        future.set_exception(error)
+
 
 class BrowserUnavailable(RuntimeError):
     """The stealth browser could not be obtained or started.
@@ -72,7 +89,7 @@ class PlaywrightEngine:
 
     async def __aenter__(self):
         try:
-            self.ensure_browser_binary(self.status_callback)
+            await self.ensure_browser_binary(self.status_callback)
 
             self._notify("starting")
             self.browser = await launch_async(
@@ -120,13 +137,63 @@ class PlaywrightEngine:
             self.status_callback(status)
 
     @staticmethod
-    def ensure_browser_binary(
+    async def ensure_browser_binary(
         status_callback: BrowserStatusCallback | None = None,
     ) -> None:
-        if not binary_info()["installed"]:
-            if status_callback is not None:
-                status_callback("installing")
-            ensure_binary()
+        """Put the browser binary on disk, announcing the download first.
+
+        `ensure_binary` is synchronous and fetches a whole Chromium build, so
+        on a first run it holds its thread for minutes. Awaiting it inline
+        blocked the event loop, and everything it blocked was the startup
+        feedback itself: the TUI paints this very step, with its own clock,
+        from a 0.1s redraw timer on that loop, and the runner starts the AI
+        model load just before the browser precisely so the two overlap. A
+        fresh install therefore froze on the frame that says `installing`,
+        stopped answering STOP, and queued the model behind the download --
+        the "it hung" reading this status exists to prevent.
+
+        So the transfer goes to a thread and the status goes out from the
+        loop before that thread starts, which also keeps every reporter call
+        on one thread.
+
+        The thread is a daemon and is never joined. `asyncio.to_thread` would
+        have been shorter, but its executor is joined at interpreter exit, so
+        Ctrl-C during a first run bought a second silent wait for the same
+        download to finish. An abandoned download has nothing worth waiting
+        for.
+        """
+        if binary_info()["installed"]:
+            return
+
+        if status_callback is not None:
+            status_callback("installing")
+
+        loop = asyncio.get_running_loop()
+        installed: asyncio.Future[None] = loop.create_future()
+
+        def install() -> None:
+            try:
+                try:
+                    ensure_binary()
+                except BaseException as error:
+                    # Handed over as an argument, not captured by a closure:
+                    # `error` is unbound as soon as this block ends, and the
+                    # loop is free to run the callback after that point.
+                    loop.call_soon_threadsafe(_settle_exception, installed, error)
+                else:
+                    loop.call_soon_threadsafe(_settle_result, installed)
+            except RuntimeError:
+                # The loop closed while the download was still running, so
+                # whoever was waiting on it is already gone.
+                pass
+
+        threading.Thread(
+            target=install,
+            name="cloakbrowser-install",
+            daemon=True,
+        ).start()
+
+        await installed
 
     async def __aexit__(self, exc_type, exc, tb):
         if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):

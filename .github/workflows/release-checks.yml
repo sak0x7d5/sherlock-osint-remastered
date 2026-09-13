@@ -143,8 +143,8 @@ jobs:
       - name: Console script runs
         shell: bash
         run: |
-          sherlock --version
-          sherlock --help
+          sherlock-rm --version
+          sherlock-rm --help
 
       # Loaded through the same entry point a scan uses, so this fails if the
       # manifest is absent, unparseable, or adapts to nothing -- the three ways
@@ -197,7 +197,7 @@ jobs:
           python -m pip install dist/*.tar.gz
 
       - name: Console script runs
-        run: sherlock --version
+        run: sherlock-rm --version
 
   rejects-unsupported-runtime:
     name: Refuses install below Python 3.13
@@ -253,4 +253,4 @@ jobs:
           python -m pip install dist/*.whl
 
       - name: Console script runs
-        run: sherlock --version
+        run: sherlock-rm --version
