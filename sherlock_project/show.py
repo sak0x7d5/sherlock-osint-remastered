@@ -147,6 +147,12 @@ def _unresolved_sites(
     questions: that one is "what did we find", this one is "what did we fail to
     determine". Merging them is what let silence read as absence in the first
     place.
+
+    The TUI draws both in one table now. That is a presentation choice made on
+    top of this split, not a reason to undo it: every row there carries the
+    status it was stored with and the unresolved count is reported even while
+    those rows are filtered out. This function keeps returning two lists, and
+    `--unresolved` keeps meaning what it meant.
     """
     unresolved = [
         {

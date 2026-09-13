@@ -451,8 +451,8 @@ class TuiReporter(TerminalReporter):
         restated as a sentence. What it says that they do not is the CAVEAT: a
         site that never answered is not a site where nobody was home, and that
         distinction is the one this whole tool refuses to blur. So the counts
-        are dropped and the caveat is kept, reworded for a surface that has an
-        UNRESOLVED tab instead of a `--unresolved` flag to recommend.
+        are dropped and the caveat is kept, reworded for a surface where the
+        rows are a keypress away instead of behind a `--unresolved` flag.
         """
         with self._quiet():
             super().finish_scan(elapsed_time)
@@ -472,8 +472,8 @@ class TuiReporter(TerminalReporter):
         site_word = "site" if unresolved == 1 else "sites"
         self.warning(
             f"{unresolved} {site_word} gave no answer: {breakdown}. "
-            f'Not the same as "not found" — see the UNRESOLVED tab under '
-            f"RESULTS."
+            f'Not the same as "not found" — turn off "found only" on the '
+            f"SITES tab under RESULTS to read them."
         )
 
     def processing_interrupted(self) -> None:

@@ -4,9 +4,9 @@ Master/detail, because the question is always "this one, tell me more" and a
 single flat list cannot answer it without either truncating the detail or
 hiding the names.
 
-**The detail is three switched sections, not one long scroll.** This started as
-a single stacked column on the argument that accounts, unresolved sites and the
-profile are read together. Stacking them was wrong for a reason that only shows
+**The detail is two switched sections, not one long scroll.** This started as
+a single stacked column on the argument that the sites and the profile are read
+together. Stacking them was wrong for a reason that only shows
 up with real data: a `DataTable` is itself a scrollable viewport, so a table
 inside a scrolling column produces TWO vertical scrollbars side by side, plus a
 horizontal one when the URLs are long. Forty accounts made the pane look broken,
@@ -18,28 +18,40 @@ a second full tab bar directly under the first reads as two competing
 navigations; a compact strip reads as what it is, a section switch inside one
 place.
 
-**The counts live on the tab labels** -- `UNRESOLVED 6`, not `UNRESOLVED`. That
-is what preserves the property the stacked layout was protecting: an account
-list means something different once you know six sites gave no answer, and now
-you can see that without leaving the accounts. Hiding the number was the only
-real cost of switching, so it is the one thing that does not get hidden.
+**One table for what was found and what could not be decided.** These were two
+sections, ACCOUNTS and UNRESOLVED, and `show` still keeps the two lists apart
+for a reason worth restating: they answer different questions, and merging them
+is what let silence read as absence in the first place. What made that merge
+dangerous was dropping the distinction, not showing the rows together, and
+nothing is dropped here -- every row wears the status it was stored with, the
+key names all four, and the line above the table reports the unresolved count
+even while `found only` is filtering those rows out. Two sections cost more
+than they protected: you could sit on ACCOUNTS and never learn UNRESOLVED
+existed, and one table with 183 unanswered rows in it cannot be read that way.
 
-**A symbol column comes with a key, where the symbols contend.** The mark
-column is two cells wide and its header is blank, which left the distinction
-this tool exists to make -- blocked is not inconclusive is not rejected --
-drawn in symbols nobody had been shown a glossary for. The live feed on the
-scan pane does not have that problem because it prints the word beside every
-symbol; a table has no room for that, so the sentence goes above the column
-instead, naming the symbols that section is actually drawing.
+**The counts moved off the tab labels onto that line.** They were on the tabs
+because switching would otherwise hide one section's number from the other; one
+table makes that arrangement unnecessary, and the numbers now sit next to the
+control that acts on them.
 
-It sits on its own line rather than beside the tabs, which is where the spare
-width looks like it is. Measured, that space is not spare: `Tabs` is a
-scrolling strip, so squeezed it drops tabs rather than wrapping or
-ellipsizing them, silently and from the left. A key sharing that row needs a
-126-column terminal to leave three tabs intact and 138 for four -- below that
-it eats the way back to ACCOUNTS. One row of table is the cheaper thing to
-spend, and it is only spent on UNRESOLVED: ACCOUNTS is one symbol repeated
-down a list the tab already names, and PROFILE has no symbols at all.
+**A symbol column comes with a key.** The mark column is two cells wide and its
+header is blank, which left the distinction this tool exists to make -- blocked
+is not inconclusive is not rejected -- drawn in symbols nobody had been shown a
+glossary for. The live feed on the scan pane does not have that problem because
+it prints the word beside every symbol; a table has no room for that, so the
+glossary goes in the header band, in the half of it that was empty at every
+width. It is the one bordered block on this screen, deliberately: a key is not
+data, and in an otherwise flat pane the border is what says so at a glance.
+
+Not beside the tabs, which is where the spare width looks like it is. Measured,
+that space is not spare: `Tabs` is a scrolling strip, so squeezed it drops tabs
+rather than wrapping or ellipsizing them, silently and from the left. A key
+sharing that row needed a 126-column terminal to leave three tabs intact.
+
+The border costs the two rows it occupies, and the box costs 30 cells of width
+that the header beside it does not have on a narrow terminal -- so below
+`KEY_MIN_DETAIL_WIDTH` the key is taken off screen rather than wrapping the
+timestamp next to it into a column of fragments.
 
 **Everything that is not interactive is still a Rich renderable inside a
 `Static`.** Widgets earn their keep when something can be clicked or focused --
@@ -93,17 +105,14 @@ from textual.widgets import (
 # on what the caller asked for. `ContentSwitcher` selects a child by id and
 # `Tabs` reports the activated tab by id, so the mapping below is what connects
 # them -- one table, rather than a string transformation at each call site.
-SEC_ACCOUNTS = "sec-accounts"
-SEC_UNRESOLVED = "sec-unresolved"
+SEC_SITES = "sec-sites"
 SEC_PROFILE = "sec-profile"
 
-TAB_ACCOUNTS = "tab-accounts"
-TAB_UNRESOLVED = "tab-unresolved"
+TAB_SITES = "tab-sites"
 TAB_PROFILE = "tab-profile"
 
 SECTION_FOR_TAB = {
-    TAB_ACCOUNTS: SEC_ACCOUNTS,
-    TAB_UNRESOLVED: SEC_UNRESOLVED,
+    TAB_SITES: SEC_SITES,
     TAB_PROFILE: SEC_PROFILE,
 }
 
@@ -135,6 +144,28 @@ from sherlock_project.tui.theme import (
 # compressed, narrow enough to fit a half-screen detail pane.
 PROFILE_RENDER_WIDTH = 96
 
+# What the key names. Every status a stored record can put in the SITES table,
+# which is all of them except AVAILABLE: `show` does not list absent sites at
+# all, so a key offering `· absent` would name a symbol that cannot appear.
+#
+# Fixed rather than derived from the rows on screen. The key is a glossary for
+# the app's vocabulary, not a summary of one record -- and a bordered block
+# that changes height between usernames would move the table under it.
+# Detail-pane width below which the key is taken off screen. The box is 30
+# cells and the line it sits beside is 32 (`last scanned` plus a timestamp), so
+# under their sum the header does not shorten -- it WRAPS. Measured at an
+# 80-column terminal that is six lines of broken-up timestamp where there were
+# two, and the table is pushed down by all of them. A glossary is worth a lot
+# less than being able to read the record it is a glossary for.
+KEY_MIN_DETAIL_WIDTH = 64
+
+KEY_STATUSES: tuple[QueryStatus, ...] = (
+    QueryStatus.CLAIMED,
+    QueryStatus.UNKNOWN,
+    QueryStatus.WAF,
+    QueryStatus.ILLEGAL,
+)
+
 
 class ResultsPane(Vertical):
     """What the database already knows, for every username in it."""
@@ -152,6 +183,7 @@ class ResultsPane(Vertical):
         Binding("s", "toggle_sources", "sources"),
         Binding("v", "toggle_notes", "notes"),
         Binding("ctrl+e", "export", "export json"),
+        Binding("f", "toggle_found_only", "found only"),
         Binding("alt+right", "next_section", "next section"),
         Binding("alt+left", "prev_section", "prev section", show=False),
         Binding("delete", "delete_username", "delete"),
@@ -174,17 +206,17 @@ class ResultsPane(Vertical):
         # them from that profile rather than carrying one person's anchors onto
         # another.
         self._anchors_for: str | None = None
-        # Row key -> the URL that row is about, so Enter can open it.
-        self._account_urls: dict[str, str] = {}
-        # Which statuses each section is currently DRAWING, so the key above
-        # the table names those and only those. Filled by the fill methods
-        # rather than listed here as what each section may contain: a key
-        # offering `rejected` when nothing was rejected is noise in a line
-        # whose whole job is to be short enough to read in passing. A section
-        # that registers nothing gets no key, which is how ACCOUNTS and
-        # PROFILE opt out -- keyed by section rather than hardcoded to the one
-        # that uses it, so a section added later only has to say what it draws.
-        self._section_statuses: dict[str, list[QueryStatus]] = {}
+        # Row key -> the URL that row is about, so Enter can open it. Every
+        # row, not just the hits: an unresolved site has a URL too, and "let me
+        # go and look at the one that blocked us" is the obvious next move from
+        # a row that says nothing could be decided.
+        self._row_urls: dict[str, str] = {}
+        # Whether the SITES table is showing hits only. On by default, so the
+        # pane still opens on the answer to "what did I find" -- the unresolved
+        # rows are one keypress away and the line above the table says how many
+        # are behind it, which is the part that keeps silence from reading as
+        # absence.
+        self._found_only = True
         # Live state for a rebuild in progress.
         self._build_reporter: TuiReporter | None = None
         self._build_started = 0.0
@@ -196,26 +228,31 @@ class ResultsPane(Vertical):
         with Grid(id="results-body"):
             yield DataTable(id="username-list", cursor_type="row")
             with Vertical(id="result-detail"):
-                # Always visible, whichever section is showing: who this is and
-                # when it was scanned is context for all three.
-                yield Static(id="detail-header")
+                # Identity left, key right. The right half of this band was
+                # empty at every width -- a username and a timestamp do not
+                # fill 90 cells -- so the glossary goes in the space the header
+                # was already paying for rather than in a row of its own.
+                with Grid(id="detail-head"):
+                    # Always visible, whichever section is showing: who this is
+                    # and when it was scanned is context for both.
+                    yield Static(id="detail-header")
+                    yield Static(id="detail-keys")
                 yield Tabs(
-                    Tab("ACCOUNTS", id=TAB_ACCOUNTS),
-                    Tab("UNRESOLVED", id=TAB_UNRESOLVED),
+                    Tab("SITES", id=TAB_SITES),
                     Tab("PROFILE", id=TAB_PROFILE),
                     id="detail-tabs",
                 )
-                # Above the tables, not below them: a key is read before the
-                # rows it explains or it is read too late. It belongs to the
-                # section rather than to the pane, so it sits under the strip
-                # that switches them and changes with it.
-                yield Static(id="detail-legend")
+                # The filter, and what it is hiding. Only on SITES: PROFILE has
+                # nothing to filter, and a control that cannot do anything is
+                # worse than an absent one.
+                with Grid(id="sites-controls"):
+                    yield Button(id="toggle-found-only", classes="toggle")
+                    yield Static(id="sites-counts")
                 # Each section owns its own scrolling, and only one is mounted
                 # visible at a time -- which is the whole fix for the double
                 # scrollbar.
-                with ContentSwitcher(initial=SEC_ACCOUNTS, id="detail-switch"):
-                    yield DataTable(id=SEC_ACCOUNTS, cursor_type="row")
-                    yield DataTable(id=SEC_UNRESOLVED, cursor_type="row")
+                with ContentSwitcher(initial=SEC_SITES, id="detail-switch"):
+                    yield DataTable(id=SEC_SITES, cursor_type="row")
                     with VerticalScroll(id=SEC_PROFILE):
                         yield Static(id="detail-profile")
                         # Shown only when there is no profile to display. The
@@ -250,15 +287,22 @@ class ResultsPane(Vertical):
         table.add_column("found", key="found", width=5)
         table.add_column("sites", key="sites", width=5)
 
-        accounts = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
-        accounts.add_column("", key="mark", width=2)
-        accounts.add_column("site", key="site", width=18)
-        accounts.add_column("url", key="url")
+        sites = self.query_one(f"#{SEC_SITES}", DataTable)
+        sites.add_column("", key="mark", width=2)
+        sites.add_column("site", key="site", width=18)
+        # One column for two kinds of answer: the URL where a hit was found,
+        # the reason nothing was decided otherwise. Neither "url" nor "why" is
+        # true of the other half, so the header names what the column IS rather
+        # than what half of it happens to hold.
+        sites.add_column("detail", key="detail")
 
-        unresolved = self.query_one(f"#{SEC_UNRESOLVED}", DataTable)
-        unresolved.add_column("", key="mark", width=2)
-        unresolved.add_column("site", key="site", width=18)
-        unresolved.add_column("why", key="why")
+        # Drawn once. The key is the app's vocabulary, not this record's, so
+        # nothing that happens to the data can change it.
+        keys = self.query_one("#detail-keys", Static)
+        keys.border_title = "keys"
+        keys.update(status_key(KEY_STATUSES, columns=2))
+        self._redraw_found_only()
+        self._fit_keys()
 
         self._set_building(False)
         # One timer for the pane; it costs an attribute check per tick when
@@ -464,66 +508,95 @@ class ResultsPane(Vertical):
     def _set_detail(self, renderable: Any) -> None:
         """Show a bare message in place of a record."""
         self.query_one("#detail-header", Static).update(renderable)
-        self.query_one(f"#{SEC_ACCOUNTS}", DataTable).clear()
-        self.query_one(f"#{SEC_UNRESOLVED}", DataTable).clear()
+        self.query_one(f"#{SEC_SITES}", DataTable).clear()
         self.query_one("#detail-profile", Static).update("")
-        self._account_urls.clear()
-        self._section_statuses.clear()
-        self._redraw_legend()
-        self._set_tab_counts(accounts=0, unresolved=0)
+        self._row_urls.clear()
+        self._redraw_counts(found=0, unresolved=0)
 
-    def _set_tab_counts(self, *, accounts: int, unresolved: int) -> None:
-        """Put the counts on the tab labels.
+    def _redraw_counts(self, *, found: int, unresolved: int) -> None:
+        """Say what the table holds, and what the filter is holding back.
 
-        This is what makes switching safe. The stacked layout kept the
-        unresolved count next to the account list because it changes what that
-        list means -- six sites that never answered is not the same as six
-        sites where nobody was home. Behind a bare tab that number would be
-        invisible until someone thought to look, so it goes on the tab.
+        These numbers used to live on the tab labels, because ACCOUNTS and
+        UNRESOLVED were separate sections and switching would otherwise hide
+        one from the other -- an account list means something different once
+        you know 183 sites gave no answer. One table makes that arrangement
+        unnecessary and this line replaces it, with the numbers next to the
+        control that acts on them rather than on a tab two widgets away.
+
+        The unresolved count is reported LOUDER when it is being filtered out,
+        not quieter. `show` refuses to let "we could not tell" read as "nobody
+        was home"; a filter that silently dropped 183 rows would undo that in
+        the one place someone is most likely to conclude a scan found nothing.
         """
-        labels = {
-            TAB_ACCOUNTS: f"ACCOUNTS {accounts}" if accounts else "ACCOUNTS",
-            TAB_UNRESOLVED: (
-                f"UNRESOLVED {unresolved}" if unresolved else "UNRESOLVED"
-            ),
-        }
-        tabs = self.query_one("#detail-tabs", Tabs)
-        for tab_id, label in labels.items():
-            tabs.query_one(f"#{tab_id}", Tab).label = label
+        line = Text()
+        line.append(f"{found} found", style="green" if found else "dim")
+        line.append("  ·  ", style="dim")
+        if unresolved and self._found_only:
+            line.append(f"{unresolved} unresolved", style="yellow")
+            line.append(" hidden", style="dim")
+        else:
+            line.append(
+                f"{unresolved} unresolved", style="dim" if not unresolved else ""
+            )
+        self.query_one("#sites-counts", Static).update(line)
 
     @on(Tabs.TabActivated, "#detail-tabs")
     def _switch_section(self, event: Tabs.TabActivated) -> None:
         section = SECTION_FOR_TAB.get(event.tab.id or "")
         if section is not None:
             self.query_one("#detail-switch", ContentSwitcher).current = section
-            self._redraw_legend()
+            # The filter belongs to SITES. On PROFILE it would be a control
+            # that cannot do anything, which is worse than an absent one -- the
+            # same rule the scan pane's anchors block follows.
+            self.query_one("#sites-controls").display = section == SEC_SITES
 
-    def _redraw_legend(self) -> None:
-        """Name the symbols the section on screen is actually using.
+    def on_resize(self) -> None:
+        self._fit_keys()
 
-        Per section, because the sections do not share a vocabulary, and a key
-        only earns its row where symbols contend. That is UNRESOLVED, and only
-        UNRESOLVED: it is the one place the distinction between "the site
-        blocked us", "the rules did not decide" and "the site would never have
-        allowed this name" is drawn -- the tool's central claim, made in two
-        cells of a table nobody has been given a glossary for. ACCOUNTS is one
-        symbol repeated, and PROFILE has none at all.
+    def _fit_keys(self) -> None:
+        """Take the key off screen when the header cannot afford it.
 
-        Hidden rather than blanked when there is nothing to explain. A blank
-        line still occupies a row, and this pane is short enough that every row
-        spent on chrome is a finding not shown.
+        Hiding the box does not change the width it is measured against -- the
+        header band is the full width of the detail pane either way -- so this
+        settles rather than oscillating around the threshold.
         """
-        current = self.query_one("#detail-switch", ContentSwitcher).current
-        statuses = self._section_statuses.get(current or "", [])
-        legend = self.query_one("#detail-legend", Static)
-        legend.display = bool(statuses)
-        if statuses:
-            # "key" spelled out, dim, in front. Without it the line is a
-            # symbol followed by a word directly above a table of symbols
-            # followed by words -- which is to say, it reads as the first row.
-            legend.update(
-                Text.assemble(("key  ", "dim"), status_key(statuses))
+        width = self.query_one("#detail-head").size.width
+        # Zero before the first layout. Leaving it alone rather than guessing
+        # keeps the box from flickering off and on again during mount.
+        if width:
+            self.query_one("#detail-keys", Static).display = (
+                width >= KEY_MIN_DETAIL_WIDTH
             )
+
+    def _redraw_found_only(self) -> None:
+        """Draw the filter as the same control the scan pane's toggles are.
+
+        A `Button` with the `‹ on ›` brackets, not a checkbox or a keybinding
+        alone: those brackets already mean "press to change this" on the
+        settings editor and on `analysis` and `verbose`, and one visual
+        language across the app is worth more than a control tuned for this
+        pane alone. It reports its own state, which is the part a keybinding
+        cannot do.
+        """
+        self.query_one("#toggle-found-only", Button).label = (
+            f"found only ‹ {'on' if self._found_only else 'off'} ›"
+        )
+
+    @on(Button.Pressed, "#toggle-found-only")
+    def _pressed_found_only(self) -> None:
+        self.action_toggle_found_only()
+
+    def action_toggle_found_only(self) -> None:
+        """Show the sites that gave no answer, or hide them again.
+
+        A binding as well as the button, so the footer advertises it -- the
+        button is reachable only by cycling focus with Tab, which is true and
+        undiscoverable, the same argument the section bindings make.
+        """
+        self._found_only = not self._found_only
+        self._redraw_found_only()
+        if self._record is not None and self._record.get("known"):
+            self._show_record(self._record)
 
     def action_next_section(self) -> None:
         self.query_one("#detail-tabs", Tabs).action_next_tab()
@@ -556,80 +629,44 @@ class ResultsPane(Vertical):
                 ),
             )
         )
-        self._fill_accounts(accounts)
-        self._fill_unresolved(unresolved)
-        self._redraw_legend()
-        self._set_tab_counts(accounts=len(accounts), unresolved=len(unresolved))
+        self._fill_sites(accounts, unresolved)
+        self._redraw_counts(found=len(accounts), unresolved=len(unresolved))
         self._seed_build_anchors(record)
         self.query_one("#detail-profile", Static).update(
             self._profile_block(record)
         )
         self._redraw_profile_actions(record)
 
-    def _fill_unresolved(self, unresolved: list[dict[str, Any]]) -> None:
-        """The sites that gave no answer, listed rather than only counted.
+    def _fill_sites(
+        self,
+        accounts: list[dict[str, Any]],
+        unresolved: list[dict[str, Any]],
+    ) -> None:
+        """One table for what was found and what could not be decided.
 
-        There was no in-app equivalent of `show --unresolved` before this, and a
-        UI needs one more than the CLI does -- there is no pipe to fall back on.
-        Absence here is not evidence of absence, which is the whole reason these
-        are kept apart from the accounts instead of quietly dropped.
+        These were two sections, and `show` still keeps the two lists apart for
+        a reason worth restating: they answer different questions, and merging
+        them is what let silence read as absence in the first place. What made
+        that merge dangerous was dropping the distinction, not showing the rows
+        together -- and nothing is dropped here. Every row wears the status it
+        was stored with, the key above names all four, and the line above the
+        table reports the unresolved count even while it is filtered out.
+
+        Two sections cost more than they protected: you could sit on ACCOUNTS
+        and never learn UNRESOLVED existed. One table with 183 unanswered rows
+        in it cannot be read that way.
+
+        Hits first, then the rest, each name-sorted -- interleaved by name, the
+        handful of findings would be scattered through hundreds of rows that
+        are not findings.
         """
-        table = self.query_one(f"#{SEC_UNRESOLVED}", DataTable)
+        table = self.query_one(f"#{SEC_SITES}", DataTable)
         table.clear()
-        self._section_statuses[SEC_UNRESOLVED] = []
-        if not unresolved:
-            table.add_row(
-                Text(""),
-                Text("—", style="dim"),
-                Text("every site gave an answer", style="dim italic"),
-            )
-            return
-        drawn: list[QueryStatus] = []
-        for entry in unresolved:
-            # The stored status, not a prefix match on the sentence written
-            # from it. Reading the symbol back out of its own explanation meant
-            # anything that did not start with "blocked" was drawn as
-            # inconclusive -- so a username the site's own rules reject, which
-            # `show` reports as "username format rejected" and has its own ✕,
-            # arrived here wearing the symbol for "we could not tell". That is
-            # exactly the conflation the unresolved list exists to prevent, and
-            # a key naming the symbols would have printed the wrong word beside
-            # it with the same confidence.
-            status = status_from_name(entry.get("status"))
-            style = status_style(status)
-            drawn.append(status)
-            detail = entry["reason"]
-            if entry.get("transport") == "http":
-                # Often the whole explanation for an inconclusive result, so it
-                # goes before the symptom rather than behind it.
-                detail = f"{detail}; no browser"
-            if entry.get("context"):
-                detail = f"{detail}; {entry['context']}"
-            table.add_row(
-                Text(style.glyph, style=style.style),
-                Text(str(entry["site_name"]), overflow="ellipsis", no_wrap=True),
-                Text(detail, style="dim", overflow="ellipsis", no_wrap=True),
-            )
-        self._section_statuses[SEC_UNRESOLVED] = drawn
-
-    def _fill_accounts(self, accounts: list[dict[str, Any]]) -> None:
-        table = self.query_one(f"#{SEC_ACCOUNTS}", DataTable)
-        table.clear()
-        self._account_urls.clear()
-        # No entry in `_section_statuses`, which is what keeps the key off this
-        # section. Every row here is a hit, so the mark column is one symbol
-        # repeated down a list the tab already calls ACCOUNTS -- there is
-        # nothing for a key to disambiguate, and it would be spending a row of
-        # findings to say so. A key earns its row where symbols contend.
-        if not accounts:
-            # One row rather than an empty table, so the section reads as
-            # answered rather than as still loading.
-            table.add_row(Text(""), Text("—", style="dim"),
-                          Text("no accounts found", style="dim italic"))
-            return
+        self._row_urls.clear()
 
         found = status_style(QueryStatus.CLAIMED)
-        for index, account in enumerate(accounts):
+        rows: list[tuple[str, str, Text, Text, str]] = []
+        for account in accounts:
             note = []
             if account.get("confidence") and account["confidence"] != "Confirmed":
                 note.append(str(account["confidence"]))
@@ -638,27 +675,75 @@ class ResultsPane(Vertical):
             # the same annotation `show` makes, for the same reason.
             if account.get("transport") == "http":
                 note.append("no browser")
-            key = str(index)
-            self._account_urls[key] = str(account["url"])
-            table.add_row(
-                Text(found.glyph, style=found.style),
+            rows.append((
+                found.glyph,
+                found.style,
                 Text(str(account["site_name"]), overflow="ellipsis", no_wrap=True),
                 Text.assemble(
                     (str(account["url"]), ""),
                     (f"  [{'; '.join(note)}]" if note else "", "dim"),
                 ),
-                key=key,
-            )
+                str(account["url"]),
+            ))
 
-    @on(DataTable.RowSelected, f"#{SEC_ACCOUNTS}")
-    def _open_account(self, event: DataTable.RowSelected) -> None:
-        """Enter on a stored account opens it.
+        if not self._found_only:
+            for entry in unresolved:
+                # The stored status, not a prefix match on the sentence written
+                # from it. Reading the symbol back out of its own explanation
+                # meant anything not starting with "blocked" was drawn as
+                # inconclusive -- so a username the site's own rules reject,
+                # which `show` reports as "username format rejected" and which
+                # has its own ✕, arrived wearing the symbol for "we could not
+                # tell". That is exactly the conflation this list exists to
+                # prevent, and the key would name it wrong just as confidently.
+                style = status_style(status_from_name(entry.get("status")))
+                detail = entry["reason"]
+                if entry.get("transport") == "http":
+                    # Often the whole explanation for an inconclusive result, so
+                    # it goes before the symptom rather than behind it.
+                    detail = f"{detail}; no browser"
+                if entry.get("context"):
+                    detail = f"{detail}; {entry['context']}"
+                rows.append((
+                    style.glyph,
+                    style.style,
+                    Text(str(entry["site_name"]), overflow="ellipsis", no_wrap=True),
+                    Text(detail, style="dim", overflow="ellipsis", no_wrap=True),
+                    str(entry.get("url") or ""),
+                ))
+
+        if not rows:
+            # One row rather than an empty table, so the section reads as
+            # answered rather than as still loading -- and when the filter is
+            # what emptied it, the row says so instead of leaving someone to
+            # conclude the scan found nothing.
+            if self._found_only and unresolved:
+                message = (
+                    f"no accounts found — {count_of(len(unresolved), 'site')} "
+                    "gave no answer; press f to see them"
+                )
+            else:
+                message = "no accounts found"
+            table.add_row(Text(""), Text("—", style="dim"),
+                          Text(message, style="dim italic"))
+            return
+
+        for index, (glyph, glyph_style, site, detail, url) in enumerate(rows):
+            key = str(index)
+            self._row_urls[key] = url
+            table.add_row(Text(glyph, style=glyph_style), site, detail, key=key)
+
+    @on(DataTable.RowSelected, f"#{SEC_SITES}")
+    def _open_row(self, event: DataTable.RowSelected) -> None:
+        """Enter on a row opens the site it is about.
 
         This is where the action matters most: the live feed scrolls past, but
         this list is what someone comes back to days later, and retyping a URL
-        off a terminal is exactly the friction the pane exists to remove.
+        off a terminal is exactly the friction the pane exists to remove. It
+        works on an unresolved row too -- going to look for yourself is the
+        obvious next move from a row that says nothing could be decided.
         """
-        url = self._account_urls.get(event.row_key.value or "")
+        url = self._row_urls.get(event.row_key.value or "")
         if not url:
             self.notify("No link for that row.", severity="warning")
             return
