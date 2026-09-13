@@ -42,4 +42,4 @@ RUN pip3 install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
 # The stealth browser binary is not baked in; the first browser-backed run
 # downloads it. Mount a persistent cache to avoid paying that per container.
 
-ENTRYPOINT ["sherlock"]
+ENTRYPOINT ["sherlock-rm"]
