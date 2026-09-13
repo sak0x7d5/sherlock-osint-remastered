@@ -7,8 +7,14 @@ build-backend = "poetry.core.masonry.api"
 source = "init"
 
 [tool.poetry]
-name = "sherlock-project"
-version = "0.16.0"
+name = "sherlock-rm"
+# NOT "sherlock-project": that is upstream's distribution name on PyPI, and
+# declaring it here made this fork uninstallable alongside the real one --
+# `pipx install` refused with "'sherlock-project' already seems to be
+# installed", and a forced install silently replaced upstream under a name and
+# version indistinguishable from it in `pip list`. The console script moves for
+# the same reason. Interim: see README's "A rename is coming".
+version = "0.1.0"
 description = "Hunt down social media accounts by username across social networks, with local-model profile analysis"
 license = "MIT"
 # Independent derivative of the Sherlock Project; upstream authors and
@@ -21,7 +27,10 @@ readme = "docs/pyproject/README.md"
 packages = [ { include = "sherlock_project"} ]
 keywords = [ "osint", "reconnaissance", "information gathering" ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    # Was "5 - Production/Stable", inherited from upstream's 0.16.x line.
+    # This project's own line starts at 0.1.0 and has never been released, so
+    # claiming production stability was false in both directions.
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Natural Language :: English",
@@ -78,7 +87,7 @@ pytest-asyncio = "^1.3.0"
 defusedxml = "^0.7.1"
 
 [tool.poetry.scripts]
-sherlock = 'sherlock_project.sherlock:cli'
+sherlock-rm = 'sherlock_project.sherlock:cli'
 
 
 [tool.ruff]

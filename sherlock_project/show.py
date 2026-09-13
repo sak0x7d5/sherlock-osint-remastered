@@ -1,6 +1,6 @@
 """Read-only view of what the database already holds for a username.
 
-`sherlock show <username>` answers "what do you already know about this
+`sherlock-rm show <username>` answers "what do you already know about this
 person" without scanning anything and without writing anything. That second
 guarantee is the point of the module: before it existed, the only way to see a
 pass-two profile was `--ai-synthesize-only`, which rebuilds the profile and
@@ -27,7 +27,7 @@ from sherlock_project.result import QueryStatus
 
 def build_show_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        prog="sherlock show",
+        prog="sherlock-rm show",
         description=(
             "Show what is already stored for a username. Never scans, never "
             "writes."
@@ -282,7 +282,7 @@ def _report_unresolved(
     )
     if not listing:
         reporter.hint(
-            f'Not the same as "not found". List them: sherlock show '
+            f'Not the same as "not found". List them: sherlock-rm show '
             f"{username} --unresolved"
         )
         return
@@ -317,7 +317,7 @@ def _report(
     if not record["known"]:
         reporter.warning(
             f"Nothing stored for {username!r}. "
-            f"Scan it first with: sherlock {username}"
+            f"Scan it first with: sherlock-rm {username}"
         )
         return
 
@@ -355,12 +355,12 @@ def _report(
             reporter.warning(
                 f"A profile is stored for {username!r} but no longer matches the "
                 f"current format. Rebuild it with: "
-                f"sherlock {username} --ai-synthesize-only"
+                f"sherlock-rm {username} --ai-synthesize-only"
             )
         elif record["profile"] is None:
             reporter.info(
                 f"No AI profile stored for {username!r}. Build one with: "
-                f"sherlock {username} --ai-synthesize-only"
+                f"sherlock-rm {username} --ai-synthesize-only"
             )
         else:
             detail = f"built {record['profile_updated_at']}"

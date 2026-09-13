@@ -1179,3 +1179,94 @@ async def test_get_extraction_model_counts_ignores_sites_without_extractions(
 
     assert await db.get_extraction_model_counts("blue") == {}
     assert await db.get_extraction_model_counts("nobody") == {}
+
+
+async def test_a_delete_survives_a_read_held_open_on_another_connection(tmp_path):
+    """Two connections to one file is this app's normal state, not an edge case.
+
+    The results pane loads its listing on its own connection while a delete
+    commits on another, and a scan writes while the pane reads. Under sqlite's
+    default rollback journal a reader blocks the writer's COMMIT, and with no
+    busy timeout sqlite does not wait for it -- it raises "database is locked"
+    at once, which leaves `delete_username` half applied: the transaction that
+    was meant to take both tables together fails partway.
+
+    This reproduced deterministically here before the WAL pragma went in, and
+    it is what failed CI on macOS and windows while ubuntu stayed green -- the
+    race is real on every platform and only the timing of it differs, which is
+    exactly the kind of fault that a timing-dependent test lets through.
+    """
+    path = str(tmp_path / "sherlock.db")
+
+    writer = await SherlockDB.create(path)
+    reader = await SherlockDB.create(path)
+    try:
+        for username in ("marcus", "keeper"):
+            await writer.save_result(
+                username=username,
+                site_name="GitHub",
+                status=str(QueryStatus.CLAIMED),
+                response_text=None,
+            )
+
+        # A read transaction left open, the way an in-flight query holds one.
+        await reader.db.execute("BEGIN")
+        async with reader.db.execute("SELECT * FROM results") as cur:
+            await cur.fetchone()
+
+        assert await writer.delete_username("keeper") == 1
+        remaining = [item.username for item in await writer.list_usernames()]
+        assert remaining == ["marcus"]
+    finally:
+        await reader.db.rollback()
+        await reader.close()
+        await writer.close()
+
+
+async def test_concurrent_creation_of_a_new_database_does_not_lock_itself(tmp_path):
+    """Several connections opening a database that does not exist yet.
+
+    A real path, not a contrived one: on a first run the results pane loads its
+    listing while a scan or a detail load opens its own connection, and none of
+    them finds a file there yet. Two connections doing this failed 14 times in
+    40 rounds before `_initialize_tables` took its write lock with BEGIN
+    IMMEDIATE -- `sqlite3.OperationalError: database is locked` raised out of
+    the DDL, because sqlite3 opens its implicit transaction DEFERRED and
+    busy_timeout does not wait out a lock UPGRADE deadlock.
+
+    Four is above anything the app does -- the results pane's list and detail
+    loads plus a scan is three -- and deliberately not higher. Eight was tried
+    and passed on Linux and macOS while failing on Windows, where NTFS takes
+    mandatory locks and the losers of the race need longer than a bounded retry
+    is willing to wait. Asserting a number that only holds on the fastest
+    platform is how a suite teaches people to ignore it.
+
+    Opening only, too: several connections racing to WRITE into a database
+    being created in the same instant can still contend. No caller does that,
+    and a bounded retry cannot honestly promise it away.
+    """
+    database_path = tmp_path / "raced-into-existence.db"
+    assert not database_path.exists()
+
+    async def open_and_close() -> None:
+        db = await SherlockDB.create(str(database_path))
+        await db.close()
+
+    await asyncio.gather(*(open_and_close() for _ in range(4)))
+
+    # And the schema that survived the race is usable.
+    db = await SherlockDB.create(str(database_path))
+    try:
+        await db.save_result(
+            username="racer",
+            site_name="Example",
+            site_url="https://example.invalid/racer",
+            status="Claimed",
+            status_code=200,
+            query_time_ms=1.0,
+            error_context=None,
+            response_text=None,
+        )
+        assert [item.username for item in await db.list_usernames()] == ["racer"]
+    finally:
+        await db.close()

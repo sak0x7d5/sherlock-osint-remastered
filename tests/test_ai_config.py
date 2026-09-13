@@ -46,7 +46,7 @@ def test_config_path_honors_explicit_environment_override(tmp_path: Path):
 
 
 def test_missing_config_has_actionable_error(tmp_path: Path):
-    with pytest.raises(AIConfigError, match="sherlock setup ai"):
+    with pytest.raises(AIConfigError, match="sherlock-rm setup ai"):
         load_ai_settings(path=tmp_path / "missing.toml", environ={})
 
 
@@ -86,7 +86,7 @@ def test_absent_config_is_not_reported_as_a_read_failure(tmp_path: Path):
     """A fresh install has no config file, and that is not an error.
 
     This is the most-seen path in the tool: every first run reaches it. The
-    loader used to hand back "AI is not configured. Run `sherlock setup ai`
+    loader used to hand back "AI is not configured. Run `sherlock-rm setup ai`
     first." for a file that had simply never been written, and the scan
     printed it as "Stored settings could not be read" -- warning about lost
     preferences that never existed, and about a model a plain scan does not
@@ -124,7 +124,7 @@ def test_missing_config_keeps_raising_for_the_ai_specific_loader(tmp_path: Path)
     for the AI section specifically, an absent file really does mean "not
     configured", and the run cannot proceed.
     """
-    with pytest.raises(AIConfigNotFound, match="sherlock setup ai"):
+    with pytest.raises(AIConfigNotFound, match="sherlock-rm setup ai"):
         load_ai_settings(path=tmp_path / "missing.toml", environ={})
 
     assert issubclass(AIConfigNotFound, AIConfigError)

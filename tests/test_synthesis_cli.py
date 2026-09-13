@@ -602,7 +602,7 @@ async def test_ai_mode_without_configuration_fails_before_scanning(
         sherlock_module,
         "load_ai_settings",
         lambda: (_ for _ in ()).throw(
-            AIConfigError("AI is not configured. Run `sherlock setup ai` first.")
+            AIConfigError("AI is not configured. Run `sherlock-rm setup ai` first.")
         ),
     )
     monkeypatch.setattr(sys, "argv", ["sherlock", "--ai", "blue"])
@@ -617,7 +617,7 @@ async def test_ai_mode_without_configuration_fails_before_scanning(
     with pytest.raises(SystemExit):
         await sherlock_module.main()
 
-    assert "sherlock setup ai" in capsys.readouterr().err
+    assert "sherlock-rm setup ai" in capsys.readouterr().err
 
 
 async def test_targeted_ai_mode_processes_only_fresh_selected_results(

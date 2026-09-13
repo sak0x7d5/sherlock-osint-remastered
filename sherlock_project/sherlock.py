@@ -1264,7 +1264,7 @@ async def main() -> int:
     # Fourth reserved word, same trade a fourth time: a username literally
     # called "ui" cannot be scanned as a bare argument. Imported here rather
     # than at module scope because the UI pulls in Textual and all three panes,
-    # and a plain `sherlock <username>` run should not pay for a screen it will
+    # and a plain `sherlock-rm <username>` run should not pay for a screen it will
     # never draw.
     if len(sys.argv) >= 2 and sys.argv[1] == "ui":
         from sherlock_project.tui import run_ui
@@ -1278,18 +1278,18 @@ async def main() -> int:
         # are invisible to anyone reading --help.
         epilog=(
             "commands:\n"
-            "  sherlock show USERNAME    Show what is already stored for a "
+            "  sherlock-rm show USERNAME    Show what is already stored for a "
             "username. Never scans,\n"
-            "                            never writes. See `sherlock show "
+            "                            never writes. See `sherlock-rm show "
             "--help`.\n"
-            "  sherlock setup ai         Configure the local AI model "
+            "  sherlock-rm setup ai         Configure the local AI model "
             "endpoint. See\n"
-            "                            `sherlock setup ai --help`.\n"
-            "  sherlock settings         Edit stored defaults for scans, "
+            "                            `sherlock-rm setup ai --help`.\n"
+            "  sherlock-rm settings         Edit stored defaults for scans, "
             "output and AI.\n"
             "                            A flag still wins for one run. See\n"
-            "                            `sherlock settings --help`.\n"
-            "  sherlock ui               Open the full-screen interface: "
+            "                            `sherlock-rm settings --help`.\n"
+            "  sherlock-rm ui               Open the full-screen interface: "
             "scan, results and\n"
             "                            settings in one place. Needs a "
             "terminal.\n"
@@ -2040,7 +2040,7 @@ def cli() -> None:
         # The browser is the DEFAULT transport, and acquiring it means
         # downloading a binary from a third-party host on first use. Behind a
         # proxy, on an offline machine, or when the release asset 403s, that
-        # fails -- and it used to end a plain `sherlock <username>` in sixty
+        # fails -- and it used to end a plain `sherlock-rm <username>` in sixty
         # lines of httpx traceback, on the first command the README tells
         # anyone to run.
         #
@@ -2053,12 +2053,12 @@ def cli() -> None:
         print("The browser is the default because it is the accurate transport, but", file=sys.stderr)
         print("the scan does not need it. To run without it:", file=sys.stderr)
         print(file=sys.stderr)
-        print("    sherlock --no-webbrowser USERNAME", file=sys.stderr)
+        print("    sherlock-rm --no-webbrowser USERNAME", file=sys.stderr)
         print(file=sys.stderr)
         print("That reads only what each server sends back, so a profile page built in", file=sys.stderr)
         print("the browser can read as \"not found\". Every row records the transport that", file=sys.stderr)
         print("produced it, and a later browser run re-checks what this one could not", file=sys.stderr)
-        print("confirm. To keep it as the default: sherlock settings", file=sys.stderr)
+        print("confirm. To keep it as the default: sherlock-rm settings", file=sys.stderr)
         raise SystemExit(1) from None
 
     if exit_code:

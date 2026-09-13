@@ -211,7 +211,7 @@ def test_scan_summary_reports_unresolved_sites_separately_from_absent() -> None:
     assert "1 blocked by bot protection" in rendered
     assert "1 rejected the username format" in rendered
     assert 'Not the same as "not found"' in rendered
-    assert "sherlock show target --unresolved" in rendered
+    assert "sherlock-rm show target --unresolved" in rendered
 
 
 def test_scan_summary_counters_reset_between_usernames() -> None:
@@ -228,9 +228,9 @@ def test_scan_summary_counters_reset_between_usernames() -> None:
 
     rendered = output.getvalue()
     assert "1 site of 1 gave no answer" in rendered
-    assert "sherlock show first --unresolved" in rendered
+    assert "sherlock-rm show first --unresolved" in rendered
     # The clean second scan says nothing about the first scan's failure.
-    assert "sherlock show second --unresolved" not in rendered
+    assert "sherlock-rm show second --unresolved" not in rendered
     assert rendered.count("gave no answer") == 1
 
 
@@ -286,6 +286,41 @@ def test_interactive_output_uses_live_progress_rendering() -> None:
     assert "\x1b[" in rendered
     assert "Example: https://example.test/Example" in rendered
     assert "Profile extraction 1/1 · 1 with facts · 0 no facts" in rendered
+
+
+def test_plain_output_says_the_install_is_a_one_off_download() -> None:
+    """The non-interactive path has no spinner to carry the wait.
+
+    A first run prints one line and then says nothing for the length of a
+    browser download. Without the duration, that silence is the thing users
+    read as a hang and kill -- which is what the status was added to stop.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.browser_status("installing")
+
+    rendered = output.getvalue()
+    assert "Web scanner runtime is missing; installing it now" in rendered
+    assert "One-off download" in rendered
+    assert "few minutes" in rendered
+
+
+def test_interactive_install_is_not_announced_twice() -> None:
+    """The interactive path uses the progress row and nothing else.
+
+    The hint is a plain line; printed while a live row is up it would scroll
+    above the row it describes and stay there after the row is gone.
+    """
+    reporter, output, _ = _reporter(no_color=False, force_terminal=True)
+
+    reporter.browser_status("installing")
+
+    assert "One-off download" not in output.getvalue()
+    task_id = reporter._web_scanner_task_id
+    assert task_id is not None
+    assert reporter._progress._tasks[task_id].fields["status"] == (
+        "installing runtime"
+    )
 
 
 def test_interactive_stage_rows_update_in_place_then_leave_one_final_line() -> None:
@@ -1393,7 +1428,7 @@ def test_other_model_extractions_are_reported_once_and_only_on_mismatch():
     assert "9 from vendor/small" in text
     assert "3 from an unrecorded model" in text
     # The remedy has to be nameable, or the warning is just bad news.
-    assert "sherlock blue --ai --fresh" in text
+    assert "sherlock-rm blue --ai --fresh" in text
 
 
 def test_other_model_extractions_uses_singular_for_one():
