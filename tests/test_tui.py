@@ -3689,3 +3689,208 @@ async def test_unknown_arguments_are_reported_rather_than_ignored(capsys):
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui(["--fresh"], console=console) == 2
     assert "takes no arguments" in capsys.readouterr().out
+
+
+# -- the startup update check -------------------------------------------------
+
+
+def _enable_update_check(enabled: bool = True) -> None:
+    """Write a config with the update toggle in a known state.
+
+    Written rather than monkeypatched because the whole point of the default is
+    that it is read off the config file the same way every other setting is.
+    """
+    from pathlib import Path
+
+    from sherlock_project.ai_config import (
+        SherlockSettings,
+        UpdateSettings,
+        ai_config_path,
+        save_settings,
+    )
+
+    save_settings(
+        SherlockSettings(update=UpdateSettings(check_on_startup=enabled)),
+        path=Path(str(ai_config_path())),
+        environ={},
+    )
+
+
+def _stub_release(monkeypatch, version: str = "0.2.0"):
+    """Answer the forge without going near it, and record that it was asked."""
+    import sherlock_project.updater as updater_module
+    from sherlock_project.updater import Release
+
+    asked: list[str] = []
+
+    async def fake_fetch(*, timeout: float = 10.0):
+        asked.append("asked")
+        return Release(
+            tag=f"v{version}",
+            version=version,
+            url=f"https://example.invalid/releases/tag/v{version}",
+        )
+
+    monkeypatch.setattr(updater_module, "fetch_latest", fake_fetch)
+    return asked
+
+
+async def test_the_check_does_not_run_when_the_setting_is_off(monkeypatch):
+    """The default, and the reason every other test in this file is offline.
+
+    Asserting the forge was never ASKED, not merely that no dialog appeared: a
+    check that runs and finds nothing looks identical on screen to one that
+    never ran, and only one of those keeps a promise about what leaves the
+    machine.
+    """
+    asked = _stub_release(monkeypatch)
+    _enable_update_check(False)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot)
+
+    assert asked == []
+
+
+async def test_an_available_release_is_offered_and_nothing_is_installed(
+    monkeypatch,
+):
+    """Found is not installed. The dialog is the whole of what a check may do
+    on its own; replacing the program takes a press."""
+    from textual.widgets import Button
+
+    from sherlock_project.tui.update_screen import UpdateScreen
+
+    asked = _stub_release(monkeypatch)
+    _enable_update_check(True)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
+
+        assert asked == ["asked"]
+        assert isinstance(app.screen, UpdateScreen)
+        # The committing control is not the one under the finger on open.
+        assert app.focused is app.screen.query_one("#update-no", Button)
+        # And the appbar has not claimed anything happened.
+        assert app._update_installed is False
+
+
+async def test_a_release_that_is_not_newer_is_not_offered(monkeypatch):
+    """Equal versions are the common case on every launch after the first, and
+    the check that this replaced would have offered a dialog for them."""
+    from sherlock_project import __version__
+    from sherlock_project.tui.update_screen import UpdateScreen
+
+    asked = _stub_release(monkeypatch, version=__version__)
+    _enable_update_check(True)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot)
+
+        assert asked == ["asked"]
+        assert not isinstance(app.screen, UpdateScreen)
+
+
+async def test_an_unreachable_forge_is_silent(monkeypatch):
+    """No release published yet is a 404, which is the single most likely
+    answer on a repository that has never been tagged. It is not news, and an
+    update check that raises a dialog saying it failed has cost more than it
+    is worth."""
+    import sherlock_project.updater as updater_module
+    from sherlock_project.tui.update_screen import UpdateScreen
+
+    async def no_answer(*, timeout: float = 10.0):
+        return None
+
+    monkeypatch.setattr(updater_module, "fetch_latest", no_answer)
+    _enable_update_check(True)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot)
+
+        assert not isinstance(app.screen, UpdateScreen)
+        assert app._update_installed is False
+
+
+async def test_a_finished_install_leaves_the_restart_note_in_the_appbar(
+    monkeypatch,
+):
+    """The running process is still the old build, and stays that way until
+    someone restarts it -- so the note has to persist rather than toast, and it
+    has to name something doable from where the reader is sitting.
+    """
+    from textual.widgets import Static
+
+    import sherlock_project.tui.update_screen as screen_module
+    import sherlock_project.updater as updater_module
+    from sherlock_project.tui.update_screen import UpdateScreen
+
+    _stub_release(monkeypatch)
+    _enable_update_check(True)
+    monkeypatch.setattr(updater_module, "detect_install", lambda **kw: "pipx")
+    monkeypatch.setattr(screen_module, "updater_available", lambda mode: True)
+
+    async def clean_install(command, *, on_line=None):
+        if on_line is not None:
+            on_line("Installing collected packages: sherlock-rm")
+        return 0, "Installing collected packages: sherlock-rm"
+
+    monkeypatch.setattr(screen_module, "run_install", clean_install)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
+        await pilot.click("#update-yes")
+        await _settle(app, pilot, lambda: app._update_installed)
+
+        assert app._update_installed is True
+        drawn = app.query_one("#appbar", Static).render()
+        text = drawn.plain if hasattr(drawn, "plain") else str(drawn)
+        assert "updated" in text
+        # Names a key the reader has, not a command line they are not at.
+        assert "alt+q" in text
+
+
+async def test_a_failed_install_says_so_and_does_not_claim_success(monkeypatch):
+    """A failure that vanishes is a failure nobody can act on -- and this one
+    has a real chance of being a locked file on Windows, where the files being
+    replaced belong to the process replacing them."""
+    from textual.widgets import Static
+
+    import sherlock_project.tui.update_screen as screen_module
+    import sherlock_project.updater as updater_module
+    from sherlock_project.tui.update_screen import UpdateScreen
+
+    _stub_release(monkeypatch)
+    _enable_update_check(True)
+    monkeypatch.setattr(updater_module, "detect_install", lambda **kw: "pipx")
+    monkeypatch.setattr(screen_module, "updater_available", lambda mode: True)
+
+    async def broken_install(command, *, on_line=None):
+        return 1, "ERROR: could not install packages due to an OSError"
+
+    monkeypatch.setattr(screen_module, "run_install", broken_install)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
+        screen = app.screen
+        await pilot.click("#update-yes")
+        await _settle(
+            app,
+            pilot,
+            lambda: "failed" in screen.query_one("#update-status", Static)
+            .render()
+            .plain,
+        )
+
+        shown = screen.query_one("#update-status", Static).render().plain
+        assert "failed" in shown
+        assert "OSError" in shown
+        # The way out is named, and the app has not pretended it updated.
+        assert "pipx install --force" in shown
+        assert app._update_installed is False

@@ -33,7 +33,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # equivalent -- POST /props is per-model routing, not server configuration --
 # so storing the directory is the only way a user can choose where their
 # models live without retyping a command every time.
-CONFIG_VERSION = 6
+# 7 added the [update] section. Same reason as every bump above: extra="forbid"
+# means a build that predates the section rejects any file containing it, and
+# the point of the version is that such a build says so in a sentence rather
+# than in a validation dump.
+CONFIG_VERSION = 7
 DEFAULT_LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
@@ -153,6 +157,23 @@ class OutputSettings(BaseModel):
     verbose: bool = False
 
 
+class UpdateSettings(BaseModel):
+    """Whether the app looks for a newer release of itself, and when.
+
+    Off by default, and that default is load-bearing rather than timid. This
+    tool's first claim about itself is what does NOT leave the machine (see
+    README), so a check that phones a forge every time the UI opens is a thing
+    someone opts into, not a thing they discover. It is also what keeps the
+    test suite offline: the TUI tests build a `SherlockUI` directly and there
+    is no seam to inject a fake checker through, so a default of False is the
+    only reason 50-odd of them never touch the network.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    check_on_startup: bool = False
+
+
 class SherlockSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -162,6 +183,7 @@ class SherlockSettings(BaseModel):
     ai: AISettings | None = None
     scan: ScanSettings = ScanSettings()
     output: OutputSettings = OutputSettings()
+    update: UpdateSettings = UpdateSettings()
 
     @field_validator("version")
     @classmethod

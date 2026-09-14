@@ -25,6 +25,7 @@ from sherlock_project.ai_config import (
     OutputSettings,
     ScanSettings,
     SherlockSettings,
+    UpdateSettings,
 )
 
 SettingSource = Literal["flag", "config", "default"]
@@ -270,6 +271,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField("scan", "nsfw", "NSFW sites", "toggle"),
     SettingField("output", "color", "colour", "toggle"),
     SettingField("output", "verbose", "verbose", "toggle"),
+    SettingField("update", "check_on_startup", "check on startup", "toggle"),
 )
 
 
@@ -304,6 +306,7 @@ SECTION_MODELS: dict[str, type] = {
     "ai": AISettings,
     "scan": ScanSettings,
     "output": OutputSettings,
+    "update": UpdateSettings,
 }
 
 
@@ -448,6 +451,11 @@ _STATIC_DESCRIPTIONS: dict[str, str] = {
         "Show the diagnostic detail behind a run: per-request traces, model "
         "failures, and what was skipped."
     ),
+    "update.check_on_startup": (
+        "Ask GitHub whether a newer release exists when the UI opens, and "
+        "offer to install it. Off by default: nothing contacts the forge "
+        "until you turn this on. Nothing is ever installed without asking."
+    ),
 }
 
 
@@ -505,7 +513,7 @@ def apply_values(
     the screen must not be able to write a config the CLI would reject.
     """
     updates: dict[str, Any] = {}
-    for section_name in ("scan", "output"):
+    for section_name in ("scan", "output", "update"):
         section = getattr(settings, section_name)
         changes = {
             field.name: values[field.key]

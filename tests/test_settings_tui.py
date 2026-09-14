@@ -259,6 +259,38 @@ async def test_toggles_flip_and_persist(tmp_path: Path):
     assert load_settings(path=path, environ={}).scan.nsfw is True
 
 
+async def test_the_update_toggle_flips_and_persists(tmp_path: Path):
+    """The [update] section is reachable and writable like any other.
+
+    Worth its own test rather than trusting the nsfw one to cover it: this is
+    the first setting in a section that is neither scan nor output, and
+    `apply_values` writes back through a hardcoded tuple of section names. A
+    section missing from that tuple renders, flips on screen, saves without
+    error -- and silently discards the change.
+    """
+    path = tmp_path / "config.toml"
+    _seed(path)
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("update.check_on_startup")):
+            await pilot.press("down")
+        await pilot.press("right")
+        await pilot.press("ctrl+s")
+
+    assert load_settings(path=path, environ={}).update.check_on_startup is True
+
+
+def test_the_update_check_ships_off():
+    """The default is the reason the TUI suite never reaches the network, and
+    the reason a tool that leads with what does not leave your machine can
+    carry a forge call at all."""
+    from sherlock_project.ai_config import SherlockSettings, UpdateSettings
+
+    assert UpdateSettings().check_on_startup is False
+    assert SherlockSettings().update.check_on_startup is False
+
+
 async def test_ai_spinners_step_from_their_default_with_no_ai_stored(
     tmp_path: Path,
 ):

@@ -288,6 +288,12 @@ def phase_line(
     # and the state a reader sees cannot drift apart.
     glyph, glyph_style, word_style = {
         "loading": (spinner(tick), "bold cyan", "none"),
+        # Same animation as loading, because it is the same answer to the same
+        # question -- "is this still moving" -- for a step that is fetching
+        # rather than starting. It is a separate word only because the two take
+        # very different amounts of time and saying which one you are waiting
+        # on is the difference between patience and a killed process.
+        "installing": (spinner(tick), "bold cyan", "none"),
         "ready": ("●", "bold green", "green"),
         "failed": ("✕", "bold red", "red"),
         "waiting": ("·", "dim", "dim"),
@@ -949,6 +955,22 @@ ModalScreen { align: center middle; }
 .anchor-label { color: $text-muted; content-align: left middle; height: 100%; }
 #anchor-trust-help { height: 2; padding: 1 0 0 0; }
 #anchor-status { height: 1; }
+
+/* ---- update dialog --------------------------------------------------- */
+
+#update-detail { height: auto; padding: 1 0; }
+/* Absent until the install starts, so the offer state is not padded out by a
+   reserved hole where progress will go. */
+#update-status { height: auto; padding: 1 0 0 0; }
+/* Same shape as the confirm dialog's row: spacer, then the pair. The wider
+   second column takes "Update"/"Close" without either clipping. */
+#update-buttons {
+    layout: grid;
+    grid-size: 3 1;
+    grid-columns: 1fr 12 14;
+    grid-gutter: 0 2;
+    height: 3;
+}
 
 /* ---- confirm dialog -------------------------------------------------- */
 
