@@ -155,7 +155,7 @@ def status_from_name(name: str | None) -> QueryStatus:
         return QueryStatus.UNKNOWN
 
 
-def status_key(statuses: Iterable[QueryStatus]) -> Text:
+def status_key(statuses: Iterable[QueryStatus], *, columns: int = 1) -> Text:
     """The symbol-to-word key for a set of statuses: `● found   ▲ blocked`.
 
     Colour is never the only signal, which is why every status carries a glyph
@@ -177,17 +177,41 @@ def status_key(statuses: Iterable[QueryStatus]) -> Text:
 
     Duplicates collapse and the order is always `STATUS_ORDER`, so the key reads
     the same way every time whatever order the rows happened to arrive in.
+
+    `columns` lays the pairs out as a grid instead of one line. Four statuses in
+    a row is 44 cells, which does not fit beside anything; two by two is 27 and
+    fits in the empty half of a header.
     """
     wanted = set(statuses)
+    entries = [status_style(s) for s in STATUS_ORDER if s in wanted]
+    if not entries:
+        return Text()
+
+    # Row-major, so the order above still reads left-to-right then down. Column
+    # widths are measured across the whole grid rather than per row, which is
+    # the same argument `stat_row` makes for the counters: a ragged inner edge
+    # turns four pairs into eight things to find.
+    rows = [entries[i : i + columns] for i in range(0, len(entries), columns)]
+    widths = [
+        max(len(row[col].glyph) + 1 + len(row[col].label)
+            for row in rows if len(row) > col)
+        for col in range(min(columns, len(entries)))
+    ]
+
     line = Text()
-    for status in STATUS_ORDER:
-        if status not in wanted:
-            continue
-        style = status_style(status)
-        if line:
-            line.append(KEY_GAP)
-        line.append(f"{style.glyph} ", style=style.style)
-        line.append(style.label, style="dim")
+    for index, row in enumerate(rows):
+        if index:
+            line.append("\n")
+        for col, style in enumerate(row):
+            if col:
+                line.append(KEY_GAP)
+            label = style.label
+            # Every column but the last is padded out; padding the last one
+            # would leave trailing blanks inside the border drawn around this.
+            if col < len(row) - 1:
+                label = label.ljust(widths[col] - len(style.glyph) - 1)
+            line.append(f"{style.glyph} ", style=style.style)
+            line.append(label, style="dim")
     return line
 
 
@@ -712,7 +736,29 @@ Button.-primary.-active {
     text-style: bold;
 }
 #result-detail { height: 1fr; }
-#detail-header { height: auto; padding: 0 0 1 0; }
+/* Identity left, key right. The right half of this band was empty at every
+   width -- a username and a timestamp do not fill 90 cells -- so the key is
+   drawn in space the header was already paying for. `auto` on the key column
+   so the header text takes the slack and wraps if the pane gets narrow, rather
+   than the key being the thing that disappears. */
+#detail-head {
+    layout: grid;
+    grid-size: 2 1;
+    grid-columns: 1fr auto;
+    height: auto;
+    padding: 0 0 1 0;
+}
+#detail-header { height: auto; }
+/* The one bordered block on this screen, and it is deliberate: a key is not
+   data, and the border is what says so at a glance in a pane that is otherwise
+   flat. It costs the two rows the border occupies. */
+#detail-keys {
+    border: round $panel-lighten-2;
+    border-title-color: $text-muted;
+    padding: 0 1;
+    height: auto;
+    width: auto;
+}
 
 /* The section strip. Styled DOWN from the tab bar above it, not hidden: two
    bars with the same weight read as two competing navigations, which is what
@@ -770,14 +816,30 @@ Button.-primary.-active {
    No bottom padding for the same reason -- the pane is short, the tabs above
    already separate it from the header, and every row here is a finding not
    shown. */
-#detail-legend { height: auto; }
+/* The filter and what it is holding back, on one line above the table. Wide
+   enough for `found only ‹ off ›` and its padding, with the counts taking
+   whatever is left -- the same fixed-label/flexible-value shape the scan
+   pane's options row uses. */
+#sites-controls {
+    layout: grid;
+    grid-size: 2 1;
+    grid-columns: 26 1fr;
+    grid-gutter: 0 2;
+    height: 1;
+}
+/* Filling its cell rather than sizing to its label: a `Button` measures itself
+   when it is first drawn and `found only ‹ off ›` is a character wider than
+   `‹ on ›`, so an auto-width toggle clips its own closing bracket the first
+   time it is pressed. */
+#toggle-found-only { width: 100%; }
+#sites-counts { height: 1; content-align: left middle; }
 
 /* Exactly one scroll region visible at a time -- the whole point of switching
    rather than stacking. `overflow-x: hidden` because a long URL would otherwise
    give the table a horizontal scrollbar on top of its vertical one; the cells
    ellipsize instead, and Enter opens the full link anyway. */
 #detail-switch { height: 1fr; }
-#sec-accounts, #sec-unresolved {
+#sec-sites {
     height: 1fr;
     overflow-x: hidden;
 }
