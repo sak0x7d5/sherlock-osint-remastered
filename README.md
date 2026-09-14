@@ -365,10 +365,11 @@ and anything you would rather not keep.
 The database stores captured page content, extracted fields, and synthesised
 profiles, keyed by username. It persists until you delete it.
 
-**Removing someone.** On the RESULTS tab of `sherlock-rm ui`, hover a username and
-press the `✕` at the end of its row — or select it and press `delete`. Either
-way it names what will go and asks first, then erases that username's results,
-stored page content, extractions and profile. Nothing else is touched.
+**Removing someone.** On the RESULTS tab of `sherlock-rm ui`, pick a username and
+press **✕ Delete this username** under the name on the right — or press `delete`
+with it selected. Either way it names what will go and asks first, then erases
+that username's results, stored page content, extractions and profile. Nothing
+else is touched.
 
 > [!NOTE]
 > **There is no command-line equivalent yet.** Outside the UI, removing someone
