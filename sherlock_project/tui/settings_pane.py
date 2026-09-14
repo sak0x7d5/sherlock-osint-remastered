@@ -74,7 +74,12 @@ from sherlock_project.settings import (
     value_label,
 )
 
-SECTION_TITLES = {"ai": "AI", "scan": "Scan", "output": "Output"}
+SECTION_TITLES = {
+    "ai": "AI",
+    "scan": "Scan",
+    "output": "Output",
+    "update": "Update",
+}
 LABEL_WIDTH = 18
 VALUE_WIDTH = 26
 

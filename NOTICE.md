@@ -89,17 +89,26 @@ talks to:
 
 Pass `--local` to use only the bundled manifest and avoid the first two.
 
-One further outbound call is not upstream's but is listed here for the same
+Further outbound calls are not upstream's but are listed here for the same
 reason, since the table above is what an operator reads to learn what this
 tool talks to:
 
 | Resource | Used for | Defined in |
 | - | - | - |
-| `https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest` | Update check, once per scan | `sherlock_project/__init__.py` |
+| `https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest` | Update check, once per scan, and once when the UI opens if `update.check_on_startup` is on | `sherlock_project/__init__.py`, `sherlock_project/updater.py` |
+| `https://github.com/sak0x7d5/sherlock-osint-remastered` | Downloading a release, and only after the update dialog is confirmed | `sherlock_project/updater.py` |
 
-It runs off-thread with a 10s timeout, and any failure -- including the 404
-returned while no release exists -- is swallowed into a verbose-only debug
+The check runs off-thread with a 10s timeout, and any failure -- including the
+404 returned while no release exists -- is swallowed into a verbose-only debug
 line, so it can neither block nor fail a scan.
+
+The startup check is **off by default** and is the only one of these that is
+configurable: `update.check_on_startup` in the config file, or the Update
+section of `sherlock-rm settings`. It is rate-limited to one call every six
+hours by a stamp in the user cache directory (`SHERLOCK_CACHE` overrides the
+location). The download happens only when someone presses Update in the dialog
+that the check raises, so the second row is reached by an explicit action
+rather than by the check itself.
 
 ## Naming
 

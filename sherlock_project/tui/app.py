@@ -32,7 +32,7 @@ from typing import Any, ClassVar
 
 from rich.console import Console
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
@@ -87,6 +87,11 @@ class SherlockUI(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self._settings_values = field_values(try_load_settings())
+        # Set once an update has actually been written to disk, and never
+        # cleared: the appbar has to keep saying so for the rest of the
+        # session, because the running process is still the old build and that
+        # stays true until someone restarts it.
+        self._update_installed = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="appbar")
@@ -100,13 +105,7 @@ class SherlockUI(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#appbar", Static).update(
-            Text.assemble(
-                ("SHERLOCK", "bold cyan"),
-                ("   db ", "dim"),
-                (str(default_database_path()), "dim"),
-            )
-        )
+        self._redraw_appbar()
         # Focus the username field, so the app opens ready to be typed into.
         # It is the only control anyone needs on a first run, and a screen that
         # opens with focus somewhere unhelpful makes the first keystroke a
@@ -114,6 +113,84 @@ class SherlockUI(App[None]):
         # SettingsPane.on_mount records -- panes that grab focus on mount fight
         # each other and drag the tab bar around.
         self.query_one("#target-input", Input).focus()
+
+        # Last, and only when asked for. Read straight off the flattened
+        # values rather than through `runner.resolved`: that module imports the
+        # Playwright engine at module scope, and a settings-only launch should
+        # not pay a browser import to decide whether to make one HTTP request.
+        # The value is always a real bool here -- unlike [ai], the [update]
+        # section is not optional, so pydantic fills the default when a config
+        # file predates it.
+        if self._settings_values.get("update.check_on_startup"):
+            self._check_for_update()
+
+    def _redraw_appbar(self) -> None:
+        """The identity strip, plus anything that must outlive a tab change.
+
+        Rebuilt rather than appended to, so the update note cannot be added
+        twice by two paths that both thought they were the one to add it.
+        """
+        line = Text.assemble(
+            ("SHERLOCK", "bold cyan"),
+            ("   db ", "dim"),
+            (str(default_database_path()), "dim"),
+        )
+        if self._update_installed:
+            # Names a thing the reader can do from where they are sitting. A
+            # note that said "re-run pip" would be pointing at a command line
+            # they are not at, which is the failure `render_profile`'s
+            # notes_hint already exists to avoid.
+            line.append(
+                "   · updated — quit with alt+q and reopen to apply",
+                style="bold yellow",
+            )
+        self.query_one("#appbar", Static).update(line)
+
+    @work(exclusive=True, group="update-check")
+    async def _check_for_update(self) -> None:
+        """Ask whether there is a newer release, and offer it if there is.
+
+        Everything slow or fallible is inside the worker, including the
+        imports: `updater` pulls in `requests` and the dialog pulls in the
+        theme, and neither should be paid for by a launch with the setting off.
+
+        Silence is the normal outcome. No release published, no network, a tag
+        that will not parse, and a version this build cannot read all end here
+        with nothing drawn -- an update check is not worth a dialog that says
+        it failed.
+        """
+        from sherlock_project import __version__
+        from sherlock_project.tui.update_screen import UpdateScreen
+        from sherlock_project.updater import (
+            checked_recently,
+            detect_install,
+            fetch_latest,
+            is_newer,
+            record_check,
+        )
+
+        if checked_recently():
+            return
+
+        release = await fetch_latest()
+        if release is None:
+            # Deliberately NOT stamped. Recording a failed reach would suppress
+            # the next six hours of checks because the forge was briefly
+            # unreachable, which is the opposite of what the stamp is for.
+            return
+        record_check()
+
+        if not is_newer(release.version, __version__):
+            return
+
+        def applied(installed: bool | None) -> None:
+            if installed:
+                self._update_installed = True
+                self._redraw_appbar()
+
+        self.push_screen(
+            UpdateScreen(release, __version__, detect_install()), applied
+        )
 
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
