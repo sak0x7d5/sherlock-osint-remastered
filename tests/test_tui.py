@@ -3017,28 +3017,6 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
     assert len(remaining) == 1
 
 
-def _delete_marks(table) -> dict[str, str]:
-    """Which rows are currently drawing a delete control, by username."""
-    from sherlock_project.tui.results_pane import UsernameList
-
-    return {
-        str(key.value): table.get_cell(key, UsernameList.DELETE_COLUMN).plain.strip()
-        for key in table.rows
-    }
-
-
-def _delete_cell(table, username: str) -> tuple[int, int]:
-    """Where `username`'s delete control is, in the list's own coordinates.
-
-    Measured off the table rather than written down: the column widths are
-    tuned to fit a fixed pane and a test that hard-codes an offset starts
-    clicking the wrong cell the first time one of them moves, which would look
-    like the control had stopped working.
-    """
-    x = sum(column.get_render_width(table) for column in table.ordered_columns[:-1])
-    return x + 1, table.header_height + table.get_row_index(username)
-
-
 @asynccontextmanager
 async def _list_with(**rows):
     """The results tab, open, with its list loaded.
@@ -3046,118 +3024,57 @@ async def _list_with(**rows):
     A context manager rather than the one-shot async generator the filter tests
     use: these tests wait on the list with `_settle`, and a predicate that
     closes over a variable bound by `async for` is a closure over a loop
-    variable -- which is a lint error, and a real trap the moment a helper
-    yields twice.
+    variable, which is a lint error.
     """
-    from sherlock_project.tui.results_pane import UsernameList
+    from textual.widgets import DataTable
 
     await _seed(**rows)
     app = SherlockUI()
     async with app.run_test(size=(110, 34)) as pilot:
         await pilot.press("alt+2")
-        table = app.query_one("#username-list", UsernameList)
+        table = app.query_one("#username-list", DataTable)
         await _settle(app, pilot, lambda: table.row_count == len(rows))
         assert table.row_count == len(rows)
         yield app, table, pilot
 
 
-async def test_a_username_offers_a_delete_control_while_it_is_pointed_at():
+async def test_the_delete_action_appears_with_a_record_and_not_before():
     """Erasing a username was a key with nothing on screen to say it existed.
 
-    `delete` worked on the selected row and the footer named the key, but the
-    list drew no control at all -- so the one action in the app that destroys a
-    dossier was the one you had to already know about.
+    `delete` worked and the footer named it, but nothing in the pane showed
+    that a stored record could be removed at all -- so the one action in the
+    app that destroys a dossier was the one you had to already know about.
 
-    Drawn on the pointed-at row ONLY. A ✕ on every row reads as a list of names
-    queued for deletion, and it parks an irreversible control one misclick from
-    each of them.
+    It belongs to a RECORD, so it appears with one. Under a "Nothing scanned
+    yet" sentence it would be a control with nothing to act on, and this is the
+    worst kind to leave pressable: the irreversible kind.
     """
-    async with _list_with(
-        marcus=[("GitHub", QueryStatus.CLAIMED)],
-        keeper=[("Reddit", QueryStatus.CLAIMED)],
-    ) as (_app, table, pilot):
-        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
+    from textual.widgets import Button
 
-        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
-        await pilot.pause()
-        assert _delete_marks(table) == {"marcus": "", "keeper": "✕"}
-
-        # One row at a time: the control follows the pointer rather than
-        # accumulating behind it.
-        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
-        await pilot.pause()
-        assert _delete_marks(table) == {"marcus": "✕", "keeper": ""}
-
-        # Below the last row there is no row, whatever the row cursor does with
-        # that space -- so there is nothing to offer either.
-        x, _ = _delete_cell(table, "marcus")
-        await pilot.hover("#username-list", offset=(x, table.header_height + 12))
-        await pilot.pause()
-        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
-
-        # And a control still drawn after the pointer has gone belongs to no
-        # row at all.
-        await pilot.hover("#username-list", offset=_delete_cell(table, "keeper"))
-        await pilot.pause()
-        await pilot.hover("#detail-tabs")
-        await pilot.pause()
-        assert _delete_marks(table) == {"marcus": "", "keeper": ""}
-
-
-async def test_the_delete_control_keeps_its_own_colours_on_the_selected_row():
-    """It came out white, in the cursor's colour, on the row most likely to use it.
-
-    `DataTable` sends the cursor's colours through twice -- once as the base
-    style under the cell and again over the top of it -- so a cell cannot hold
-    a colour of its own on the selected row while `cursor_foreground_priority`
-    is "css". The control was drawn as part of the highlight it sat in: no red,
-    and no block. Both of those ARE the affordance, so both have to survive the
-    cursor.
-    """
-    from sherlock_project.tui.results_pane import DELETE_STYLE
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.press("alt+2")
+        await _settle(app, pilot)
+        assert app.query_one("#delete-username", Button).display is False
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
-    ) as (_app, table, pilot):
-        table.focus()
-        await pilot.pause()
-        assert table.cursor_row == 0, "this test is about the SELECTED row"
-
-        await pilot.hover("#username-list", offset=_delete_cell(table, "marcus"))
-        await pilot.pause()
-
-        wanted = table.get_component_rich_style(DELETE_STYLE)
-        drawn = next(
-            (
-                segment
-                for segment in table.render_line(table.header_height)
-                if "✕" in segment.text
-            ),
-            None,
-        )
-        assert drawn is not None, "no control drawn on the selected row"
-        assert drawn.style is not None
-        # The theme's readable red, not whatever the cursor paints with.
-        assert drawn.style.color == wanted.color
-        # And its own block, so the control is still a control in there.
-        assert drawn.style.bgcolor == wanted.bgcolor
-        assert drawn.style.bgcolor != table.get_component_rich_style(
-            "datatable--cursor"
-        ).bgcolor
+    ) as (app, _table, _pilot):
+        button = app.query_one("#delete-username", Button)
+        assert button.display is True
+        # Named rather than a bare symbol. A `✕` alone reads as "close" in a
+        # header, and this is the one control here that destroys something.
+        assert "Delete" in str(button.label)
 
 
-async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
-    """The ✕ acts on the row under the pointer, not on the open one.
+async def test_the_delete_action_asks_about_the_record_on_screen():
+    """It acts on whatever the header names, so changing rows changes its target.
 
-    That is the whole point of having it: removing a username you can see
-    should not mean opening it first, which is what the key makes you do.
-
-    And pressing it must not move the selection. Cancelling has to leave the
-    pane exactly as it was -- a dialog that swapped the detail on the right for
-    a username you then decided not to delete has already done something you
-    did not ask for.
+    That is the whole reason it sits with the record instead of on the rows: the
+    thing it deletes is the thing being read, and the dialog says which -- "are
+    you sure?" with no name is a question nobody can answer.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.database import default_database_path
     from sherlock_project.tui.confirm_screen import ConfirmScreen
 
     async with _list_with(
@@ -3166,24 +3083,29 @@ async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
     ) as (app, table, pilot):
         pane = app.query_one(ResultsPane)
         opened = pane._selected
-        other = next(
-            str(key.value) for key in table.rows if str(key.value) != opened
-        )
-        cursor = table.cursor_row
+        assert opened is not None
 
-        await pilot.click("#username-list", offset=_delete_cell(table, other))
+        await pilot.click("#delete-username")
         await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        assert opened in app.screen.query_one("#confirm-detail").render().plain
 
-        screen = app.screen
-        assert isinstance(screen, ConfirmScreen)
-        detail = screen.query_one("#confirm-detail").render().plain
-        # The row that was pressed, counted from its own listing.
+        await pilot.press("escape")
+        await _settle(app, pilot)
+
+        table.focus()
+        await pilot.press("down")
+        await _settle(app, pilot, lambda: pane._selected != opened)
+        other = pane._selected
+        assert other is not None and other != opened
+
+        await pilot.click("#delete-username")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        detail = app.screen.query_one("#confirm-detail").render().plain
         assert other in detail
-        assert opened not in detail
+        assert opened not in detail, "the action is still aimed at the old row"
         assert "cannot be undone" in detail
-
-        assert pane._selected == opened, "pressing ✕ moved the selection"
-        assert table.cursor_row == cursor
 
         await pilot.press("escape")
         await _settle(app, pilot)
@@ -3195,35 +3117,27 @@ async def test_the_delete_control_asks_about_its_own_row_and_selects_nothing():
         await db.close()
 
 
-async def test_deleting_a_pointed_at_row_leaves_the_reader_where_they_were():
-    """Erasing the row the pointer was on must not move the reader off the row
-    they were reading.
+async def test_confirming_from_the_button_erases_the_open_username():
+    """The button and the key are one action, so confirming does one thing."""
+    from textual.widgets import Button
 
-    The list reopens the FIRST username after a reload unless it is told
-    otherwise, so deleting a third party would otherwise swap the detail pane
-    for someone else's record as a side effect.
-    """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.database import default_database_path
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
         keeper=[("Reddit", QueryStatus.CLAIMED)],
-        third=[("Forum", QueryStatus.CLAIMED)],
     ) as (app, table, pilot):
         pane = app.query_one(ResultsPane)
-        opened = pane._selected
-        doomed = next(
-            str(key.value) for key in table.rows if str(key.value) != opened
-        )
+        doomed = pane._selected
 
-        await pilot.click("#username-list", offset=_delete_cell(table, doomed))
+        await pilot.click("#delete-username")
         await pilot.pause()
         await pilot.click("#confirm-yes")
-        await _settle(app, pilot, lambda: table.row_count == 2)
+        await _settle(app, pilot, lambda: table.row_count == 1)
 
-        assert table.row_count == 2
-        assert doomed not in _delete_marks(table)
-        assert pane._selected == opened
+        assert table.row_count == 1
+        # A record still stands, so the action is still on offer for it.
+        assert app.query_one("#delete-username", Button).display is True
 
     db = await SherlockDB.create(str(default_database_path()))
     try:
@@ -3231,7 +3145,7 @@ async def test_deleting_a_pointed_at_row_leaves_the_reader_where_they_were():
     finally:
         await db.close()
     assert doomed not in remaining
-    assert opened in remaining
+    assert len(remaining) == 1
 
 
 async def test_the_progress_strip_sits_with_the_findings():

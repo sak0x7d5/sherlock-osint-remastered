@@ -679,28 +679,24 @@ Button.-primary.-active {
    slack -- which is the right way round, since prose reflows and a table of
    numbers does not.
 
-   38 is that total, and it is arithmetic rather than taste: 34 + 4. The cells
-   come to 34 (15 username + 7 found + 7 sites + 5 delete -- each column's width
-   plus one cell of padding on each side), and the 4 is what the widget spends
-   around them: 1 on its right padding, 1 on its border, and 2 on the vertical
-   scrollbar a list longer than the pane puts there. The old 34 did not count
-   that scrollbar, so a database with 40 usernames in it left the columns 30
-   cells and grew a HORIZONTAL scrollbar under a table of three short columns.
-   The delete control has to stay visible at the right-hand end of every row, so
-   the width is now the full list's, not the empty one's.
+   35 is that total, and it is arithmetic rather than taste: 31 + 4. The cells
+   come to 31 (17 username + 7 found + 7 sites -- each column's width plus one
+   cell of padding on each side), and the 4 is what the widget spends around
+   them: 1 on its right padding, 1 on its border, and 2 on the vertical
+   scrollbar a list longer than the pane puts there. The original 34 did not
+   count that scrollbar, so a database with 40 usernames in it left the columns
+   30 cells and grew a HORIZONTAL scrollbar under a table of three short
+   columns.
 
-   38 and not a cell more, which is measured rather than chosen: at 40 an
-   80-column terminal leaves the section strip 32 cells for 33 of tabs, and
+   Every cell past that goes to the detail, and the strip in it has a floor: at
+   40 an 80-column terminal leaves the section tabs 32 cells for 33 of them, and
    `Tabs` is a scrolling strip -- squeezed, it drops tabs silently and from the
-   LEFT, so ACCOUNTS arrives as "CCOUNTS" and then goes entirely. The detail
-   absorbs what this column takes, which is the rule it was fixed for, but the
-   strip in it has a floor. The four cells the control needed came out of the
-   username column instead; the URLs beside it ellipsize a little earlier, which
-   they already did at that width. */
+   LEFT rather than wrapping or ellipsizing. Measured when a delete column lived
+   here; the column is gone and the floor is not. */
 #results-body {
     layout: grid;
     grid-size: 2 1;
-    grid-columns: 38 1fr;
+    grid-columns: 35 1fr;
     grid-gutter: 0 2;
     height: 1fr;
 }
@@ -708,32 +704,6 @@ Button.-primary.-active {
     height: 1fr;
     border-right: solid $panel-lighten-2;
     padding: 0 1 0 0;
-}
-/* The delete control, drawn on the row under the pointer. Deliberately the same
-   shape as `#add-anchor`: a block of `$panel` with a coloured symbol on it,
-   which is this app's existing way of saying that a symbol is a button. A bare
-   glyph in a column of numbers reads as another value, and a value is not
-   something you press. No border, for the reason that button has none either --
-   a raised box around one character out-shouts the rows it sits among.
-
-   Red because it deletes; it is the only red in the pane, which is the point.
-   `$text-error` and not `$error`: the two are the same colour in the dark theme
-   until you put them on something. Measured against this block, `$error` comes
-   out at 1.51:1 in the dark theme -- a red smudge on grey -- while `$text-error`,
-   which is the token that exists to be READ, gives 4.62:1 dark and 6.24:1
-   light. `$panel` rather than the lighter panel tints for the same reason:
-   every step lighter costs the glyph contrast, and `$panel-lighten-2` takes it
-   to 2.79:1.
-
-   This survives the SELECTED row, which is what `cursor_foreground_priority`
-   and `cursor_background_priority` are set to "renderable" for -- see
-   UsernameList. Left at their defaults the cursor repaints the control in its
-   own colours, and a delete button painted as part of the row highlight is not
-   a delete button. */
-#username-list > .username-list--delete {
-    background: $panel;
-    color: $text-error;
-    text-style: bold;
 }
 #result-detail { height: 1fr; }
 /* Identity left, key right. The right half of this band was empty at every
@@ -748,7 +718,50 @@ Button.-primary.-active {
     height: auto;
     padding: 0 0 1 0;
 }
+#detail-identity { height: auto; }
 #detail-header { height: auto; }
+/* The record's one destructive action, under the identity it acts on.
+
+   It started as a `✕` on the row under the pointer, in the username list, and
+   that is not a thing a `DataTable` can hold. The row cursor paints every cell
+   of its row, so the control had to fight the highlight for its own colours --
+   and winning was worse than losing: it became a dark chip punched into the
+   middle of a blue bar, which reads as a rendering fault rather than a button.
+   A cell can be styled. It cannot be a control.
+
+   So it is a real `Button`, in the same quiet shape as `#add-anchor`, the
+   `found only` toggle and the pointer-state build button: one row of `$panel`,
+   no border, a bold coloured label. That is this app's button, and the shape
+   works here for the reason it failed there -- the header band is flat, and
+   nothing else is painting these cells.
+
+   It also puts the action with the record instead of on every row of the list.
+   The target is whatever the header names two lines above it, there is one of
+   them rather than one per row, and nothing destructive sits under the pointer
+   while someone is reading down a column of names.
+
+   Colours measured: `$text-error` on `$panel` is 4.62:1 dark and 6.24:1 light.
+   Hover and focus turn the block `$error` with the foreground on it (4.12:1 and
+   3.03:1) -- both the contrast fix, since red text on a lighter panel falls to
+   2.79:1, and the arming a destructive control should do before it is pressed.
+
+   Free where the key is drawn: that band is four rows for the bordered box and
+   the identity uses two. Below KEY_MIN_DETAIL_WIDTH there is no box, and this
+   is the one row the band grows by. */
+#delete-username {
+    width: auto;
+    min-width: 0;
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $panel;
+    color: $text-error;
+    text-style: bold;
+}
+#delete-username:hover, #delete-username:focus {
+    background: $error;
+    color: $foreground;
+}
 /* The one bordered block on this screen, and it is deliberate: a key is not
    data, and the border is what says so at a glance in a pane that is otherwise
    flat. It costs the two rows the border occupies. */
