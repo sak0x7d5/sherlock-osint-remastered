@@ -61,6 +61,11 @@ see whether a newer release exists. That last one is listed in
 [NOTICE.md](NOTICE.md) with everything else this tool talks to; it fails
 silently and never blocks a scan.
 
+The UI can make the same call when it opens, and install what it finds -- but
+only if you switch **Update -> check on startup** on, which ships **off**. With
+it off nothing contacts GitHub when the UI opens. With it on, a newer release
+is offered in a dialog and nothing is downloaded until you press Update.
+
 ### Compared to the alternatives
 
 Accurate as of September 2026. Where this tool is behind, the row says so.

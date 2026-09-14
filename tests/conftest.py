@@ -39,6 +39,10 @@ def isolated_user_state(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
+    # The update check's throttle stamp, for the same reason as the other two:
+    # left alone it writes into the developer's real cache directory, and a
+    # stamp written by one test run would then suppress the check in the next.
+    monkeypatch.setenv("SHERLOCK_CACHE", str(tmp_path / "update-check.json"))
     monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
 
 
