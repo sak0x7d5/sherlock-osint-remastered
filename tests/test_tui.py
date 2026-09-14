@@ -21,7 +21,11 @@ from textual.worker import WorkerCancelled
 from sherlock_project.database import SherlockDB
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.tui.app import SherlockUI, run_ui
-from sherlock_project.tui.reporter import TuiReporter, describe_settings
+from sherlock_project.tui.reporter import (
+    TuiReporter,
+    describe_options,
+    describe_settings,
+)
 from sherlock_project.tui.results_pane import ResultsPane
 from sherlock_project.tui.runner import ai_is_configured, resolved
 from sherlock_project.tui.scan_pane import CounterRow, ScanPane
@@ -580,6 +584,567 @@ async def test_the_startup_block_draws_and_then_stops_animating():
         assert "loading" not in after
 
 
+# -- the model block --------------------------------------------------------
+
+
+def test_the_model_name_keeps_the_half_that_identifies_it():
+    """Truncating a model key from the left throws away the answer.
+
+    Keys are paths, and everything someone downloaded from one place shares the
+    vendor and the repo -- so plain truncation renders three different models as
+    three identical lines, while cutting the size and the quantisation that
+    tell them apart.
+    """
+    from sherlock_project.tui.theme import model_name
+
+    assert (
+        model_name("unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q4_K_M.gguf", 24)
+        == "Qwen3-30B-A3B-Q4_K_M"
+    )
+    # Windows separators reach this from a models folder on this platform.
+    assert model_name(r"C:\models\Qwen3-4B-GGUF\Qwen3-4B-Q8_0.gguf", 24) == (
+        "Qwen3-4B-Q8_0"
+    )
+    # A plain key is left alone.
+    assert model_name("qwen/qwen3-4b", 24) == "qwen3-4b"
+    # And what still does not fit is elided rather than overflowing the column.
+    narrow = model_name("Qwen3-30B-A3B-Q4_K_M.gguf", 10)
+    assert len(narrow) == 10
+    assert narrow.endswith("…")
+
+
+def test_the_readout_rows_all_keep_one_right_edge():
+    """Every block in the left column is read against the same ruler.
+
+    A value column that starts wherever the label ended makes stacked blocks
+    read as panels assembled by accident. `38 tok/s` is wider than the six cells
+    a count needs, so `value_row` measures the value first and gives the label
+    what is left -- the opposite split from `stat_row`, to the same right edge.
+    """
+    from sherlock_project.tui.theme import value_row
+
+    widths = {
+        value_row("speed", "38 tok/s").cell_len,
+        value_row("· waiting", "").cell_len,
+        stat_row("inconclusive", 135, "yellow").cell_len,
+        stat_row("extracted", 149, "cyan").cell_len,
+    }
+    assert len(widths) == 1, f"the left column does not line up: {widths}"
+
+
+def test_an_indented_sub_row_is_exactly_as_wide_as_a_top_level_one():
+    """ANALYSIS indents the three outcomes that decompose `extracted`.
+
+    The indent comes out of the LABEL column rather than being prefixed to the
+    line, so the numbers go on stacking. Prefixed, every sub-row's value would
+    sit two cells right of its own total, which is the ragged edge this whole
+    file exists to prevent.
+    """
+    top = stat_row("extracted", 149, "cyan")
+    sub = stat_row("with facts", 8, "green", indent=2)
+    assert top.cell_len == sub.cell_len
+    assert sub.plain.startswith("  ")
+
+    # A pathological indent eats the label, never the alignment.
+    assert stat_row("x", 1, "cyan", indent=99).cell_len == top.cell_len
+
+
+def test_speed_reads_as_whole_tokens_per_second():
+    from sherlock_project.tui.theme import throughput_label
+
+    assert throughput_label(38.4) == "38 tok/s"
+    # Absent, not "0 tok/s" -- see `TuiReporter.throughput`.
+    assert throughput_label(None) == ""
+    assert throughput_label(0) == ""
+
+
+def _trace(
+    *,
+    output_tokens,
+    elapsed,
+    generation_seconds=None,
+    phase="pass_one",
+):
+    from sherlock_project.ai_engine import AIRequestTrace
+    from sherlock_project.ai_provider import AIGenerationStats
+
+    return AIRequestTrace(
+        phase=phase,
+        username="someone",
+        site_name="GitHub",
+        site_id=1,
+        attempt=1,
+        provider="llama.cpp",
+        model_key="qwen/qwen3-4b",
+        temperature=0.2,
+        context_length=32768,
+        max_tokens=1024,
+        elapsed_seconds=elapsed,
+        stats=AIGenerationStats(
+            output_tokens=output_tokens,
+            generation_seconds=generation_seconds,
+        ),
+        native_reasoning="",
+        final_text="{}",
+        structured_reasoning="",
+        validated_output={},
+        validation_error=None,
+    )
+
+
+def test_speed_is_measured_by_the_model_not_by_the_screen():
+    """Averaged over finished requests, from each request's own timings.
+
+    A live rate is not available and is not faked: requests are sent with
+    streaming off, so between dispatch and the complete reply there is nothing
+    to observe. What the server reports afterwards is a real measurement, and
+    the average of those is the only honest speed this screen can show.
+    """
+    reporter = TuiReporter()
+    assert reporter.throughput is None
+
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
+
+    # A server that reports no token usage leaves this absent rather than zero:
+    # `0 tok/s` beside a model that is visibly working reads as a fault.
+    silent = TuiReporter()
+    silent.ai_trace(_trace(output_tokens=None, elapsed=10.0))
+    assert silent.throughput is None
+
+
+def test_speed_excludes_the_time_the_model_spent_reading_the_prompt():
+    """The denominator is generation time, not the round trip.
+
+    Pass 1 sends a whole scraped page, so prompt processing is a large and
+    VARIABLE share of each request -- large enough that dividing by the round
+    trip reported a model generating at 60 tok/s as doing 30, and variable
+    enough that the error moved with page size rather than with the model. The
+    number beside `speed` has to be the one llama.cpp would print, or it cannot
+    be compared against a benchmark, a driver change, or another machine.
+    """
+    reporter = TuiReporter()
+    # 300 tokens in 5s of generation; the other 5s went on the prompt.
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
+
+    # Weighted by tokens, which is what summing each side separately gives: a
+    # 30-token reply does not get an equal say with a 300-token one.
+    reporter.ai_trace(
+        _trace(output_tokens=30, elapsed=8.0, generation_seconds=1.0)
+    )
+    assert reporter.throughput == pytest.approx(330 / 6.0)
+
+
+def test_a_failed_request_does_not_drag_the_speed_down():
+    """A request that never produced tokens took no generation time either.
+
+    A timeout or a dropped connection still emits a trace, with its full
+    round trip and empty stats. Counted, one 120s failure would halve the
+    displayed speed for the rest of a scan and keep it there -- a metric that
+    reports the scan's bad luck as the model's slowness.
+    """
+    reporter = TuiReporter()
+    reporter.ai_trace(
+        _trace(output_tokens=300, elapsed=10.0, generation_seconds=5.0)
+    )
+    reporter.ai_trace(
+        _trace(output_tokens=None, elapsed=120.0, generation_seconds=None)
+    )
+    assert reporter.throughput == pytest.approx(60.0)
+
+
+async def test_the_extraction_in_flight_is_a_stopwatch_not_a_snapshot():
+    """Which site, and for how long, recomputed on every read.
+
+    The site name is the parent's own -- the same field the CLI progress bar
+    captions itself with, so the two surfaces cannot name different sites. The
+    only thing added here is the start time, because a Rich task times itself
+    and the parent therefore keeps none.
+    """
+    import asyncio
+
+    reporter = TuiReporter()
+    assert reporter.extraction is None
+
+    reporter.ai_job_started("Reddit")
+    live = reporter.extraction
+    assert live is not None
+    assert live.site_name == "Reddit" == reporter._ai_current_site
+
+    await asyncio.sleep(0.05)
+    assert reporter.extraction.elapsed > live.elapsed
+
+    reporter.ai_job_finished("with_facts")
+    assert reporter.extraction is None
+
+
+def test_a_job_that_never_finishes_does_not_leave_a_spinner_turning():
+    """A model that dies mid-request leaves a job started and never finished.
+
+    A live indicator outliving the activity it describes is the one failure it
+    must not have, so the end of the pass clears it whatever happened to the
+    job -- as does an interrupted run.
+    """
+    ended = TuiReporter()
+    ended.ai_job_started("Reddit")
+    ended.ai_pass_finished()
+    assert ended.extraction is None
+
+    stopped = TuiReporter()
+    stopped.ai_job_started("Reddit")
+    stopped.processing_interrupted()
+    assert stopped.extraction is None
+
+
+def _model_settings() -> dict:
+    return {
+        "ai.model": "unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q4_K_M.gguf",
+        "ai.context_length": 32768,
+        "ai.temperature": 0.2,
+    }
+
+
+def _model_block(app) -> str:
+    from textual.widgets import Static
+
+    return app.query_one("#model-lines", Static).render().plain
+
+
+def _analysis_block(app) -> str:
+    from textual.widgets import Static
+
+    return app.query_one("#ai-counters", Static).render().plain
+
+
+def _synthesis_line(app) -> str:
+    from textual.widgets import Static
+
+    return app.query_one("#synthesis-line", Static).render().plain
+
+
+def _profile():
+    """The minimum `synthesis_finished` needs: a name and a resolution status.
+
+    Both are read on the way past -- the base reporter details its success line
+    with the status, and `TuiReporter.render_profile` names the username when it
+    points at the RESULTS tab.
+    """
+    from sherlock_project.profile_synthesis import ProfileSynthesis
+
+    return ProfileSynthesis.model_validate(
+        {
+            "username": "someone",
+            "input_hash": "hash",
+            "mode": "aggregate",
+            "resolution_status": "resolved",
+            "completeness": "partial",
+        }
+    )
+
+
+def _rows(block: str) -> dict[str, str]:
+    """A readout block as {label: value}, so tests assert facts not padding.
+
+    The column widths are deliberate and are covered by their own tests; a
+    behaviour test that hard-codes the spacing fails whenever the layout is
+    tuned, which teaches everyone to update assertions without reading them.
+    """
+    rows: dict[str, str] = {}
+    for line in block.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            rows[" ".join(parts[:-1])] = parts[-1]
+    return rows
+
+
+async def test_the_model_is_named_before_a_scan_rather_than_after():
+    """The point of stating the model is to be read BEFORE committing to a run.
+
+    Drawn from stored settings, so it answers the moment analysis is turned on
+    -- a block that only filled in once a scan started would arrive after the
+    decision it informs.
+    """
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+
+        # Hidden with analysis off, like the anchors block: a model this run
+        # will not load is not state worth a panel.
+        assert app.query_one("#model-block").display is False
+
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        assert app.query_one("#model-block").display is True
+
+        rendered = _model_block(app)
+        assert "Qwen3-30B-A3B-Q4_K_M" in rendered
+        assert "32768" in rendered
+        assert "0.2" in rendered
+        # The vendor and the repo are the half that was dropped.
+        assert "unsloth" not in rendered
+
+
+async def test_analysis_without_a_model_says_where_to_set_one():
+    """The empty state teaches, exactly like the empty anchors list. This is
+    precisely the moment someone needs telling: analysis is on and cannot run."""
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values["ai.model"] = None
+
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        assert "SETTINGS" in _model_block(app)
+
+
+async def test_the_live_rows_sit_with_the_analysis_they_describe():
+    """Which site, for how long -- the finest grain there is with streaming off.
+
+    IN THE ANALYSIS BLOCK, not the MODEL block. Speed and the site in flight are
+    progress of the extraction, not properties of the model: they exist only
+    while a run is going, and under MODEL they sat beside a name, a window and a
+    temperature that cannot change once it starts. MODEL is a nameplate now and
+    everything that moves is counted in one place.
+
+    And it stops when the scan does: `_flush` returns early once a finished scan
+    has nothing left to drain, which is exactly the tick that would otherwise
+    leave the last spinner frame on screen forever.
+    """
+    app = SherlockUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+        pane._use_ai = True
+
+        reporter = TuiReporter()
+        reporter.start("someone", total=1)
+        reporter.ai_pass_started()
+        reporter.ai_scheduled()
+        reporter.ai_job_started("Reddit")
+        reporter.ai_trace(
+            _trace(output_tokens=300, elapsed=10.0, generation_seconds=10.0)
+        )
+        pane._reporter = reporter
+        pane._scan_running = True
+
+        pane._flush()
+        await pilot.pause()
+        rendered = _analysis_block(app)
+        assert "Reddit" in rendered
+        assert "30 tok/s" in rendered
+        # The nameplate carries none of it.
+        assert "Reddit" not in _model_block(app)
+
+        reporter.ai_job_finished("with_facts")
+        reporter.ai_pass_finished()
+        pane._scan_running = False
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+        finished = _analysis_block(app)
+        assert "Reddit" not in finished
+        # The measurement of the run survives; only the live part goes.
+        assert "30 tok/s" in finished
+
+
+async def test_analysis_says_what_became_of_every_extraction():
+    """`extracted` decomposes into outcomes, and the outcomes are drawn.
+
+    The scan computes six figures and the panel used to draw three, so
+    `extracted 149 / with facts 8` left 141 sites unaccounted for -- covering
+    three unrelated situations, one of which is OUTRIGHT FAILURE. A model
+    quietly failing forty extractions looked exactly like a model succeeding on
+    forty empty pages.
+
+    That is the error the SITES block one column up refuses to make, and it is
+    the distinction the whole tool is built on.
+    """
+    app = SherlockUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+        pane._use_ai = True
+
+        reporter = TuiReporter()
+        reporter.start("someone", total=3)
+        reporter.ai_pass_started()
+        for _ in range(3):
+            reporter.ai_scheduled()
+        reporter.ai_job_finished("with_facts")
+        reporter.ai_job_finished("no_facts")
+        # How the pipeline records a failure: the log line, then the outcome.
+        reporter.ai_failed("Bandcamp", RuntimeError("out of tokens"))
+        reporter.ai_job_finished("pending")
+
+        pane._reporter = reporter
+        pane._scan_running = True
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+
+        rows = _rows(_analysis_block(app))
+        assert rows["extracted"] == "3"
+        assert rows["with facts"] == "1"
+        assert rows["no facts"] == "1"
+        # `pending` is the failure bucket. The panel calls it what it is.
+        assert rows["failed"] == "1"
+        assert rows["queued"] == "0"
+
+        # The breakdown is a real decomposition, not an assortment: every
+        # finished job lands in exactly one bucket, so they sum to the total.
+        assert (
+            int(rows["with facts"]) + int(rows["no facts"]) + int(rows["failed"])
+            == int(rows["extracted"])
+        )
+
+
+async def test_pass_two_gets_its_own_line_and_stops_the_waiting_row_lying():
+    """The bug this restructure exists for.
+
+    Synthesis is awaited inside the scan session, so while it runs the scan is
+    still going, no extraction is in flight, and the held row concluded the only
+    thing it could: `· waiting`. The panel reported idle through the single
+    heaviest model call of the run -- every stored extraction merged in one
+    request, and a model loaded cold for it on an anchored rebuild.
+    """
+    app = SherlockUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+        pane._use_ai = True
+
+        reporter = TuiReporter()
+        reporter.start("someone", total=1)
+        reporter.ai_pass_started()
+        reporter.ai_scheduled()
+        reporter.ai_job_finished("with_facts")
+        reporter.ai_pass_finished()
+        pane._reporter = reporter
+        pane._scan_running = True
+
+        # Between the passes the held row is still correct, and still drawn --
+        # it is only wrong once Pass 2 owns the screen.
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+        assert app.query_one("#synthesis-line").display is False
+        assert "waiting" in _analysis_block(app)
+
+        reporter.synthesis_started("someone")
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+        assert app.query_one("#synthesis-line").display is True
+        assert "building" in _synthesis_line(app)
+        assert "waiting" not in _analysis_block(app)
+
+        reporter.synthesis_finished("someone", _profile(), cache_hit=False)
+        pane._scan_running = False
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+        assert "ready" in _synthesis_line(app)
+
+
+async def test_pass_two_is_reported_even_when_this_run_extracted_nothing():
+    """A resumed username whose hits all have stored extractions.
+
+    Nothing is scheduled for Pass 1, so the tallies say "not running" -- and
+    Pass 2 still runs, over the evidence already on disk. Gated on `scheduled`
+    the synthesis row would have been invisible on exactly the runs where it is
+    the only thing happening.
+    """
+    app = SherlockUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+        pane._use_ai = True
+
+        reporter = TuiReporter()
+        reporter.start("someone", total=0)
+        reporter.synthesis_started("someone")
+        pane._reporter = reporter
+        pane._scan_running = True
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+
+        assert "not running" in _analysis_block(app)
+        assert app.query_one("#synthesis-line").display is True
+        assert "building" in _synthesis_line(app)
+
+
+async def test_a_stopped_scan_leaves_no_synthesis_spinner_turning():
+    """A cancelled worker never reports an outcome for Pass 2.
+
+    It did not fail and it did not land, so the line claims neither -- but a
+    spinner still turning beside a scan that has stopped is the one thing a live
+    indicator must never do.
+    """
+    app = SherlockUI()
+    async with app.run_test(size=(110, 40)) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(_model_settings())
+        pane._use_ai = True
+
+        reporter = TuiReporter()
+        reporter.start("someone", total=1)
+        reporter.synthesis_started("someone")
+        pane._reporter = reporter
+
+        pane._scan_running = False
+        pane._redraw_ai(reporter)
+        await pilot.pause()
+        assert "building" not in _synthesis_line(app)
+        assert "stopped" in _synthesis_line(app)
+
+
+def test_an_interrupted_synthesis_reports_no_outcome_at_all():
+    """Abandoned is neither `ready` nor `failed`, so the row goes entirely."""
+    reporter = TuiReporter()
+    reporter.synthesis_started("someone")
+    assert reporter.synthesis is not None
+
+    reporter.processing_interrupted()
+    assert reporter.synthesis is None
+
+
+def test_a_cached_profile_is_distinguished_from_a_rebuilt_one():
+    """The answer to "I changed the model and nothing happened".
+
+    A cache hit is a landed profile the model was never asked to build, which is
+    a different fact from one it just produced -- and it is the fact behind the
+    commonest confusion about this tool.
+    """
+    rebuilt = TuiReporter()
+    rebuilt.synthesis_started("someone")
+    rebuilt.synthesis_finished("someone", _profile(), cache_hit=False)
+    assert rebuilt.synthesis.state == "ready"
+
+    cached = TuiReporter()
+    cached.synthesis_started("someone")
+    cached.synthesis_finished("someone", _profile(), cache_hit=True)
+    assert cached.synthesis.state == "cached"
+
+
+def test_a_landed_synthesis_stops_counting():
+    """The bug the startup phases already paid for, not repeated here.
+
+    `TerminalReporter` keeps only a start time, so a duration recomputed on each
+    repaint makes a finished step climb forever -- `ready 1s`, `ready 2s`, and
+    eventually minutes for something that took under a second.
+    """
+    reporter = TuiReporter()
+    reporter.synthesis_started("someone")
+    reporter.synthesis_finished("someone", _profile(), cache_hit=False)
+
+    settled = reporter.synthesis.elapsed
+    assert reporter.synthesis.elapsed == settled
+
+
 # -- no command-line advice inside the app ----------------------------------
 
 
@@ -950,6 +1515,74 @@ def test_the_config_line_names_the_setting_that_changes_what_a_result_means():
     finding needs that visible where the finding was made."""
     assert "no browser" in describe_settings({"scan.webbrowser": False})
     assert "no browser" not in describe_settings({"scan.webbrowser": True})
+
+
+def test_each_toggle_tooltip_names_the_toggle_it_belongs_to():
+    """A floating box beside the pointer carries no other clue about which of
+    two adjacent controls it is describing."""
+    analysis, verbose = describe_options(
+        {"ai.model": "vendor/m"}, use_ai=False, verbose=False
+    )
+    assert analysis.startswith("AI analysis — OFF")
+    assert verbose.startswith("Verbose — OFF")
+
+
+def test_the_toggle_tooltips_give_the_consequence_not_just_the_state():
+    """The toggle already shows `off`. What it cannot show is what turning it
+    off costs -- the results tab builds its profile from what analysis stores,
+    so a scan run without it can never produce one."""
+    off, _ = describe_options({"ai.model": "vendor/m"}, use_ai=False, verbose=False)
+    assert "cannot build a profile" in off
+
+    on, _ = describe_options({"ai.model": "vendor/m"}, use_ai=True, verbose=False)
+    assert "reads every hit" in on
+
+
+def test_the_analysis_tooltip_says_so_when_no_model_is_configured():
+    """The one state the toggle cannot honour on its own -- and the reason is
+    two tabs away, so the text has to name where to go."""
+    warned, _ = describe_options({}, use_ai=True, verbose=False)
+    assert "no model is configured" in warned
+    assert "SETTINGS" in warned
+
+    # Nothing is asking for a model, so its absence is not worth raising here.
+    # The stored-settings line beside the toggles still reports it.
+    quiet, _ = describe_options({}, use_ai=False, verbose=False)
+    assert "no model" not in quiet
+    assert "no model configured" in describe_settings({})
+
+
+def test_a_toggle_tooltip_defers_a_toggle_flipped_during_a_scan():
+    """Both toggles are read once, when the scan starts, so flipping either
+    mid-run changes the NEXT scan and nothing about this one.
+
+    Left unsaid the toggle reads as a live control: analysis switched on at site
+    40 of 680 extracts nothing for the remaining 640, and the screen offers no
+    reason why.
+    """
+    analysis, verbose = describe_options(
+        {"ai.model": "vendor/m"},
+        use_ai=True,
+        verbose=False,
+        running=(False, False),
+    )
+
+    assert "from the NEXT scan" in analysis
+    assert "started without it" in analysis
+    # Verbose is what the run is actually using, so it is described rather than
+    # deferred. Deferring both would say the wrong thing about one of them.
+    assert "NEXT scan" not in verbose
+
+
+def test_the_toggle_tooltips_defer_nothing_when_they_match_the_run():
+    """A scan started WITH analysis is already applying it -- telling that
+    operator it takes effect next time is simply false."""
+    analysis, verbose = describe_options(
+        {"ai.model": "vendor/m"}, use_ai=True, verbose=True, running=(True, True)
+    )
+    assert "NEXT scan" not in analysis
+    assert "NEXT scan" not in verbose
+    assert "reads every hit" in analysis
 
 
 def test_the_runner_reuses_the_cli_scan_lifecycle():
@@ -1486,6 +2119,86 @@ async def test_the_toggles_show_their_own_state():
         assert "off" in str(ai.label)
         await pilot.click("#toggle-ai")
         assert "on" in str(app.query_one("#toggle-ai", Button).label)
+
+
+async def test_the_toggles_carry_hover_text_that_follows_their_state():
+    """Hung on every redraw, not once at mount.
+
+    The text is a function of state, and a tooltip describing the state the app
+    booted in is worse than none -- nothing about a stale one looks stale.
+    """
+    from textual.widgets import Button
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        ai = app.query_one("#toggle-ai", Button)
+        verbose = app.query_one("#toggle-verbose", Button)
+        assert "AI analysis — OFF" in ai.tooltip
+        assert "Verbose — OFF" in verbose.tooltip
+
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        assert "AI analysis — ON" in app.query_one("#toggle-ai", Button).tooltip
+
+        await pilot.click("#toggle-verbose")
+        await pilot.pause()
+        assert "Verbose — ON" in app.query_one("#toggle-verbose", Button).tooltip
+
+
+async def test_nothing_is_drawn_under_the_options_row():
+    """The reason this is a tooltip and not a pair of lines.
+
+    Two permanent sentences explaining controls that do not change during a scan
+    cost three rows the counters and the feed want back, every run, forever
+    after the one time they are read.
+    """
+    from textual.widgets import Static
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.query("#options-help")
+        # The stored-settings summary still rides in the row itself.
+        assert "browser" in app.query_one("#scan-config", Static).render().plain
+
+
+async def test_hovering_a_toggle_actually_shows_the_tooltip():
+    """The attribute is not the feature -- the popup is.
+
+    `run_test` disables tooltips unless asked, so this is the one test that
+    proves the wiring rather than the text: hover the control, let
+    TOOLTIP_DELAY elapse, and find the box on screen carrying its words.
+    """
+    app = SherlockUI()
+    async with app.run_test(tooltips=True) as pilot:
+        from textual.widgets import Tooltip
+
+        tooltip = app.screen.get_child_by_type(Tooltip)
+        assert tooltip.display is False
+
+        await pilot.hover("#toggle-ai")
+        await pilot.pause(app.TOOLTIP_DELAY + 0.1)
+        await pilot.pause()
+
+        assert tooltip.display is True
+        assert "AI analysis" in tooltip.render().plain
+
+
+async def test_the_profile_button_carries_the_hover_text_too():
+    """What the button IS, beside a line saying what pressing it does NOW.
+
+    The split is what keeps the two from being one answer written twice: the
+    mechanism never changes, the state changes on every redraw.
+    """
+    from textual.widgets import Button
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.press("alt+2")
+        await pilot.pause()
+        anchors = app.query_one("#profile-anchors", Button)
+        assert "Anchors" in anchors.tooltip
+        assert "merging every name every site showed" in anchors.tooltip
 
 
 async def test_re_scan_defeats_the_resume_filter(monkeypatch, tmp_path):
@@ -2359,7 +3072,13 @@ def test_the_progress_bar_is_exactly_as_wide_as_it_is_told():
 
 async def test_saving_settings_updates_what_the_scan_pane_claims_it_will_do():
     """A concurrency change that only took effect after a restart would be a
-    silent lie about what the next scan does."""
+    silent lie about what the next scan does.
+
+    Calls `refresh_settings` directly, so it covers the REDRAW and nothing else.
+    What actually reaches that method is a separate question and has its own
+    test below -- this one passed throughout the whole time the wiring was
+    broken, which is exactly the shape of test that lets a bug ship.
+    """
     app = SherlockUI()
     async with app.run_test() as pilot:
         from textual.widgets import Static
@@ -2374,6 +3093,83 @@ async def test_saving_settings_updates_what_the_scan_pane_claims_it_will_do():
         after = app.query_one("#scan-config", Static).render().plain
         assert "no browser" in after
         assert after != before
+
+
+def _save_settings_to_disk(**overrides):
+    """Write settings exactly the way ^S on the settings pane writes them."""
+    from sherlock_project.ai_config import save_settings, try_load_settings
+    from sherlock_project.settings import apply_values, field_values
+
+    stored = try_load_settings()
+    values = field_values(stored)
+    values.update(overrides)
+    save_settings(apply_values(stored, values))
+
+
+async def test_settings_reach_the_scan_tab_by_every_route_not_just_escape():
+    """Reported as "I change the model and MODEL does not refresh".
+
+    Settings reach DISK on ^S; the scan pane was told on `SettingsPane.Closed`,
+    which only Escape posts. Two different keystrokes, nothing joining them --
+    so saving a model and then leaving with alt+1 or a click on the SCAN tab
+    left the pane drawing whatever it was built with.
+
+    NOT a display bug, though that is how it surfaces. The same dict is what
+    `run_scan_session` reads its transport, concurrency and timeout from, and
+    what `ai_is_configured` is asked about -- so a model chosen, saved, and left
+    behind with alt+1 gave a scan that warned "no model is configured" and ran
+    with analysis off while the model sat on disk. Hence the second assertion:
+    the line describing how the scan will RUN has to move too.
+    """
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        from textual.widgets import Static
+
+        pane = app.query_one(ScanPane)
+        pane._use_ai = True
+        pane._redraw_options()
+        await pilot.pause()
+        assert "Qwen3-4B-Q4_K_M" not in _model_block(app)
+
+        # On the settings tab, saving as ^S does -- and then leaving by the
+        # route that is NOT escape.
+        await pilot.press("alt+3")
+        _save_settings_to_disk(
+            **{
+                "ai.base_url": "http://localhost:8080",
+                "ai.model": "unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+                "scan.webbrowser": False,
+            }
+        )
+        await pilot.press("alt+1")
+        await pilot.pause()
+
+        assert "Qwen3-4B-Q4_K_M" in _model_block(app)
+        # The half that changes what a result MEANS, not just what it says.
+        assert "no browser" in app.query_one("#scan-config", Static).render().plain
+        assert app._settings_values["ai.model"].endswith("Qwen3-4B-Q4_K_M.gguf")
+
+
+async def test_unsaved_settings_edits_do_not_reach_the_scan_pane():
+    """The reload reads DISK, not the settings pane's working copy.
+
+    An edit that has not been saved is not a setting yet, and the scan pane's
+    one job here is describing what the next run will actually do. Showing a
+    typed-but-unsaved model would promise analysis that `run_scan_session` --
+    which re-reads the stored config itself -- would not deliver.
+    """
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._use_ai = True
+
+        await pilot.press("alt+3")
+        settings = app.query_one(SettingsPane)
+        settings._values["ai.model"] = "typed/but-never-saved.gguf"
+
+        await pilot.press("alt+1")
+        await pilot.pause()
+        assert "but-never-saved" not in _model_block(app)
 
 
 async def test_the_results_tab_reloads_when_you_switch_to_it():
@@ -2442,6 +3238,384 @@ async def _seed(**rows) -> None:
                 )
     finally:
         await db.close()
+
+
+async def _seed_extraction(username, site, **kwargs) -> None:
+    """Attach a stored Pass 1 extraction to an already-seeded site."""
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        rows = await db.get_site_extractions(username)
+        site_id = next(row.site_id for row in rows if row.site_name == site)
+        await db.update_result_ai_extraction(site_id=site_id, **kwargs)
+    finally:
+        await db.close()
+
+
+def _accounts_rows(app) -> dict[str, list[str]]:
+    """The SITES table as {site name: cells}.
+
+    Keyed off the site cell rather than the first one -- column 0 is the status
+    glyph, which no longer distinguishes rows now that one table carries both
+    the hits and the unresolved.
+    """
+    from textual.widgets import DataTable
+
+    from sherlock_project.tui.results_pane import SEC_SITES
+
+    table = app.query_one(f"#{SEC_SITES}", DataTable)
+    rows: dict[str, list[str]] = {}
+    for index in range(table.row_count):
+        cells = [str(cell) for cell in table.get_row_at(index)]
+        rows[cells[1]] = cells
+    return rows
+
+
+async def test_the_accounts_list_says_what_pass_one_made_of_each_site():
+    """The judgement that makes someone change model, without opening anything.
+
+    THREE STATES, and the middle one is the point. A blank means nobody has
+    asked the model about that page; `0` means it was asked and the page held
+    nothing. Collapsing them would turn "not analysed" into "nothing there",
+    which is the absence-of-evidence error the SITES counters refuse to make.
+    """
+    await _seed(
+        marcus=[
+            ("GitHub", QueryStatus.CLAIMED),
+            ("Bandcamp", QueryStatus.CLAIMED),
+            ("Zulip", QueryStatus.CLAIMED),
+        ]
+    )
+    await _seed_extraction(
+        "marcus",
+        "GitHub",
+        ai_extraction='{"full_name": ["Marcus Vale"], "emails": ["a@b.c"]}',
+        contract_hash="hash",
+        model_key="qwen/qwen3-4b",
+        reasoning="include Marcus Vale as full_name",
+    )
+    await _seed_extraction(
+        "marcus",
+        "Bandcamp",
+        ai_extraction="{}",
+        contract_hash="hash",
+        model_key="qwen/qwen3-4b",
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.press("alt+2")
+        await pilot.pause()
+        rows = _accounts_rows(app)
+
+        # Two values under two keys is two facts, not two keys.
+        assert rows["GitHub"][2] == "2"
+        # Asked, found nothing. A result.
+        assert rows["Bandcamp"][2] == "0"
+        # Never asked. Not the same claim.
+        assert rows["Zulip"][2] == "—"
+
+
+def _extraction_list(app) -> list[list[str]]:
+    from textual.widgets import DataTable
+
+    table = app.query_one("#extraction-list", DataTable)
+    return [
+        [str(cell) for cell in table.get_row_at(index)]
+        for index in range(table.row_count)
+    ]
+
+
+def _extraction_panel(app) -> tuple[str, str]:
+    from textual.widgets import Static
+
+    return (
+        app.query_one("#extraction-detail", Static).render().plain,
+        app.query_one("#extraction-summary", Static).render().plain,
+    )
+
+
+async def _open_extractions(pilot):
+    """Reach the EXTRACTIONS section by the real binding."""
+    from textual.widgets import ContentSwitcher
+
+    from sherlock_project.tui.results_pane import SEC_EXTRACTIONS, SECTION_FOR_TAB
+
+    await pilot.press("alt+2")
+    for _ in range(12):
+        await pilot.pause()
+    for _ in range(len(SECTION_FOR_TAB)):
+        switcher = pilot.app.query_one("#detail-switch", ContentSwitcher)
+        if switcher.current == SEC_EXTRACTIONS:
+            break
+        await pilot.press("alt+right")
+        for _ in range(3):
+            await pilot.pause()
+    for _ in range(6):
+        await pilot.pause()
+
+
+async def test_the_extraction_panel_ranks_by_yield_not_alphabetically():
+    """Both ends of this list are the interesting ones.
+
+    The best extractions are what a prompt edit is judged on; the empty tail is
+    what "should I change model" is judged on. Alphabetical order buries both in
+    the middle of 149 rows, which is the whole reason this list is not just
+    ACCOUNTS again.
+    """
+    await _seed(
+        marcus=[
+            ("Alpha", QueryStatus.CLAIMED),
+            ("Beta", QueryStatus.CLAIMED),
+            ("Gamma", QueryStatus.CLAIMED),
+            ("Delta", QueryStatus.CLAIMED),
+        ]
+    )
+    # Alphabetically first, and deliberately the least productive.
+    await _seed_extraction(
+        "marcus", "Alpha", ai_extraction="{}",
+        contract_hash="hash", model_key="qwen/qwen3-4b",
+    )
+    await _seed_extraction(
+        "marcus", "Beta", ai_extraction='{"full_name": ["Marcus"]}',
+        contract_hash="hash", model_key="qwen/qwen3-4b",
+    )
+    await _seed_extraction(
+        "marcus",
+        "Gamma",
+        ai_extraction='{"emails": ["a@b.c", "d@e.f"], "location": ["Lisbon"]}',
+        contract_hash="hash",
+        model_key="qwen/qwen3-4b",
+    )
+    # Delta is never analysed at all.
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await _open_extractions(pilot)
+
+        assert [row[1] for row in _extraction_list(app)] == [
+            "Gamma",   # 3 facts
+            "Beta",    # 1 fact
+            "Alpha",   # asked, 0 facts
+            "Delta",   # never asked -- last, below the real zero
+        ]
+        # And the distribution, which is the judgement about the MODEL rather
+        # than about any one page.
+        _, summary = _extraction_panel(app)
+        assert "1 with facts" not in summary
+        assert "2 with facts" in summary
+        assert "1 empty" in summary
+        assert "1 never analysed" in summary
+
+
+async def test_the_panel_detail_follows_the_cursor():
+    """The reason this replaced a dialog: reviewing extractions is a sweep.
+
+    Arrowing down the list changes the reading beside it. Requiring Enter on each
+    site would make the panel a dialog with extra steps, and 149 sites would be
+    149 open-and-close cycles.
+    """
+    await _seed(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Mastodon", QueryStatus.CLAIMED)]
+    )
+    await _seed_extraction(
+        "marcus",
+        "GitHub",
+        ai_extraction='{"full_name": ["Marcus Vale"]}',
+        contract_hash="hash",
+        model_key="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+        reasoning="include Marcus Vale as full_name; skip: nav link",
+    )
+    await _seed_extraction(
+        "marcus",
+        "Mastodon",
+        ai_extraction='{"location": ["Lisbon"]}',
+        contract_hash="hash",
+        model_key="unsloth/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf",
+        reasoning="include Lisbon as location",
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await _open_extractions(pilot)
+
+        # Opens on the first row rather than blank: a panel that asks the reader
+        # to act before it says anything has wasted the switch.
+        detail, _ = _extraction_panel(app)
+        assert "Marcus Vale" in detail
+        assert "full name" in detail
+        # The developer's half -- what moves when the prompt changes.
+        assert "skip: nav link" in detail
+        # Provenance, with the vendor and repo trimmed off the model key.
+        assert "Qwen3-4B-Q4_K_M" in detail
+        assert "unsloth" not in detail
+
+        # No Enter. Just the cursor.
+        await pilot.press("down")
+        for _ in range(4):
+            await pilot.pause()
+        detail, _ = _extraction_panel(app)
+        assert "Lisbon" in detail
+        assert "Marcus Vale" not in detail
+
+
+async def test_a_username_scanned_without_analysis_says_so_once():
+    """Rather than 149 rows each reporting "not analysed" individually."""
+    await _seed(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Mastodon", QueryStatus.CLAIMED)]
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await _open_extractions(pilot)
+        detail, _ = _extraction_panel(app)
+        assert "None of these sites has been analysed" in detail
+        assert "Scan this username again with analysis on" in detail
+
+
+async def test_the_extractions_tab_counts_yield_not_rows():
+    """`EXTRACTIONS 8` beside `ACCOUNTS 149` is the quality signal.
+
+    The row count is the account count, which the tab next to it already
+    carries. Repeating it would spend the label on a number already on screen.
+    """
+    from textual.widgets import Tab
+
+    await _seed(
+        marcus=[("GitHub", QueryStatus.CLAIMED), ("Mastodon", QueryStatus.CLAIMED)]
+    )
+    await _seed_extraction(
+        "marcus", "GitHub", ai_extraction='{"full_name": ["Marcus"]}',
+        contract_hash="hash", model_key="qwen/qwen3-4b",
+    )
+    await _seed_extraction(
+        "marcus", "Mastodon", ai_extraction="{}",
+        contract_hash="hash", model_key="qwen/qwen3-4b",
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.press("alt+2")
+        for _ in range(12):
+            await pilot.pause()
+        label = str(app.query_one("#tab-extractions", Tab).label)
+        assert label == "EXTRACTIONS 1"
+
+
+async def test_the_viewer_separates_never_analysed_from_found_nothing():
+    """Two empty states that mean different things, said differently.
+
+    A page nobody asked the model about is a gap in the analysis. A page the
+    model read and found nothing on is a result -- and most pages are that, so
+    saying so plainly is what stops it reading as a failure.
+    """
+    from sherlock_project.database import SiteExtractionRecord
+    from sherlock_project.tui.extraction_view import (
+        extraction_facts,
+        extraction_reasoning,
+    )
+
+    def rendered(record):
+        return (
+            f"{extraction_facts(record).plain}\n"
+            f"{extraction_reasoning(record).plain}"
+        )
+
+    never = SiteExtractionRecord(
+        site_id=1,
+        site_name="Zulip",
+        site_url=None,
+        scanned_at=None,
+        ai_extraction=None,
+        ai_extraction_contract_hash=None,
+        ai_extraction_model=None,
+        ai_extraction_reasoning=None,
+    )
+    assert "has not been analysed" in rendered(never)
+
+    asked = SiteExtractionRecord(
+        site_id=2,
+        site_name="Bandcamp",
+        site_url=None,
+        scanned_at=None,
+        ai_extraction="{}",
+        ai_extraction_contract_hash="hash",
+        ai_extraction_model="qwen/qwen3-4b",
+        ai_extraction_reasoning=None,
+    )
+    text = rendered(asked)
+    assert "found nothing about the owner" in text
+    # And it says WHY there is no reasoning rather than leaving a blank panel:
+    # a native-reasoning model is never sent the field at all.
+    assert "reasons natively" in text
+
+
+async def test_the_viewer_compares_the_contract_rather_than_printing_it():
+    """64 hex characters answer nothing. "Will a re-scan redo this" does."""
+    from sherlock_project.database import SiteExtractionRecord
+    from sherlock_project.tui.extraction_view import extraction_provenance
+
+    def record(stored_hash):
+        return SiteExtractionRecord(
+            site_id=1,
+            site_name="GitHub",
+            site_url=None,
+            scanned_at=None,
+            ai_extraction='{"full_name": ["Blue"]}',
+            ai_extraction_contract_hash=stored_hash,
+            ai_extraction_model="qwen/qwen3-4b",
+            ai_extraction_reasoning="include Blue as full_name",
+        )
+
+    fresh = extraction_provenance(record("abc"), "abc").plain
+    assert "current" in fresh
+    assert "abc" not in fresh
+
+    stale = extraction_provenance(record("old"), "abc").plain
+    assert "superseded" in stale
+
+    # No current hash available means the line is omitted, never guessed at:
+    # there is no honest fallback for "is this extraction current".
+    unknown = extraction_provenance(record("old")).plain
+    assert "superseded" not in unknown
+    assert "current" not in unknown
+
+
+async def test_switching_username_does_not_carry_extractions_across():
+    """Rows are keyed by site name, and two usernames routinely share sites.
+
+    Left behind, `x` on one username's GitHub row would open another's
+    extraction -- which is exactly the kind of cross-contamination an evidence
+    tool cannot have.
+    """
+    await _seed(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+        avery=[("GitHub", QueryStatus.CLAIMED)],
+    )
+    await _seed_extraction(
+        "marcus",
+        "GitHub",
+        ai_extraction='{"full_name": ["Marcus Vale"]}',
+        contract_hash="hash",
+        model_key="qwen/qwen3-4b",
+        reasoning="include Marcus Vale as full_name",
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.press("alt+2")
+        await pilot.pause()
+        pane = app.query_one(ResultsPane)
+
+        pane.select_username("marcus")
+        await pilot.pause()
+        assert pane._extractions["GitHub"].fact_count == 1
+
+        pane.select_username("avery")
+        await pilot.pause()
+        # avery's GitHub was never analysed, and must not inherit marcus's.
+        assert pane._extractions["GitHub"].analysed is False
 
 
 async def test_a_section_tab_and_its_pane_have_different_ids():
@@ -2526,31 +3700,61 @@ async def test_focus_does_not_restyle_the_section_tabs():
     )
 
 
-async def test_the_detail_pane_has_exactly_one_scroll_region():
-    """Two scrollbars side by side is what made this pane look unfinished.
+async def test_no_scroll_region_is_nested_inside_another():
+    """The real lesson from the double-scrollbar defect, in every section.
 
-    A `DataTable` is itself a scrolling viewport, so nesting one inside a
-    scrolling column produced two vertical bars and, once URLs got long, a
-    horizontal one as well. Sections are switched now, so only one scrolls.
+    THE INVARIANT IS NESTING, not counting, and the earlier version of this test
+    asserted the wrong one -- "at most one scroller in the detail pane". That was
+    true of the layout at the time and it was never the property that mattered:
+    the actual bug was a `DataTable`, which is itself a scrolling viewport, put
+    INSIDE a scrolling column, so two vertical bars appeared in one column with
+    one wrapping the other.
+
+    Two scrollers side by side in separate grid cells are fine and always were --
+    the username list and this detail pane have done exactly that from the start,
+    and the EXTRACTIONS section now does it one level down. Counting would have
+    forbidden a master-detail layout for no reason; nesting is what looks broken.
+
+    Checked with EVERY section activated, because the old test only ever saw the
+    default one and so said nothing about the other three.
     """
+    from textual.widgets import ContentSwitcher, Tabs
+
+    from sherlock_project.tui.results_pane import SECTION_FOR_TAB
+
     await _seed(marcus=[(f"Site{i:02d}", QueryStatus.CLAIMED) for i in range(40)])
 
     app = SherlockUI()
     async with app.run_test(size=(100, 26)) as pilot:
         await _open_results(app, pilot)
 
-        detail = app.query_one("#result-detail")
-        scrolling = [
-            widget
-            for widget in detail.query("*")
-            if widget.show_vertical_scrollbar or widget.show_horizontal_scrollbar
-        ]
-        assert len(scrolling) <= 1, (
-            f"detail pane has {len(scrolling)} scroll regions: "
-            f"{[type(w).__name__ + '#' + str(w.id) for w in scrolling]}"
-        )
-        # And never a horizontal one -- long URLs ellipsize instead.
-        assert not any(w.show_horizontal_scrollbar for w in scrolling)
+        def scrollers(root):
+            return [
+                widget
+                for widget in root.query("*")
+                if widget.show_vertical_scrollbar or widget.show_horizontal_scrollbar
+            ]
+
+        for tab_id in SECTION_FOR_TAB:
+            app.query_one("#detail-tabs", Tabs).active = tab_id
+            for _ in range(6):
+                await pilot.pause()
+            switcher = app.query_one("#detail-switch", ContentSwitcher)
+            assert switcher.current == SECTION_FOR_TAB[tab_id]
+
+            found = scrollers(app.query_one("#result-detail"))
+            for widget in found:
+                # Nothing that scrolls may contain anything else that scrolls.
+                inner = [other for other in scrollers(widget) if other is not widget]
+                assert not inner, (
+                    f"{type(widget).__name__}#{widget.id} in section {tab_id} "
+                    f"wraps {[type(w).__name__ + '#' + str(w.id) for w in inner]}"
+                )
+            # And never a horizontal one -- cells ellipsize, prose wraps.
+            assert not any(w.show_horizontal_scrollbar for w in found), (
+                f"section {tab_id} scrolls horizontally: "
+                f"{[str(w.id) for w in found if w.show_horizontal_scrollbar]}"
+            )
 
 
 async def test_the_counts_survive_the_merge_into_one_table():
@@ -2924,14 +4128,22 @@ async def _open_profile_section(app, pilot) -> None:
     executor, so all twelve iterations can pass in microseconds with nothing
     mounted.
     """
-    from sherlock_project.tui.results_pane import SEC_PROFILE
+    from sherlock_project.tui.results_pane import SEC_PROFILE, SECTION_FOR_TAB
 
     await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
     await pilot.press("alt+2")
     await _settle(app, pilot, lambda: bool(app.query("#profile-actions")))
-    # One press, not two: ACCOUNTS and UNRESOLVED are one SITES section now, so
-    # a second would wrap past PROFILE and back to it.
-    await pilot.press("alt+right")
+    # Pressed until it ARRIVES, never a counted number of times. The count is
+    # the section count, and that has changed twice already: ACCOUNTS and
+    # UNRESOLVED became one SITES section, then EXTRACTIONS went in between
+    # SITES and PROFILE. Each time, a counted walk landed a section short and
+    # the tests then asserted against widgets belonging to a section that was
+    # not showing -- failing somewhere unrelated to what they were testing.
+    for _ in range(len(SECTION_FOR_TAB)):
+        if app.query_one("#detail-switch").current == SEC_PROFILE:
+            break
+        await pilot.press("alt+right")
+        await _settle(app, pilot)
     await _settle(
         app,
         pilot,
@@ -3689,3 +4901,101 @@ async def test_unknown_arguments_are_reported_rather_than_ignored(capsys):
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui(["--fresh"], console=console) == 2
     assert "takes no arguments" in capsys.readouterr().out
+
+
+async def test_rescan_drops_rows_the_site_list_no_longer_covers(monkeypatch):
+    """"Re-scan all" is what finally removes a retired site's stored row.
+
+    A username scanned under two different site lists holds the union of both,
+    duplicates included, and nothing was ever removing the half that no longer
+    exists. A re-scan rewrites every site the list still has, so the leftovers
+    are exactly the rows it would otherwise leave behind.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        for site_name in ("GitHub", "threads", "Ask.fm"):
+            await db.save_result(
+                username="someone",
+                site_name=site_name,
+                status=str(QueryStatus.CLAIMED),
+                response_text="profile",
+            )
+    finally:
+        await db.close()
+
+    async def scan_spy(**kwargs):
+        return {}
+
+    await _run_with_fakes(
+        monkeypatch,
+        {"scan.webbrowser": False},
+        scan_spy=scan_spy,
+        sites=("GitHub",),
+        fresh=True,
+    )
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        assert sorted(await db.get_saved_results("someone")) == ["GitHub"]
+    finally:
+        await db.close()
+
+
+async def test_a_resumed_scan_removes_nothing(monkeypatch):
+    """Only a re-scan prunes.
+
+    A resume was not asked to be destructive, and its stored rows are the
+    report -- dropping them mid-run would delete evidence the same run is about
+    to present as restored results.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        for site_name in ("GitHub", "threads"):
+            await db.save_result(
+                username="someone",
+                site_name=site_name,
+                status=str(QueryStatus.CLAIMED),
+                response_text="profile",
+                transport="browser",
+            )
+    finally:
+        await db.close()
+
+    async def scan_spy(**kwargs):
+        return {}
+
+    await _run_with_fakes(
+        monkeypatch,
+        {"scan.webbrowser": True},
+        scan_spy=scan_spy,
+        sites=("GitHub",),
+        fresh=False,
+    )
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        assert sorted(await db.get_saved_results("someone")) == ["GitHub", "threads"]
+    finally:
+        await db.close()
+
+
+async def test_the_prune_set_is_the_manifest_before_the_nsfw_filter():
+    """Pruning against what a run CHECKS would retire an earlier --nsfw run.
+
+    `site_data_all` is the scan set and shrinks with the NSFW setting;
+    `known_site_names` is what the site list still covers and does not. Reading
+    the first would make an ordinary safe-for-work re-scan silently delete
+    results the user deliberately went and collected.
+    """
+    from sherlock_project.tui.runner import build_scan_plan
+
+    plan = await build_scan_plan(
+        username="nobody", settings_values={"scan.nsfw": False}
+    )
+
+    assert plan.known_site_names > set(plan.site_data_all)
+    assert len(plan.known_site_names) - len(plan.site_data_all) > 0

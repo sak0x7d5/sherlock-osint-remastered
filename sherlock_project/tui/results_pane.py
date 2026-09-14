@@ -108,13 +108,20 @@ from textual.widgets.data_table import CellDoesNotExist
 # `Tabs` reports the activated tab by id, so the mapping below is what connects
 # them -- one table, rather than a string transformation at each call site.
 SEC_SITES = "sec-sites"
+SEC_EXTRACTIONS = "sec-extractions"
 SEC_PROFILE = "sec-profile"
 
 TAB_SITES = "tab-sites"
+TAB_EXTRACTIONS = "tab-extractions"
 TAB_PROFILE = "tab-profile"
 
+# Section order is the order of a review: what the scan found, what the model
+# made of it, and the profile that merges that. So EXTRACTIONS sits between the
+# raw results and the synthesis it feeds, which is also where it falls in the
+# pipeline.
 SECTION_FOR_TAB = {
     TAB_SITES: SEC_SITES,
+    TAB_EXTRACTIONS: SEC_EXTRACTIONS,
     TAB_PROFILE: SEC_PROFILE,
 }
 
@@ -126,6 +133,7 @@ NO_EVIDENCE = "-no-evidence"
 
 from sherlock_project.database import (
     SherlockDB,
+    SiteExtractionRecord,
     StoredUsernameListing,
     default_database_path,
 )
@@ -133,6 +141,13 @@ from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryStatus
 from sherlock_project.tui.anchor_screen import AnchorScreen
 from sherlock_project.tui.confirm_screen import ConfirmScreen
+from sherlock_project.tui.extraction_view import (
+    current_contract_hash,
+    extraction_detail,
+    extraction_summary,
+    facts_cell,
+    sort_extractions,
+)
 from sherlock_project.tui.reporter import TuiReporter
 from sherlock_project.tui.theme import (
     REDRAW_INTERVAL,
@@ -422,6 +437,21 @@ class ResultsPane(Vertical):
         # are behind it, which is the part that keeps silence from reading as
         # absence.
         self._found_only = True
+        # Site name -> its stored extraction, for the whole selected username.
+        # Loaded once per username with the rest of the detail rather than
+        # per-row on demand: the facts column needs every row's count to draw at
+        # all, so a query per row would be one round trip per account.
+        self._extractions: dict[str, SiteExtractionRecord] = {}
+        # The same records in the order the panel lists them, so a row index maps
+        # straight to a record. Kept beside the dict rather than re-sorting on
+        # every cursor move -- the cursor moves on every arrow key, and sorting
+        # 149 records per keypress to answer "which one is row 4" is work for an
+        # answer that has not changed.
+        self._extraction_order: list[SiteExtractionRecord] = []
+        # Whether ANY site for this username has been analysed. Gates the detail
+        # so a per-site "not analysed" panel cannot replace the whole-username
+        # explanation -- see `_fill_extractions`.
+        self._any_analysed = False
         # Live state for a rebuild in progress.
         self._build_reporter: TuiReporter | None = None
         self._build_started = 0.0
@@ -444,6 +474,7 @@ class ResultsPane(Vertical):
                     yield Static(id="detail-keys")
                 yield Tabs(
                     Tab("SITES", id=TAB_SITES),
+                    Tab("EXTRACTIONS", id=TAB_EXTRACTIONS),
                     Tab("PROFILE", id=TAB_PROFILE),
                     id="detail-tabs",
                 )
@@ -458,6 +489,30 @@ class ResultsPane(Vertical):
                 # scrollbar.
                 with ContentSwitcher(initial=SEC_SITES, id="detail-switch"):
                     yield DataTable(id=SEC_SITES, cursor_type="row")
+                    # The one section that is itself master-detail, because
+                    # reviewing extractions is a sweep: the cursor moves down
+                    # the list and the reading beside it changes, rather than
+                    # every site costing an open and a close.
+                    #
+                    # Two scroll regions live here, side by side, and that does
+                    # NOT reintroduce the double-scrollbar defect. That was a
+                    # `DataTable` nested INSIDE a scrolling column -- two bars in
+                    # one column, one wrapping the other. These are independent
+                    # regions in separate grid cells, exactly like the username
+                    # list and this detail pane one level up.
+                    with Grid(id=SEC_EXTRACTIONS):
+                        with Vertical(id="extraction-list-col"):
+                            yield DataTable(
+                                id="extraction-list",
+                                cursor_type="row",
+                            )
+                            # The distribution, under the list it describes. Any
+                            # one extraction judges a page; these three numbers
+                            # judge the model, which is the question that makes
+                            # someone change it.
+                            yield Static(id="extraction-summary")
+                        with VerticalScroll(id="extraction-detail-col"):
+                            yield Static(id="extraction-detail")
                     with VerticalScroll(id=SEC_PROFILE):
                         yield Static(id="detail-profile")
                         # Shown only when there is no profile to display. The
@@ -509,6 +564,12 @@ class ResultsPane(Vertical):
         sites = self.query_one(f"#{SEC_SITES}", DataTable)
         sites.add_column("", key="mark", width=2)
         sites.add_column("site", key="site", width=18)
+        # What Pass 1 made of this site, before anyone opens anything. This is
+        # the column that answers "is this model worth keeping": seeing that 8
+        # of 149 sites yielded facts, and WHICH 8, is the judgement the ANALYSIS
+        # counters can only report in aggregate. Narrow and before the URL, so
+        # the URL keeps taking everything left over.
+        sites.add_column("facts", key="facts", width=9)
         # One column for two kinds of answer: the URL where a hit was found,
         # the reason nothing was decided otherwise. Neither "url" nor "why" is
         # true of the other half, so the header names what the column IS rather
@@ -522,6 +583,30 @@ class ResultsPane(Vertical):
         keys.update(status_key(KEY_STATUSES, columns=2))
         self._redraw_found_only()
         self._fit_keys()
+
+        # Facts BEFORE site, which is the reverse of every other table here and
+        # is deliberate: this list is sorted by that number, so the column the
+        # order is built on is the one the eye should land on first. In the
+        # account list the site is what you are looking up and the count is an
+        # annotation; here the count is the subject.
+        extractions = self.query_one("#extraction-list", DataTable)
+        extractions.add_column("facts", key="facts", width=5)
+        # 15, and the stylesheet's 28-cell column is measured against these two
+        # plus DataTable's own per-cell padding. Widening either without widening
+        # the column there gives this table a horizontal scrollbar.
+        extractions.add_column("site", key="site", width=15)
+
+        # Static, so it is hung once here rather than on every redraw: unlike
+        # the Build button's, this text does not depend on what the selected
+        # username has. Anchors are the least self-explanatory control in the
+        # app -- the word names the mechanism, not the thing you would type.
+        self.query_one("#profile-anchors", Button).tooltip = (
+            "Anchors\n\n"
+            "Facts you already know about the target — a real name, a city, an "
+            "employer. Pass 2 resolves the profile against them instead of "
+            "merging every name every site showed, which is the difference "
+            "between one person's profile and everyone who shares the username."
+        )
 
         self._set_building(False)
         # One timer for the pane; it costs an attribute check per tick when
@@ -762,9 +847,20 @@ class ResultsPane(Vertical):
         db = await SherlockDB.create(str(default_database_path()))
         try:
             record = await _collect(db, username)
+            # On the same connection as the record it annotates. A second
+            # connection opened just for this would race schema init against the
+            # first on a fresh database -- the bug `_ensure_column` already had
+            # to be made idempotent for.
+            extractions = await db.get_site_extractions(username)
         finally:
             await db.close()
         self._record = record
+        # Keyed by site name because that is what the accounts rows carry.
+        # `_collect` returns display records, not site ids, and adding ids to it
+        # would change a shape `show --json` also renders.
+        self._extractions = {
+            entry.site_name: entry for entry in extractions
+        }
         self._show_record(record)
 
     def _set_detail(self, renderable: Any) -> None:
@@ -773,6 +869,15 @@ class ResultsPane(Vertical):
         self.query_one(f"#{SEC_SITES}", DataTable).clear()
         self.query_one("#detail-profile", Static).update("")
         self._row_urls.clear()
+        # Cleared with the rows they annotate. Left behind, a later username's
+        # GitHub row would show the previous username's extraction -- the rows
+        # are keyed by site name, which two usernames routinely share.
+        self._extractions.clear()
+        self._extraction_order.clear()
+        self._any_analysed = False
+        self.query_one("#extraction-list", DataTable).clear()
+        self.query_one("#extraction-summary", Static).update("")
+        self.query_one("#extraction-detail", Static).update("")
         self._redraw_counts(found=0, unresolved=0)
 
     def _redraw_counts(self, *, found: int, unresolved: int) -> None:
@@ -802,15 +907,39 @@ class ResultsPane(Vertical):
             )
         self.query_one("#sites-counts", Static).update(line)
 
+        # Extractions counts what the model FOUND SOMETHING on, not how many
+        # sites are listed -- the line above already carries the site counts.
+        # The useful number here is the yield, because `EXTRACTIONS 8` beside
+        # `147 found` is the quality signal legible without opening the
+        # section at all.
+        with_facts = sum(
+            1 for record in self._extractions.values() if record.fact_count
+        )
+        tabs = self.query_one("#detail-tabs", Tabs)
+        tabs.query_one(f"#{TAB_EXTRACTIONS}", Tab).label = (
+            f"EXTRACTIONS {with_facts}" if with_facts else "EXTRACTIONS"
+        )
+
     @on(Tabs.TabActivated, "#detail-tabs")
     def _switch_section(self, event: Tabs.TabActivated) -> None:
         section = SECTION_FOR_TAB.get(event.tab.id or "")
-        if section is not None:
-            self.query_one("#detail-switch", ContentSwitcher).current = section
-            # The filter belongs to SITES. On PROFILE it would be a control
-            # that cannot do anything, which is worse than an absent one -- the
-            # same rule the scan pane's anchors block follows.
-            self.query_one("#sites-controls").display = section == SEC_SITES
+        if section is None:
+            return
+        self.query_one("#detail-switch", ContentSwitcher).current = section
+        # that cannot do anything, which is worse than an absent one -- the
+        # same rule the scan pane's anchors block follows.
+        self.query_one("#sites-controls").display = section == SEC_SITES
+        if section == SEC_EXTRACTIONS:
+            # The extraction list has to hold focus or the arrow keys never
+            # reach it, and the arrow keys ARE this panel -- the detail follows
+            # the cursor, so a list that cannot be moved through is a panel that
+            # only ever shows its first row.
+            #
+            # Only this section. The others are either a table the section
+            # switch already leaves usable or, for PROFILE, a pane whose focus
+            # behaviour is covered by its own tests; grabbing focus there would
+            # change which control Enter hits.
+            self.query_one("#extraction-list", DataTable).focus()
 
     def on_resize(self) -> None:
         self._fit_keys()
@@ -892,6 +1021,7 @@ class ResultsPane(Vertical):
             )
         )
         self._fill_sites(accounts, unresolved)
+        self._fill_extractions()
         self._redraw_counts(found=len(accounts), unresolved=len(unresolved))
         self._seed_build_anchors(record)
         self.query_one("#detail-profile", Static).update(
@@ -927,7 +1057,7 @@ class ResultsPane(Vertical):
         self._row_urls.clear()
 
         found = status_style(QueryStatus.CLAIMED)
-        rows: list[tuple[str, str, Text, Text, str]] = []
+        rows: list[tuple[str, str, Text, Text, str, str]] = []
         for account in accounts:
             note = []
             if account.get("confidence") and account["confidence"] != "Confirmed":
@@ -946,6 +1076,7 @@ class ResultsPane(Vertical):
                     (f"  [{'; '.join(note)}]" if note else "", "dim"),
                 ),
                 str(account["url"]),
+                str(account["site_name"]),
             ))
 
         if not self._found_only:
@@ -972,6 +1103,7 @@ class ResultsPane(Vertical):
                     Text(str(entry["site_name"]), overflow="ellipsis", no_wrap=True),
                     Text(detail, style="dim", overflow="ellipsis", no_wrap=True),
                     str(entry.get("url") or ""),
+                    str(entry["site_name"]),
                 ))
 
         if not rows:
@@ -986,14 +1118,126 @@ class ResultsPane(Vertical):
                 )
             else:
                 message = "no accounts found"
-            table.add_row(Text(""), Text("—", style="dim"),
+            table.add_row(Text(""), Text("—", style="dim"), Text(""),
                           Text(message, style="dim italic"))
             return
 
-        for index, (glyph, glyph_style, site, detail, url) in enumerate(rows):
+        for index, (glyph, glyph_style, site, detail, url, name) in enumerate(rows):
             key = str(index)
             self._row_urls[key] = url
-            table.add_row(Text(glyph, style=glyph_style), site, detail, key=key)
+            table.add_row(
+                Text(glyph, style=glyph_style),
+                site,
+                # The same renderer the extraction panel's own list uses, so one
+                # site cannot report a different count depending on which list
+                # you are looking at.
+                facts_cell(self._extractions.get(name)),
+                detail,
+                key=key,
+            )
+
+    def _fill_extractions(self) -> None:
+        """Draw the extraction list, its summary, and the first detail.
+
+        Ordered by `sort_extractions` rather than by site name -- see there for
+        why, but in short: this list exists to be read from both ends, and
+        alphabetical order buries both in the middle.
+        """
+        table = self.query_one("#extraction-list", DataTable)
+        table.clear()
+        self._extraction_order = sort_extractions(self._extractions.values())
+
+        summary = self.query_one("#extraction-summary", Static)
+        detail = self.query_one("#extraction-detail", Static)
+
+        if not self._extraction_order:
+            # No claimed sites at all, so there is nothing Pass 1 could ever
+            # have run on. Distinct from the case below, where there are sites
+            # and none was analysed.
+            summary.update("")
+            detail.update(
+                Text(
+                    "No accounts were found for this username, so there is "
+                    "nothing to extract from.",
+                    style="dim italic",
+                )
+            )
+            return
+
+        for index, record in enumerate(self._extraction_order):
+            table.add_row(
+                facts_cell(record),
+                Text(record.site_name, overflow="ellipsis", no_wrap=True),
+                key=str(index),
+            )
+        summary.update(extraction_summary(self._extraction_order))
+
+        self._any_analysed = any(
+            record.analysed for record in self._extraction_order
+        )
+        if not self._any_analysed:
+            # Sites exist and none was analysed -- the username was scanned
+            # without analysis. Say so once, here, rather than making someone
+            # arrow down 149 identical "not analysed" panels to work it out.
+            #
+            # The flag is what KEEPS this on screen. `add_row` above posts a
+            # `RowHighlighted` for the first row, which Textual delivers after
+            # this method returns -- so without the guard in `_show_extraction`
+            # the handler overwrote this message with a per-site "not analysed"
+            # panel a tick later, and the whole-username explanation was
+            # unreachable.
+            detail.update(
+                Text(
+                    "None of these sites has been analysed.\n\n"
+                    "Scan this username again with analysis on to extract "
+                    "from the pages already stored.",
+                    style="dim italic",
+                )
+            )
+            return
+
+        # The most productive site, because it is first in the order and because
+        # a panel that opens blank asks the reader to do work before it tells
+        # them anything.
+        self._show_extraction(0)
+
+    @on(DataTable.RowHighlighted, "#extraction-list")
+    def _extraction_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """The detail follows the CURSOR, not a selection.
+
+        `RowHighlighted`, never `RowSelected`: this is the whole reason the
+        panel replaced a dialog. Arrowing down the list sweeps through
+        extractions, which is how a prompt edit is judged across many pages --
+        requiring Enter on each one would make the panel a dialog with extra
+        steps.
+        """
+        self._show_extraction_key(event.row_key.value)
+
+    def _show_extraction_key(self, key: str | None) -> None:
+        if key is None:
+            return
+        try:
+            self._show_extraction(int(key))
+        except ValueError:
+            return
+
+    def _show_extraction(self, index: int) -> None:
+        if not self._any_analysed:
+            # The whole-username "nothing analysed" message is on screen and is
+            # the right answer for every row, so no row may replace it with the
+            # per-site version of the same news.
+            return
+        if not 0 <= index < len(self._extraction_order):
+            return
+        self.query_one("#extraction-detail", Static).update(
+            extraction_detail(
+                self._extraction_order[index],
+                # Worked out once per render rather than cached on the pane: it
+                # reads one prompt file, and a cached value would go stale
+                # exactly when someone is editing that file to see the effect.
+                contract_hash=current_contract_hash(),
+            )
+        )
 
     @on(DataTable.RowSelected, f"#{SEC_SITES}")
     def _open_row(self, event: DataTable.RowSelected) -> None:
@@ -1157,12 +1401,29 @@ class ResultsPane(Vertical):
             # the scan tab with this username and analysis already set, so the
             # label promises the trip rather than a build that cannot happen.
             build.label = "▸ Scan this username with analysis"
+            build.tooltip = (
+                "Scan with analysis — no evidence stored\n\n"
+                "Loads this username on the SCAN tab with analysis on. Nothing "
+                "starts until you press SCAN there."
+            )
             anchors.display = False
             return
 
         actions.remove_class(NO_EVIDENCE)
         anchors.display = True
         build.label = "Rebuild profile" if has_profile else "Build profile"
+        # Hover text says what the button IS; the line below it says what
+        # pressing it would do RIGHT NOW -- how many sites of evidence, which
+        # anchors, and the warning when rebuilding would abandon an identity.
+        # Splitting it that way is what keeps the two from being one answer
+        # written twice: the mechanism never changes, the state changes on every
+        # redraw.
+        build.tooltip = (
+            f"{'Rebuild' if has_profile else 'Build'} profile\n\n"
+            "Runs the second AI pass, merging the facts Pass 1 already "
+            "extracted into one profile. Reads stored evidence only — no site "
+            "is contacted and no page is fetched again."
+        )
 
         line = Text()
         if has_profile:

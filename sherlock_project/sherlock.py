@@ -19,6 +19,7 @@ import os
 import re
 from argparse import ArgumentParser, ArgumentTypeError, RawDescriptionHelpFormatter
 from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from json import dumps as json_dumps
 from json import loads as json_loads
 from time import perf_counter
@@ -615,8 +616,13 @@ async def ai_worker(
                 )
                 hydrated_usernames.add(job.username)
             site_content = await asyncio.to_thread(
-                extract_profile_content,
-                job.response_text,
+                partial(
+                    extract_profile_content,
+                    job.response_text,
+                    searched_username=job.username,
+                    site_name=job.site_name,
+                    site_url=job.site_url,
+                )
             )
             if not site_content:
                 await sherlock_db.update_result_ai_extraction(
@@ -644,6 +650,15 @@ async def ai_worker(
                 ),
                 contract_hash=contract_hash,
                 model_key=ai_service.model_key,
+                # `getattr`, not `response.reasoning`. Pass 1 has two response
+                # shapes: the canonical `OSINTResponse` carries the field, and
+                # `NativeReasoningOSINTResponse` -- sent to models whose native
+                # thinking cannot be turned off -- deliberately does not, since
+                # such a model already reasoned before starting the JSON. It
+                # allows extra fields, so one may emit `reasoning` from habit
+                # anyway; that is worth keeping when it happens and worth not
+                # crashing over when it does not.
+                reasoning=getattr(response, "reasoning", None),
             )
             key_registry.add(job.username, response.extraction)
             if reporter is not None:
@@ -1416,12 +1431,18 @@ async def main() -> int:
         help="Browse to all results on default browser.",
     )
 
+    # The name is inherited. It meant "the local data.json rather than the
+    # remote one" upstream; here the bundled manifest is the default and no
+    # scan fetches a site list, so all the flag still does is override --json.
     parser.add_argument(
         "--local",
         "-l",
         action="store_true",
         default=False,
-        help="Force the use of the local data.json file.",
+        help=(
+            "Use the bundled site list, ignoring --json. It is already the "
+            "default, so this only guarantees it."
+        ),
     )
 
     parser.add_argument(
@@ -1729,6 +1750,12 @@ async def main() -> int:
         )
         sys.exit(1)
 
+    # Captured BEFORE the NSFW filter and before any --site narrowing, because
+    # this is what --fresh prunes a username's stored rows against. The
+    # filtered set would make an ordinary scan retire the results of an earlier
+    # --nsfw run, and sites this run merely did not look at are not retired.
+    known_site_names = {site.name for site in sites}
+
     if not settings.nsfw.value:
         sites.remove_nsfw_sites(do_not_remove=args.site_list)
 
@@ -1863,6 +1890,18 @@ async def main() -> int:
                         username=username,
                         configured_model=ai_settings.model,
                         counts=await db.get_extraction_model_counts(username),
+                    )
+
+                # A full re-scan is the one moment stale rows can be dropped
+                # safely: it rewrites every site the manifest still has, so the
+                # only rows this reaches are ones it would leave behind. Not on
+                # --site, where "the manifest" is a handful of names.
+                if args.fresh and not args.site_list:
+                    query_notify.retired_sites_removed(
+                        username=username,
+                        removed=await db.delete_retired_sites(
+                            username, known_site_names
+                        ),
                     )
 
                 # If no site list was provided, skip sites already in the

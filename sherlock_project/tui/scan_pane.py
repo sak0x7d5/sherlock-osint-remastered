@@ -49,6 +49,7 @@ from sherlock_project.tui.reporter import (
     TuiReporter,
     analysis_is_on,
     blank_counts,
+    describe_options,
     describe_settings,
 )
 from sherlock_project.tui.theme import (
@@ -57,12 +58,16 @@ from sherlock_project.tui.theme import (
     anchor_line,
     default_visible_statuses,
     elapsed_label,
+    model_name,
     phase_line,
     progress_bar,
     response_label,
+    spinner,
     stat_row,
     status_cell,
     status_style,
+    throughput_label,
+    value_row,
 )
 
 # Feed column widths. Fixed, because the point of a table is that column two
@@ -98,6 +103,10 @@ ACTIVITY_SCROLLBACK = 10000
 ANCHOR_PREVIEW = 3
 # Cells available to one anchor line inside the 26-wide counters column.
 ANCHOR_LINE_WIDTH = 24
+# The same, for the model's name. It gets a line to itself rather than a value
+# column: model keys are long enough that sharing a row with a label would leave
+# room for the vendor and nothing else.
+MODEL_LINE_WIDTH = 24
 
 
 class CounterRow(Static):
@@ -173,6 +182,12 @@ class ScanPane(Vertical):
         # Seeded from the stored `output.verbose`, overridable for one run --
         # the flag > config shape `-v` already has on the CLI.
         self._verbose = bool(settings_values.get("output.verbose"))
+        # What the in-flight scan was actually started with, as
+        # `(analysis, verbose)`, or None while nothing is running. Both toggles
+        # are read once at the start of a run, so the pair here is what lets
+        # their hover text tell a toggle that describes this scan from one that
+        # describes the next.
+        self._running_options: tuple[bool, bool] | None = None
         # Run-only, exactly like `--anchor`: never stored, gone next launch.
         self._anchors: list[IdentityAnchor] = []
         self._elapsed = 0.0
@@ -259,9 +274,32 @@ class ScanPane(Vertical):
                 with Vertical(id="counters"):
                     for status in STATUS_ORDER:
                         yield CounterRow(status)
+                # Both AI passes, in the order they run. The block used to
+                # cover Pass 1 only and was named for the whole thing, so the
+                # heaviest model call in a run -- Pass 2, merging every stored
+                # extraction into one profile -- had no readout anywhere and
+                # the column reported `· waiting` while it happened.
                 with Vertical(id="ai-block"):
                     yield Static("ANALYSIS", id="ai-title", classes="dim")
                     yield Static(id="ai-counters")
+                    # Drawn with `phase_line`, the same function the browser
+                    # and model steps use, because it is the same shape of
+                    # event. Hidden until Pass 2 is actually reached: most runs
+                    # never get there, and a permanent row describing work that
+                    # was never going to happen is worse than no row.
+                    yield Static(id="synthesis-line")
+
+                # What is doing the analysing. The counts above say how much has
+                # been extracted; this says by what, through how wide a window,
+                # and -- while a scan runs -- which site the model has open right
+                # now. Without it the ANALYSIS numbers are a result with no
+                # method attached, which for evidence is half a record: an
+                # extraction is only as good as the model that made it, and the
+                # model is the one thing about a run that changes silently
+                # between sessions.
+                with Vertical(id="model-block"):
+                    yield Static("MODEL", id="model-title", classes="dim")
+                    yield Static(id="model-lines")
             with Vertical(id="feed-col"):
                 yield Static(id="feed-title")
                 # Directly under the heading, where the eye already is during a
@@ -304,6 +342,10 @@ class ScanPane(Vertical):
         self._redraw_options()
         self._show_activity_placeholder()
         self._redraw_counters(blank_counts())
+        # Off from mount. A Static that has never been told to hide reserves a
+        # row, so an app that has not scanned would open with a blank line
+        # where Pass 2 will eventually report.
+        self._redraw_synthesis(None)
         self._redraw_progress(0, 0)
         self._redraw_feed_title()
         # The drain timer. One timer for the whole pane rather than one per
@@ -354,9 +396,37 @@ class ScanPane(Vertical):
             f"verbose ‹ {'on' if self._verbose else 'off'} ›"
         )
         self._redraw_anchors()
+        # Drawn from settings alone, so it answers before a scan has ever run
+        # and follows a model chosen on the settings tab mid-session.
+        self._redraw_model()
+        self._redraw_option_tooltips()
         self.query_one("#scan-config", Static).update(
             Text(describe_settings(self._settings_values), style="dim")
         )
+
+    def _redraw_option_tooltips(self) -> None:
+        """Re-hang the hover text on both toggles.
+
+        Its own method rather than a few more lines inside `_redraw_options`,
+        because a scan starting or ending changes what the tooltips say without
+        changing a toggle: the same `analysis on` means "this run is extracting"
+        before the scan and "the next run will" if it was flipped during one.
+        Those two moments want the hover text refreshed and nothing else on the
+        row touched.
+
+        Set on every redraw rather than once at mount for the same reason -- the
+        text is a function of state, and a tooltip that describes the state the
+        app booted in is worse than none, because nothing about a stale one
+        looks stale.
+        """
+        analysis, verbose = describe_options(
+            self._settings_values,
+            use_ai=self._use_ai,
+            verbose=self._verbose,
+            running=self._running_options,
+        )
+        self.query_one("#toggle-ai", Button).tooltip = analysis
+        self.query_one("#toggle-verbose", Button).tooltip = verbose
 
     @on(Button.Pressed, "#toggle-ai")
     def _toggle_ai(self) -> None:
@@ -500,6 +570,11 @@ class ScanPane(Vertical):
         self._append_log(reporter)
         self._redraw_startup(reporter)
         self._redraw_counters(reporter.counts)
+        # Draws the synthesis line too. The MODEL block is not redrawn per tick
+        # any more -- nothing in it can change during a run, so repainting it
+        # ten times a second was work for a readout that cannot move. It is
+        # redrawn when the settings behind it change, which is the only time it
+        # has anything new to say.
         self._redraw_ai(reporter)
         self._redraw_progress(reporter.completed, reporter.total)
 
@@ -756,24 +831,212 @@ class ScanPane(Vertical):
             )
 
     def _redraw_ai(self, reporter: TuiReporter) -> None:
+        """Draw both AI passes: the per-site tallies, then Pass 2 beneath them.
+
+        THE OUTCOME BREAKDOWN IS THE POINT of this block, and it used to be
+        thrown away. The scan computes six figures and three were drawn, so
+        `extracted 149 / with facts 8` left 141 sites unexplained -- and those
+        141 are three unrelated situations: the page genuinely held nothing,
+        the job was skipped, or the extraction FAILED and was left pending for
+        a future run. A model quietly failing forty extractions looked
+        identical to a model succeeding on forty empty pages.
+
+        That is the same error the SITES block one column up refuses to make.
+        "No answer" and "nothing there" are different claims about the world,
+        and collapsing them is the thing this tool exists not to do.
+
+        The four buckets sum exactly to `extracted` -- every finished job
+        increments the total and exactly one bucket -- so the sub-rows are a
+        real decomposition and not an assortment of related numbers.
+        """
         stats = reporter.ai_stats
+        counters = self.query_one("#ai-counters", Static)
         if not stats.scheduled:
-            # Nothing scheduled means the model is off or nothing was found
-            # worth extracting. Say which, rather than showing a block of
-            # zeroes that reads like a stalled pipeline.
-            self.query_one("#ai-counters", Static).update(
-                Text("not running", style="dim italic")
-            )
+            # Nothing scheduled means the model is off, nothing was found worth
+            # extracting, or every hit already had a stored extraction. Say so
+            # rather than showing a block of zeroes that reads like a stalled
+            # pipeline -- and note this does NOT mean Pass 2 is idle too, which
+            # is why the synthesis line below is drawn either way.
+            counters.update(Text("not running", style="dim italic"))
+            self._redraw_synthesis(reporter)
             return
+
         lines = Text()
         lines.append_text(stat_row("extracted", stats.completed, "cyan"))
         lines.append("\n")
-        lines.append_text(stat_row("with facts", stats.with_facts, "green"))
+        lines.append_text(
+            stat_row("with facts", stats.with_facts, "green", indent=2)
+        )
+        lines.append("\n")
+        # Dimmed, like `absent` above it and for the same reason: a page that
+        # held nothing is the ordinary case and the commonest number here, and
+        # at full contrast it pulls the eye off the two rows that are news.
+        lines.append_text(
+            stat_row("no facts", stats.no_facts, "dim", muted=True, indent=2)
+        )
+        # `pending` IS the failure bucket -- the pipeline calls `ai_failed`,
+        # then records the outcome as pending, meaning "retryable on a future
+        # run". It is not the queue depth; `queued` below is. Do not swap them.
+        #
+        # Drawn even at zero, unlike `skipped`. "Nothing failed" is worth
+        # stating outright in a tool whose output is evidence, and a row that
+        # only appears once something has gone wrong is a row nobody knows to
+        # look for.
+        lines.append("\n")
+        lines.append_text(
+            stat_row(
+                "failed",
+                stats.pending,
+                "yellow" if stats.pending else "dim",
+                muted=not stats.pending,
+                indent=2,
+            )
+        )
+        if stats.skipped:
+            # Only when it happened. Unlike a failure, a skip is structural
+            # rather than a fault, and a permanent `skipped 0` would be a row
+            # that never says anything on the overwhelming majority of runs.
+            lines.append("\n")
+            lines.append_text(
+                stat_row("skipped", stats.skipped, "dim", muted=True, indent=2)
+            )
         lines.append("\n")
         lines.append_text(
             stat_row("queued", stats.scheduled - stats.completed, "dim", muted=True)
         )
-        self.query_one("#ai-counters", Static).update(lines)
+
+        # The live half, moved here from the MODEL block. Generation speed and
+        # the site in flight are PROGRESS OF THE ANALYSIS, not properties of
+        # the model -- they exist only while a run is going and they belong
+        # beside the counts they are producing, rather than under a heading
+        # whose other rows are fixed before the run starts.
+        speed = throughput_label(reporter.throughput)
+        if speed:
+            lines.append("\n")
+            lines.append_text(value_row("speed", speed, style="cyan"))
+
+        activity = reporter.extraction
+        if activity is not None:
+            lines.append("\n")
+            lines.append_text(
+                value_row(
+                    f"{spinner(self._tick)} {activity.site_name}",
+                    elapsed_label(activity.elapsed),
+                    style="cyan",
+                )
+            )
+        elif self._scan_running and reporter.synthesis is None:
+            # A held row for the fraction of a second between one job ending
+            # and the next starting, which happens hundreds of times in a run;
+            # a line that vanishes and returns on each one reads as a flicker.
+            #
+            # NOT while Pass 2 is running. That is precisely when this row was
+            # lying: no extraction in flight, scan still going, so it printed
+            # `· waiting` through the heaviest model call of the whole run.
+            # The synthesis line below says what is actually happening.
+            lines.append("\n")
+            lines.append_text(value_row("· waiting", "", muted=True))
+
+        counters.update(lines)
+        self._redraw_synthesis(reporter)
+
+    def _redraw_synthesis(self, reporter: TuiReporter | None) -> None:
+        """Draw Pass 2's phase line, or take the row off the screen.
+
+        Drawn independently of the extraction tallies above, because the two
+        genuinely come apart: a resumed username whose hits all have stored
+        extractions schedules NO Pass 1 jobs and still runs Pass 2 over the
+        stored evidence. Gated on `scheduled` it would have stayed invisible on
+        exactly the runs where it is the only thing happening.
+        """
+        line = self.query_one("#synthesis-line", Static)
+        phase = reporter.synthesis if reporter is not None else None
+        line.display = phase is not None
+        if phase is None:
+            return
+        state = phase.state
+        if state == "building" and not self._scan_running:
+            # The scan ended without synthesis reporting an outcome -- cancelled
+            # worker, or a model that died mid-request. It did not fail and it
+            # did not land, so it says neither; what it must not do is keep
+            # spinning beside a scan that has stopped.
+            state = "stopped"
+        line.update(
+            phase_line(
+                phase.label,
+                state,
+                elapsed=phase.elapsed,
+                tick=self._tick,
+            )
+        )
+
+    def _redraw_model(self) -> None:
+        """Draw WHICH model, and the two numbers that bound what it could see.
+
+        A nameplate, not an instrument. Everything here is fixed before the run
+        starts and read once, when deciding whether to trust what comes out --
+        so it takes three lines instead of the five it used to, and the live
+        measurements that shared this block have moved up into ANALYSIS where
+        the work they describe is counted.
+
+        THE NAME EARNS ITS PLACE even though it is stored settings, and this is
+        the reason not to fold it into the config line with the transport and
+        the timeout: an extraction is only as good as the model that made it,
+        the model is the one thing about a run that changes silently between
+        sessions, and the Pass 1 cache deliberately keeps extractions made by
+        other models. Provenance, not configuration.
+
+        Context and temperature are configuration, and drop to one dim line
+        together. They stay in the column rather than moving to the config line
+        because the window is what decides whether a page was truncated before
+        the model ever saw it, and that belongs beside the extractions it
+        constrains. Worth knowing: this is the REQUESTED window from settings,
+        not necessarily what the server was started with.
+
+        No reporter argument any more. This block no longer depends on the run
+        at all, which is exactly why it can be drawn the moment analysis is
+        switched on -- before there is anything to report.
+
+        Hidden with analysis off, exactly like the anchors block: a model that
+        this run will not load is not state worth a panel.
+        """
+        block = self.query_one("#model-block", Vertical)
+        block.display = self._use_ai
+        if not self._use_ai:
+            return
+
+        lines = self.query_one("#model-lines", Static)
+        values = self._settings_values
+        configured = values.get("ai.model")
+        if not configured:
+            # The same shape the empty anchors list uses: says what is missing
+            # and where to fix it, rather than sitting blank. This is exactly
+            # when someone needs telling -- analysis is on and cannot run.
+            lines.update(
+                Text("none configured —\nchoose one in SETTINGS", style="dim italic")
+            )
+            return
+
+        # Text(), never markup. A model key is whatever is in the config file;
+        # Rich would read brackets in it as a style tag.
+        text = Text()
+        text.append(model_name(str(configured), MODEL_LINE_WIDTH), style="cyan")
+
+        # One line, not one row each. As a pair of label/value rows they sat in
+        # the same grammar the live counters use, so two settings that cannot
+        # change during a run looked exactly like numbers that were moving.
+        detail: list[str] = []
+        context = values.get("ai.context_length")
+        if context:
+            detail.append(f"{context} ctx")
+        temperature = values.get("ai.temperature")
+        if temperature is not None:
+            detail.append(f"{temperature} temp")
+        if detail:
+            text.append("\n")
+            text.append(" · ".join(detail), style="dim")
+
+        lines.update(text)
 
     def _redraw_progress(self, completed: int, total: int) -> None:
         if self._started_at is not None and self._scan_running:
@@ -904,11 +1167,23 @@ class ScanPane(Vertical):
         self._log_drawn = 0
         self._reporter = TuiReporter(verbose=self._verbose)
         self._scan_running = True
+        # Captured beside the two places that read them -- the reporter above
+        # and `use_ai` in `_scan_worker` -- so the pair cannot drift from what
+        # the run is actually doing. The toggles' hover text is the only thing
+        # that reads it back.
+        self._running_options = (self._use_ai, self._verbose)
+        self._redraw_option_tooltips()
         self._elapsed = 0.0
         self._started_at = self._monotonic()
         self.query_one("#scan-button", Button).label = "STOP"
         self._scan_username = username
         self._redraw_feed_title()
+        # Drops the previous run's tallies, speed, current site and synthesis
+        # row along with the reporter that measured them, rather than leaving
+        # them on screen until the first tick of the new scan overwrites them.
+        # The MODEL block is not touched: it describes settings, which a new
+        # scan does not change.
+        self._redraw_ai(self._reporter)
 
     @work(exclusive=True)
     async def _scan_worker(self, username: str, *, fresh: bool = False) -> None:
@@ -953,6 +1228,10 @@ class ScanPane(Vertical):
         self._scan_running = False
         self._worker = None
         self._started_at = None
+        # Nothing is running, so no toggle is pending any more: both describe
+        # the next scan again, which is the only kind there is now.
+        self._running_options = None
+        self._redraw_option_tooltips()
         # The title carries the running/finished distinction, so it has to be
         # redrawn here -- `_flush` does not touch it.
         self._redraw_feed_title()
@@ -962,6 +1241,13 @@ class ScanPane(Vertical):
         # few rows short of the count beside it -- a discrepancy that looks like
         # lost data and is impossible to explain after the fact.
         self._flush()
+        # And one redraw `_flush` cannot be relied on to do: it returns early
+        # when a finished scan has nothing left to drain, which is exactly the
+        # tick that would otherwise leave a spinner turning beside a scan that
+        # has stopped. Two of them now -- the extraction row and the synthesis
+        # row -- and `_redraw_ai` clears both.
+        if self._reporter is not None:
+            self._redraw_ai(self._reporter)
 
         if event.state is WorkerState.ERROR:
             self.notify(
