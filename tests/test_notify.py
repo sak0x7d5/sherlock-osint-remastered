@@ -720,6 +720,7 @@ def _trace(*, valid: bool = True) -> AIRequestTrace:
             output_tokens=30,
             reasoning_tokens=0,
             tokens_per_second=10,
+            generation_seconds=3.0,
             time_to_first_token_seconds=0.25,
         ),
         native_reasoning="",
@@ -771,7 +772,11 @@ def test_verbose_profile_metrics_are_separate_from_exact_outcome_line() -> None:
     rendered = output.getvalue()
     assert "Profile extraction diagnostics: requests 1" in rendered
     assert "tokens 120 in / 30 out" in rendered
+    # Both are reported, because they answer different questions: the round
+    # trip is what the scan waited, and the generation time is what the speed
+    # readout divides by.
     assert "request time 3.50s" in rendered
+    assert "generation time 3.00s" in rendered
     assert "wall time " in rendered
     assert (
         "[+] Profile extraction 1/1 · 1 with facts · 0 no facts\n"
@@ -1441,3 +1446,28 @@ def test_other_model_extractions_uses_singular_for_one():
     )
 
     assert "1 stored extraction for" in output.getvalue()
+
+
+def test_retired_sites_line_states_the_count_and_why():
+    """A re-scan that drops several hundred stored results owes them a number.
+
+    Nobody asked for a deletion, and the count is also the explanation for a
+    total that just fell -- without it the record simply shrinks unannounced.
+    """
+    reporter, output, _ = _reporter()
+
+    reporter.retired_sites_removed(username="0day", removed=336)
+
+    printed = output.getvalue()
+    assert "336" in printed
+    assert "0day" in printed
+    assert "different site list" in printed
+
+
+def test_retired_sites_line_is_silent_when_nothing_was_dropped():
+    """Every re-scan after the first. A line that always prints stops being read."""
+    reporter, output, _ = _reporter()
+
+    reporter.retired_sites_removed(username="0day", removed=0)
+
+    assert output.getvalue() == ""

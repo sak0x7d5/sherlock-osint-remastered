@@ -42,9 +42,11 @@ def test_discovery_is_recursive_and_ignores_non_chat_ggufs(tmp_path: Path):
 def test_preset_carries_the_flags_each_instance_needs(tmp_path: Path):
     """Per-model, not process-wide: router instances do not inherit our flags.
 
-    jinja is what makes chat_template_kwargs work at all, and deepseek is what
+    jinja is what makes chat_template_kwargs work at all, deepseek is what
     routes thinking into reasoning_content instead of leaving it inline where
-    it breaks the JSON parse.
+    it breaks the JSON parse, and n-gpu-layers is the difference between 4.56
+    and 46.54 tok/s -- left unset, the build fits layers to whatever VRAM is
+    free while our own Chromium is holding some.
     """
     destination = tmp_path / "cfg" / "llama-models.ini"
     llama_server.write_preset(
@@ -56,6 +58,7 @@ def test_preset_carries_the_flags_each_instance_needs(tmp_path: Path):
     assert "[Some-Model-Q4_K_M]" in written
     assert "jinja = 1" in written
     assert "reasoning-format = deepseek" in written
+    assert "n-gpu-layers = 99" in written
     assert "weird place/Some-Model-Q4_K_M.gguf" in written
 
 

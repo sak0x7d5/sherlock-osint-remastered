@@ -1054,6 +1054,236 @@ async def test_update_result_ai_extraction_records_the_model(
     assert row["ai_extraction_model"] == MODEL_KEY
 
 
+async def test_the_reasoning_is_stored_beside_the_extraction(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """How the model got there, not just what it decided.
+
+    The extraction says what came out; this says why, and it is the half that
+    moves when `resources/pass_one.md` is edited -- which is the only way to see
+    a prompt change land on a real page.
+    """
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+        reasoning="include Blue as full_name; skip: nav link",
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction_reasoning"] == (
+        "include Blue as full_name; skip: nav link"
+    )
+
+
+async def test_absent_reasoning_is_null_not_empty(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """NULL means "not recorded", which is not the same as "said nothing".
+
+    Two real cases produce no reasoning and neither is a fault: a page that
+    reduced to nothing was never sent to a model at all, and a model whose
+    native thinking cannot be disabled is sent the variant prompt, which has no
+    reasoning field. The viewer distinguishes those from a model that was asked
+    and returned nothing, so an empty string must not be stored for them.
+    """
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction="{}",
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction_reasoning"] is None
+
+
+async def test_forced_extraction_clears_the_recorded_reasoning(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """Reasoning must never outlive the extraction it explains.
+
+    Left behind, it would describe a reading of the page that is no longer on
+    the row, and the viewer would show it beside whatever came next -- which is
+    worse than showing nothing, because it looks like provenance.
+    """
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+    )
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+        reasoning="include Blue as full_name",
+    )
+
+    await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="same profile",
+        force_ai_extraction=True,
+    )
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction"] is None
+    assert row["ai_extraction_reasoning"] is None
+
+
+async def test_a_contract_change_clears_the_reasoning_too(
+    db: SherlockDB,
+    user_data: dict[str, Any],
+):
+    """The other route that discards an extraction, and the same rule applies.
+
+    An edited Pass 1 prompt changes the contract hash, so the next run treats
+    the row as pending and re-extracts. The reasoning that came with the old
+    contract explains a decision made under different instructions.
+    """
+    site_id = await db.save_result(
+        username=user_data["username"],
+        site_name=user_data["site_name"],
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction='{"full_name": ["Blue"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+        reasoning="include Blue as full_name",
+    )
+
+    job = await db.get_ai_extraction_job(site_id=site_id, contract_hash="different")
+    assert job is not None
+
+    row = await _get_result_row(db, user_data["username"], user_data["site_name"])
+    assert row is not None
+    assert row["ai_extraction"] is None
+    assert row["ai_extraction_reasoning"] is None
+
+
+async def test_get_site_extractions_reports_analysed_and_unanalysed_sites(
+    db: SherlockDB,
+):
+    """Sites with no extraction are RETURNED, not filtered out.
+
+    A model that extracted from 2 of 3 found sites must not look like one that
+    was only ever asked about 2. `analysed` is what separates "asked and found
+    nothing" from "never asked", and the two must not render the same way.
+    """
+    rich = await db.save_result(
+        username="blue",
+        site_name="GitHub",
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+    empty = await db.save_result(
+        username="blue",
+        site_name="Bandcamp",
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+    await db.save_result(
+        username="blue",
+        site_name="Zulip",
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+    # A site that was never found is not a gap in the analysis; it is not a
+    # candidate for one, so it must not appear at all.
+    await db.save_result(
+        username="blue",
+        site_name="Missing",
+        status=str(QueryStatus.AVAILABLE),
+        response_text="nothing",
+    )
+
+    await db.update_result_ai_extraction(
+        site_id=rich,
+        ai_extraction='{"full_name": ["Blue"], "emails": ["a@b.c", "d@e.f"]}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+        reasoning="include Blue as full_name",
+    )
+    await db.update_result_ai_extraction(
+        site_id=empty,
+        ai_extraction="{}",
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    records = {entry.site_name: entry for entry in await db.get_site_extractions("blue")}
+    assert set(records) == {"GitHub", "Bandcamp", "Zulip"}
+
+    # Facts counts VALUES, not keys: one key holding two emails is two facts,
+    # and counting keys would flatten a productive model into an unproductive
+    # looking one.
+    assert records["GitHub"].fact_count == 3
+    assert records["GitHub"].analysed is True
+    assert records["GitHub"].ai_extraction_reasoning == "include Blue as full_name"
+
+    # Asked, and the page held nothing. A result, not a gap.
+    assert records["Bandcamp"].analysed is True
+    assert records["Bandcamp"].fact_count == 0
+
+    # Never asked. The distinction the facts column is drawn from.
+    assert records["Zulip"].analysed is False
+    assert records["Zulip"].fact_count == 0
+
+
+async def test_a_corrupt_stored_extraction_reads_as_no_facts(db: SherlockDB):
+    """Model output that was valid when written is not a promise about disk.
+
+    A viewer that raised on one unparseable row would cost the user every other
+    extraction on the screen, which is the failure isolation this codebase
+    treats as a design property rather than a backlog item.
+    """
+    site_id = await db.save_result(
+        username="blue",
+        site_name="GitHub",
+        status=str(QueryStatus.CLAIMED),
+        response_text="profile",
+    )
+    await db.update_result_ai_extraction(
+        site_id=site_id,
+        ai_extraction="{not json at all",
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    (record,) = await db.get_site_extractions("blue")
+    assert record.facts == {}
+    assert record.fact_count == 0
+    # Still analysed: something was written for this site. The row is not a gap.
+    assert record.analysed is True
+
+
 async def test_forced_extraction_clears_the_recorded_model(
     db: SherlockDB,
     user_data: dict[str, Any],
@@ -1270,3 +1500,91 @@ async def test_concurrent_creation_of_a_new_database_does_not_lock_itself(tmp_pa
         assert [item.username for item in await db.list_usernames()] == ["racer"]
     finally:
         await db.close()
+
+
+async def _seed_mixed_manifest_history(db: SherlockDB) -> None:
+    """A username scanned under two different site lists.
+
+    The duplicate spelling is the point: the two manifests name the same
+    platform differently, so the record ends up holding both.
+    """
+    for site_name in ("Threads", "GitHub", "threads", "Ask.fm"):
+        await db.save_result(
+            username="0day",
+            site_name=site_name,
+            site_url=f"https://example.invalid/{site_name}",
+            status=str(QueryStatus.CLAIMED),
+            response_text="profile",
+        )
+
+
+async def test_delete_retired_sites_drops_only_what_the_manifest_lost(
+    db: SherlockDB,
+):
+    """The duplicate survives as one row, not two.
+
+    `Threads` and `threads` are one platform under two site lists, and exact
+    matching is what tells them apart -- the current list spells it one way, so
+    the other spelling is the retired one.
+    """
+    await _seed_mixed_manifest_history(db)
+
+    removed = await db.delete_retired_sites("0day", {"Threads", "GitHub"})
+
+    assert removed == 2
+    assert sorted(await db.get_saved_results("0day")) == ["GitHub", "Threads"]
+
+
+async def test_delete_retired_sites_keeps_the_profile_and_extractions(
+    db: SherlockDB,
+):
+    """The reason this is not `delete_username`.
+
+    A re-scan rewrites the rows it re-checks, but only an AI run rebuilds an
+    extraction and only synthesis rebuilds a profile. Wiping the record would
+    charge a scan without analysis for work a model already did.
+    """
+    await _seed_mixed_manifest_history(db)
+    await db.update_username_profile_summary(
+        username="0day",
+        profile_summary='{"username": "0day"}',
+        input_hash="h",
+    )
+    kept = await _get_result_row(db, "0day", "GitHub")
+    await db.update_result_ai_extraction(
+        site_id=int(kept["id"]),
+        ai_extraction='{"extraction": []}',
+        contract_hash=CONTRACT_HASH,
+        model_key=MODEL_KEY,
+    )
+
+    await db.delete_retired_sites("0day", {"Threads", "GitHub"})
+
+    assert await db.get_profile_summary_cache("0day") is not None
+    surviving = await _get_result_row(db, "0day", "GitHub")
+    assert surviving["ai_extraction"] == '{"extraction": []}'
+    assert surviving["ai_extraction_model"] == MODEL_KEY
+
+
+async def test_delete_retired_sites_treats_an_empty_manifest_as_unknown(
+    db: SherlockDB,
+):
+    """A manifest that failed to load must not read as "every site retired".
+
+    This is the difference between nothing being known and nothing existing,
+    and getting it wrong erases the record it was asked to tidy.
+    """
+    await _seed_mixed_manifest_history(db)
+
+    assert await db.delete_retired_sites("0day", set()) == 0
+    assert len(await db.get_saved_results("0day")) == 4
+
+
+async def test_delete_retired_sites_is_quiet_when_there_is_nothing_to_do(
+    db: SherlockDB,
+):
+    """Every re-scan after the first, and every username never scanned."""
+    await _seed_mixed_manifest_history(db)
+
+    assert await db.delete_retired_sites("0day", {"Threads", "GitHub", "threads", "Ask.fm"}) == 0
+    assert await db.delete_retired_sites("nobody", {"GitHub"}) == 0

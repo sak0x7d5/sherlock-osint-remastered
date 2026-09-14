@@ -16,7 +16,7 @@ from sherlock_project.tui import settings_pane as settings_pane_module
 
 
 @pytest.fixture(autouse=True)
-def isolated_user_state(tmp_path, monkeypatch):
+def isolated_user_state(request, tmp_path, monkeypatch):
     """Point every per-user state location at tmp_path for the whole suite.
 
     Settings and the database resolve to per-user locations, not to the working
@@ -37,9 +37,21 @@ def isolated_user_state(tmp_path, monkeypatch):
     reason: it overrides the configured endpoint, and a developer who exported
     it should not thereby change what the suite tests.
     """
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+    # THE ONE EXEMPTION is `local_ai_acceptance`, whose entire purpose is to
+    # measure the model the developer has actually configured. Isolating its
+    # config made it die on `AI is not configured. Run `sherlock setup ai`
+    # first.` before reaching a single generation -- the benchmark predates this
+    # fixture and had been silently unrunnable ever since. It is opt-in, marked,
+    # and deselected by default, so honouring real config here cannot leak into
+    # the push gate.
+    #
+    # The DATABASE stays isolated even there. The benchmark never touches it,
+    # and that is exactly why the isolation costs nothing and must stay: a
+    # future edit that did write would otherwise write to the real one.
+    if request.node.get_closest_marker("local_ai_acceptance") is None:
+        monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+        monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
     monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
-    monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +90,21 @@ def no_real_llama_server(monkeypatch):
         monkeypatch.setattr(module, "ManagedLlamaServer", _StubServer)
 
 
-def fetch_local_manifest(honor_exclusions: bool = True) -> dict[str, dict[str, str]]:
+# DEFAULTS TO FALSE, AND THE DEFAULT IS THE POINT. `honor_exclusions=True`
+# makes the LEGACY manifest path fetch upstream's false_positive_exclusions.txt
+# over the network -- a file a bot on their `exclusions` branch rewrites daily.
+# Every test using these fixtures therefore reached GitHub on a run that is
+# supposed to be hermetic, and a failed fetch is swallowed with a warning, so
+# the gate passed when the network was DOWN and failed when it was UP.
+#
+# It failed for real on 2026-08-25: their bot added `GitHub` to the list (it was
+# absent the previous day), 52 sites vanished from the manifest, and
+# `test_site_list_iterability[GitHub-status_code]` went red on a tree nobody had
+# touched. A third party could turn this project's push gate red at any time.
+#
+# Nothing here tests exclusions. These fixtures exist to read the shipped
+# manifest, so they read it as shipped.
+def fetch_local_manifest(honor_exclusions: bool = False) -> dict[str, dict[str, str]]:
     sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=honor_exclusions)
     sites_iterable: dict[str, dict[str, str]] = {site.name: site.information for site in sites_obj}
     return sites_iterable
@@ -98,7 +124,9 @@ async def db() -> SherlockDB:
 
 @pytest.fixture()
 def sites_obj():
-    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"))
+    # Explicit for the same reason as fetch_local_manifest above: the
+    # constructor's own default is True, which would fetch.
+    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=False)
     yield sites_obj
 
 @pytest.fixture(scope="session")

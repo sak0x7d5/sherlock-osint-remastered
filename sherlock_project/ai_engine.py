@@ -28,6 +28,7 @@ from sherlock_project.ai_provider import (
     LlamaCppProvider,
     ProviderWideError,
 )
+from sherlock_project.content_extraction import strip_site_branding
 from sherlock_project.profile_synthesis import (
     CANONICAL_PROFILE_FIELDS,
     IdentityStatus,
@@ -59,8 +60,8 @@ PASS_TWO_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_two
 PASS_TWO_MAX_INPUT_BYTES = 12_000
 PASS_TWO_MAX_OUTPUT_TOKENS = 2_048
 SAFE_EXTRACTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-PASS_ONE_VALIDATION_POLICY_VERSION = "open-dynamic-profile-keys-v4"
-PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v3"
+PASS_ONE_VALIDATION_POLICY_VERSION = "open-dynamic-profile-keys-v5"
+PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v5"
 DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS = 1024
 # Extra output budget for models that cannot be told to stop thinking. Their
 # native reasoning is spent from the same `max_output_tokens` allowance as the
@@ -639,6 +640,82 @@ def _profile_metadata_context(
     return None, None
 
 
+# Keys that name a PERSON, where a value's shape is checkable. Deliberately
+# narrow: `usernames` and `aliases` hold handles, which are allowed to look
+# like anything, and widening this set would start rejecting real ones.
+_NAME_LIKE_PASS_ONE_KEYS = frozenset(
+    {
+        "display_name",
+        "full_name",
+        "name",
+        "owner_name",
+        "profile_name",
+        "real_name",
+        "screen_name",
+    }
+)
+# Title separators. A person's name is not two things joined by one of these,
+# so `Steam Community :: Ryan` is not a name whatever the page called it.
+# Spaces are required around the dashes on purpose -- `Anne-Marie` and
+# `Watson-Parker` are names, `Ryan - Steam` is a title.
+_TITLE_JOINED_NAME_PATTERN = re.compile(r"::|[|•·]|\s[-–—]\s")
+# A name is a handful of words. Past this it is a sentence, a bio line, or a
+# page title, and no denylist entry is needed to say so.
+_MAX_NAME_WORDS = 6
+
+
+def _is_site_branded_name(value: str, site_name: str) -> bool:
+    """True when a name-shaped value carries the site's own name inside it.
+
+    Guarded on length because a short site token is a substring of ordinary
+    names -- `me` is inside `James` -- and rejecting those would cost far more
+    than the branding it caught.
+    """
+
+    site_token = _identity_token(site_name)
+    if len(site_token) < 5:
+        return False
+    return site_token in _identity_token(value)
+
+
+def repair_name_value(value: str, site_name: str) -> str | None:
+    """Strip the site's branding off a name, or reject what is left.
+
+    Repair first, because the branding is the defect and the name beside it is
+    a real fact: `Steam Community :: Ryan` should yield `Ryan`, not nothing.
+    A page whose only owner evidence is its title is exactly where dropping
+    the value costs the whole site.
+    """
+
+    repaired = strip_site_branding(value, site_name=site_name, site_url=None)
+    if repaired and not _is_implausible_name_value(repaired, site_name):
+        return repaired
+    return None
+
+
+def _is_implausible_name_value(value: str, site_name: str) -> bool:
+    """Reject a value that cannot be a person's name by its SHAPE.
+
+    This exists because teaching the rule did not work. `pass_one.md` has
+    carried "`Game Community :: Erik` yields `Erik`" since it was written, and
+    `test_pass_one_local_acceptance.py` gates on that exact case, yet a live
+    scan still filed `Steam Community :: Ryan` under `full_name` -- in the same
+    response whose reasoning said the page held no owner evidence at all. At
+    4B a rule in the prompt is a suggestion; a rule here is a rule.
+
+    Shape only, and never a list of values that are not names. A denylist of
+    those grows by one entry per site burned and generalises to nothing.
+    """
+
+    if _TITLE_JOINED_NAME_PATTERN.search(value):
+        return True
+    if "://" in value or value.count(".") >= 2 and " " not in value:
+        return True
+    if len(value.split()) > _MAX_NAME_WORDS:
+        return True
+    return _is_site_branded_name(value, site_name)
+
+
 def _is_excluded_pass_one_value(
     *,
     key: str,
@@ -705,17 +782,21 @@ def sanitize_pass_one_extraction(
     for key, values in extraction.items():
         if _is_excluded_pass_one_key(key):
             continue
-        retained = [
-            value
-            for value in values
+        retained = []
+        for value in values:
+            if key in _NAME_LIKE_PASS_ONE_KEYS:
+                repaired = repair_name_value(value, site_name)
+                if repaired is None:
+                    continue
+                value = repaired
             if not _is_excluded_pass_one_value(
                 key=key,
                 value=value,
                 searched_username=searched_username,
                 site_name=site_name,
                 owner_metadata=owner_metadata,
-            )
-        ]
+            ):
+                retained.append(value)
         if retained:
             sanitized[key] = retained
 

@@ -76,6 +76,11 @@ class ScanPlan:
     site_data: dict[str, Any]
     saved_rows: dict[str, Any]
     site_data_all: dict[str, Any]
+    # The complete manifest, before the NSFW filter -- what a re-scan prunes
+    # stored rows against. Separate from `site_data_all` on purpose: that one
+    # is what this run will CHECK, this one is what the site list still COVERS,
+    # and pruning against the first retires an earlier NSFW run's results.
+    known_site_names: frozenset[str] = frozenset()
 
     @property
     def stored(self) -> int:
@@ -114,6 +119,7 @@ async def build_scan_plan(
     use_browser = resolved(settings_values, "scan.webbrowser")
 
     sites = SitesInformation(honor_exclusions=False)
+    known_site_names = frozenset(site.name for site in sites)
     if not resolved(settings_values, "scan.nsfw"):
         sites.remove_nsfw_sites(do_not_remove=[])
     site_data_all = {site.name: site.information for site in sites}
@@ -147,6 +153,7 @@ async def build_scan_plan(
         site_data=site_data,
         saved_rows=saved_rows,
         site_data_all=site_data_all,
+        known_site_names=known_site_names,
     )
 
 
@@ -357,6 +364,17 @@ async def run_scan_session(
         saved_rows = plan.saved_rows
         site_data = plan.site_data
         site_data_all = plan.site_data_all
+
+        # "Re-scan all" is the one moment stale rows can be dropped safely: it
+        # rewrites every site the list still has, so the only rows this reaches
+        # are the ones it would leave behind. Same rule as --fresh on the CLI.
+        if fresh:
+            reporter.retired_sites_removed(
+                username=username,
+                removed=await db.delete_retired_sites(
+                    username, plan.known_site_names
+                ),
+            )
 
         restored = restore_saved_results(
             username=username,

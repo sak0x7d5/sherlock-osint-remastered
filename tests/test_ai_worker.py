@@ -378,6 +378,7 @@ async def test_ai_worker_learns_keys_only_after_database_commit(
         *,
         contract_hash: str,
         model_key: str,
+        reasoning: str | None = None,
     ) -> None:
         if site_id == first_id:
             raise RuntimeError("database write failed")
@@ -386,6 +387,7 @@ async def test_ai_worker_learns_keys_only_after_database_commit(
             ai_extraction,
             contract_hash=contract_hash,
             model_key=model_key,
+            reasoning=reasoning,
         )
 
     monkeypatch.setattr(db, "update_result_ai_extraction", fail_first_commit)
@@ -827,7 +829,7 @@ async def test_ai_worker_saves_empty_extraction_without_calling_model(
 ):
     monkeypatch.setattr(
         "sherlock_project.sherlock.extract_profile_content",
-        lambda content: "",
+        lambda content, **_kwargs: "",
     )
     site_id = await db.save_result(
         username="blue",

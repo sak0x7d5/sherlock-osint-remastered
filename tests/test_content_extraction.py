@@ -4,6 +4,7 @@ from sherlock_project.content_extraction import (
     MAX_PROFILE_CONTENT_CHARS,
     extract_profile_content,
     inspect_profile_content,
+    strip_site_branding,
 )
 
 INSTAGRAM_HTML = """
@@ -248,3 +249,263 @@ def test_extract_profile_content_returns_empty_when_nothing_is_extractable(
     response_text: str,
 ):
     assert extract_profile_content(response_text) == ""
+
+
+MASTODON_ACCOUNT_JSON = """
+{"id":"109356","username":"0day","acct":"0day@infosec.exchange",
+ "display_name":"Ryan M. Montgomery","locked":false,"bot":false,
+ "created_at":"2022-11-05T00:00:00.000Z",
+ "note":"<p>Serial Entrepreneur | Penetration Tester</p><p><a href=\\"https://0day.lol\\" rel=\\"nofollow noopener\\" target=\\"_blank\\"><span class=\\"invisible\\">https://</span><span class=\\"\\">0day.lol</span></a></p>",
+ "url":"https://infosec.exchange/@0day",
+ "avatar":"https://files.mastodon.social/accounts/avatars/109/original/a.png",
+ "followers_count":10432,"following_count":21,"statuses_count":870,
+ "fields":[{"name":"hacktivity","value":"0day enthusiast","verified_at":null}]}
+"""
+
+
+def _search_response(*accounts: str) -> str:
+    return '{"accounts":[' + ",".join(accounts) + '],"statuses":[],"hashtags":[]}'
+
+
+SECOND_ACCOUNT_JSON = """
+{"id":"884412","username":"0day","acct":"0day@mad.convoca.la",
+ "display_name":"0day","note":"<p>Espacio tecnopolitico de debate.</p>",
+ "url":"https://mad.convoca.la/@0day"}
+"""
+
+
+def test_json_api_response_is_read_as_fields_not_scraped_as_html():
+    result = extract_profile_content(
+        MASTODON_ACCOUNT_JSON,
+        searched_username="0day",
+    )
+
+    assert "- display_name: Ryan M. Montgomery" in result
+    assert "- acct: 0day@infosec.exchange" in result
+    assert "Serial Entrepreneur | Penetration Tester" in result
+    # The scheme lives in its own `class="invisible"` span; flattening the
+    # fragment has to reassemble the URL rather than emit the two halves.
+    assert "https://0day.lol" in result
+    assert "- field hacktivity: 0day enthusiast" in result
+    # No markup, no JSON punctuation, no escaped quotes reach the model.
+    assert "<" not in result
+    assert '\\"' not in result
+    assert '","' not in result
+
+
+def test_json_api_response_drops_telemetry_and_assets_by_shape():
+    result = extract_profile_content(
+        MASTODON_ACCOUNT_JSON,
+        searched_username="0day",
+    )
+
+    assert "10432" not in result
+    assert "followers_count" not in result
+    assert "2022-11-05" not in result
+    assert "109356" not in result
+    assert "avatars" not in result
+    assert "false" not in result
+
+
+def test_json_search_response_refuses_to_merge_several_profiles():
+    """Two accounts match `0day`; a merged owner would be a fictional person."""
+
+    diagnostics = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON, SECOND_ACCOUNT_JSON),
+        searched_username="0day",
+    )
+
+    assert diagnostics.outcome == "ambiguous_profile_records"
+    assert diagnostics.content == ""
+
+
+def test_json_search_response_keeps_the_one_record_that_matches():
+    diagnostics = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON, SECOND_ACCOUNT_JSON),
+        searched_username="ryanmontgomery",
+    )
+
+    assert diagnostics.outcome == "no_matching_profile_record"
+    assert diagnostics.content == ""
+
+    single = inspect_profile_content(
+        _search_response(MASTODON_ACCOUNT_JSON),
+        searched_username="0day",
+    )
+
+    assert single.outcome == "extracted"
+    assert "Ryan M. Montgomery" in single.content
+
+
+def test_json_response_without_a_profile_record_extracts_nothing():
+    diagnostics = inspect_profile_content(
+        '{"error":"Record not found"}',
+        searched_username="0day",
+    )
+
+    assert diagnostics.content == ""
+    assert diagnostics.outcome == "no_extractable_content"
+
+
+def test_html_pages_are_untouched_by_the_json_reader():
+    diagnostics = inspect_profile_content(
+        INSTAGRAM_HTML,
+        searched_username="fixture_handle",
+    )
+
+    assert diagnostics.main_content_method != "json_profile_record"
+    assert "Example Person (@fixture_handle)" in diagnostics.content
+
+
+def test_json_reader_keeps_a_biography_that_ends_in_an_asset_url():
+    """An asset URL is noise only when the value *is* one."""
+
+    record = (
+        '{"username":"dana","display_name":"Dana Reyes",'
+        '"note":"Photographer in Leeds. Portfolio: dana.example/hero.png",'
+        '"avatar":"https://cdn.example/accounts/avatars/1/original/a.png"}'
+    )
+
+    result = extract_profile_content(record, searched_username="dana")
+
+    assert "Dana Reyes" in result
+    assert "Photographer in Leeds" in result
+    assert "dana.example/hero.png" in result
+    # The bare asset URL is still dropped.
+    assert "cdn.example" not in result
+
+
+def test_json_reader_settles_a_body_too_deeply_nested_to_parse():
+    """`json.loads` raises RecursionError here, not ValueError.
+
+    Letting it escape reaches `ai_worker`'s blind except, which records the
+    site as pending and retries the same unparseable body on every run.
+    """
+
+    diagnostics = inspect_profile_content(
+        "[" * 100_000 + "]" * 100_000,
+        searched_username="dana",
+    )
+
+    assert diagnostics.content == ""
+    assert diagnostics.outcome == "no_extractable_content"
+
+
+STEAM_HTML = """
+<html><head>
+<title>Steam Community :: Ryan</title>
+<meta property="og:title" content="Steam Community :: Ryan">
+<meta name="description" content="Nothing to see here, move along.">
+</head><body><div>Install Steam | language | support</div></body></html>
+"""
+
+
+@pytest.mark.parametrize(
+    ("title", "site_name", "site_url", "expected"),
+    [
+        # The site's own name is never the user's name, and the scanner
+        # already knows the site's name -- no per-site rule required.
+        (
+            "Steam Community :: Ryan",
+            "Steam",
+            "https://steamcommunity.com/id/0day/",
+            "Ryan",
+        ),
+        (
+            "Hana Okonkwo (@tallowbird) - Pinbase",
+            "Pinbase",
+            "https://pinbase.example/tallowbird",
+            "Hana Okonkwo (@tallowbird)",
+        ),
+        # Brand plus page furniture in one segment.
+        (
+            "Erik T. Halvorsen (@7ghost) • Instagram photos and videos",
+            "Instagram",
+            "https://instagram.com/7ghost",
+            "Erik T. Halvorsen (@7ghost)",
+        ),
+        # Host labels are rejoined, so a two-label brand still matches.
+        ("dev.to: 0day's profile", "DEV", "https://dev.to/0day", "0day's profile"),
+        ("GitHub - 0day", "GitHub", "https://github.com/0day", "0day"),
+        # Substring matching would eat this: `Interest` is inside `Pinterest`.
+        (
+            "Ryan - Interest Group",
+            "Pinterest",
+            "https://pinterest.com/ryan",
+            "Ryan - Interest Group",
+        ),
+        # Deciding a page has no title is the caller's job, so the last
+        # surviving segment is never stripped.
+        (
+            "Steam Community",
+            "Steam",
+            "https://steamcommunity.com/id/0day/",
+            "Steam Community",
+        ),
+        # Furniture alone is never branding.
+        ("Profile - Home", "Steam", "https://steamcommunity.com/", "Profile - Home"),
+        # Nothing to strip, nothing changed.
+        ("Ryan Montgomery", "Steam", "https://steamcommunity.com/", "Ryan Montgomery"),
+    ],
+)
+def test_strip_site_branding_uses_the_site_the_scanner_already_knows(
+    title: str,
+    site_name: str,
+    site_url: str,
+    expected: str,
+):
+    assert strip_site_branding(title, site_name=site_name, site_url=site_url) == expected
+
+
+def test_page_title_reaches_pass_one_without_the_site_name():
+    result = extract_profile_content(
+        STEAM_HTML,
+        searched_username="0day",
+        site_name="Steam",
+        site_url="https://steamcommunity.com/id/0day/",
+    )
+
+    assert "- Title: Ryan" in result
+    assert "Steam Community :: Ryan" not in result
+
+
+def test_site_branding_is_left_alone_when_the_site_is_unknown():
+    """A caller with no site identity gets exactly the previous behaviour."""
+
+    result = extract_profile_content(STEAM_HTML)
+
+    assert "- Title: Steam Community :: Ryan" in result
+
+
+@pytest.mark.parametrize(
+    ("title", "site_name"),
+    [
+        # A bare colon is a time, not a title separator.
+        ("Live at 19:00 - Pinbase", "Pinbase"),
+        ("Ryan 3:1 ratio | Pinbase", "Pinbase"),
+    ],
+)
+def test_strip_site_branding_does_not_split_on_colons_inside_values(
+    title: str,
+    site_name: str,
+):
+    stripped = strip_site_branding(title, site_name=site_name, site_url=None)
+
+    assert ":" in stripped
+    assert site_name not in stripped
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Ryan 3:1 ratio | Steam",
+        "Live at 19:00 - Steam",
+        "Hana Okonkwo • Ceramics",
+    ],
+)
+def test_strip_site_branding_returns_an_unstripped_title_unchanged(title: str):
+    """Rejoining is a rewrite, and an untouched title has not earned one."""
+
+    assert (
+        strip_site_branding(title, site_name="Pinbase", site_url=None) == title
+    )

@@ -33,6 +33,7 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 from rich.console import Console, RenderableType
@@ -95,6 +96,25 @@ class Phase:
     elapsed: float
 
 
+@dataclass(frozen=True, slots=True)
+class Extraction:
+    """The site the model is reading right now, and for how long.
+
+    `elapsed` is recomputed on every read rather than stored, so the number on
+    screen is a stopwatch and not the age of a snapshot -- the same live/frozen
+    split `Phase` makes, except this one never freezes: when the job ends the
+    whole record goes away instead of settling on a final time.
+
+    This is the FINEST grain available. Requests are not streamed -- one call
+    goes out and nothing comes back until the whole reply is written -- so
+    "which site, for how long" is genuinely all that is knowable while a model
+    is generating. A token counter here would have to be invented.
+    """
+
+    site_name: str
+    elapsed: float
+
+
 class TuiReporter(TerminalReporter):
     """Feeds a Textual screen instead of a terminal.
 
@@ -142,6 +162,25 @@ class TuiReporter(TerminalReporter):
         self.pending: deque[Finding] = deque()
         # Step name -> how long it took, frozen at the moment it landed.
         self._phase_done: dict[str, float] = {}
+        # When the extraction now in flight began. WHICH site it is comes off
+        # the parent, which already tracks it for the CLI progress bar -- the
+        # one thing it does not keep is a start time, because a Rich task times
+        # itself. This is the whole of the addition, for the reason `counts`
+        # gives: a second copy of something the parent already knows is a second
+        # thing free to disagree with it.
+        self._extraction_started_at: float | None = None
+        # Pass 2. Three fields rather than one, for the same live/frozen split
+        # `Phase` makes: the clock runs while the state is `building` and stops
+        # at the total once it lands, so one readout answers both "how long has
+        # this been going" and "how long did it take".
+        #
+        # `_synthesis_state` empty means Pass 2 has not been reached, which is
+        # NOT the same as reached-and-produced-nothing -- the screen hides the
+        # row entirely in the first case and must never show a landed state for
+        # work that never started.
+        self._synthesis_started_at: float | None = None
+        self._synthesis_state = ""
+        self._synthesis_elapsed = 0.0
         self.username = ""
         self.total = 0
         self.finished = False
@@ -417,10 +456,31 @@ class TuiReporter(TerminalReporter):
     def ai_job_started(self, site_name: str) -> None:
         with self._quiet():
             super().ai_job_started(site_name)
+        self._extraction_started_at = perf_counter()
 
     def ai_job_finished(self, *args: Any, **kwargs: Any) -> None:
         with self._quiet():
+            # The parent clears its own site name from in here, so the pair goes
+            # back to "nothing in flight" together rather than one at a time.
             super().ai_job_finished(*args, **kwargs)
+        self._extraction_started_at = None
+
+    def ai_pass_finished(self) -> None:
+        """End the pass, and stop claiming a job is running.
+
+        A healthy run cleared this through the last job's own outcome. This is
+        for the run that ends any other way: a model that dies mid-request
+        leaves a job that started and never finished, and the parent goes on
+        naming that site indefinitely -- it clears the name when an outcome is
+        recorded, and an abandoned job never records one. A spinner still
+        turning beside a scan that has stopped is the one thing a live indicator
+        must not do.
+
+        NOT quiet: the parent's summary line here is the pass's own result and
+        no panel restates it.
+        """
+        super().ai_pass_finished()
+        self._extraction_started_at = None
 
     def ai_model_starting(self) -> None:
         # Quiet: the startup block shows the model loading, and how long for.
@@ -443,6 +503,64 @@ class TuiReporter(TerminalReporter):
             self._phase_done["model"] = self._elapsed_since(
                 self._ai_model_started_at
             )
+
+    # -- pass 2 -------------------------------------------------------------
+    #
+    # These three existed on the parent and were not overridden, which is why
+    # the screen said `· waiting` throughout synthesis. Nothing was wrong with
+    # the held row: with no extraction in flight, the scan still running and
+    # jobs on the clock, "waiting" was the only thing it could conclude. The
+    # missing fact was that Pass 2 is a phase at all.
+    #
+    # This matters more than a blank readout would. Synthesis is the single
+    # heaviest model call in a run -- every stored extraction merged in one
+    # request -- and it is the one an anchored rebuild loads a model for, cold,
+    # measured at 187s. Reporting idle through that is what makes someone kill
+    # a run that is working, which is the whole argument the startup block was
+    # built on.
+
+    def synthesis_started(self, username: str) -> None:
+        # Quiet: the parent's "Building AI profile for 'x'" is now exactly what
+        # the phase line says, beside it, while it is still true.
+        with self._quiet():
+            super().synthesis_started(username)
+        self._synthesis_started_at = perf_counter()
+        self._synthesis_state = "building"
+        self._synthesis_elapsed = 0.0
+
+    def synthesis_failed(self, username: str, error: Exception) -> None:
+        # NOT quiet. The phase line can say `failed`; only the log can say why,
+        # and it also carries "previous profile retained", which is the part
+        # that decides whether anything was lost.
+        super().synthesis_failed(username, error)
+        self._freeze_synthesis("failed")
+
+    def synthesis_finished(
+        self,
+        username: str,
+        profile: Any,
+        *,
+        cache_hit: bool,
+    ) -> None:
+        super().synthesis_finished(username, profile, cache_hit=cache_hit)
+        # A cache hit is a landed profile that cost nothing, and it is worth
+        # distinguishing on screen: it is the difference between "the model
+        # rebuilt this" and "the model was never asked", which is exactly the
+        # question behind "I changed the model and nothing happened".
+        self._freeze_synthesis("cached" if cache_hit else "ready")
+
+    def _freeze_synthesis(self, state: str) -> None:
+        """Stop the clock and record how it ended.
+
+        Captured, never recomputed later -- the same bug the startup phases
+        already paid for, where a finished step went on climbing because only
+        its start time was kept and every repaint asked "how long ago was
+        that".
+        """
+        if self._synthesis_started_at is not None:
+            self._synthesis_elapsed = self._elapsed_since(self._synthesis_started_at)
+        self._synthesis_started_at = None
+        self._synthesis_state = state
 
     def finish_scan(self, elapsed_time: float = 0) -> None:
         """End the scan, keeping only the part the panels do not already say.
@@ -480,6 +598,16 @@ class TuiReporter(TerminalReporter):
         super().processing_interrupted()
         self.interrupted = True
         self.finished = True
+        self._extraction_started_at = None
+        # An interrupted synthesis did not fail and did not land -- it was
+        # abandoned, and neither outcome word is true of it. The row goes
+        # rather than freezing on a state that claims something happened. A
+        # spinner left turning beside a stopped scan is the specific thing a
+        # live indicator must never do.
+        if self._synthesis_state == "building":
+            self._synthesis_started_at = None
+            self._synthesis_state = ""
+            self._synthesis_elapsed = 0.0
 
     # -- what the screen reads ---------------------------------------------
 
@@ -560,6 +688,77 @@ class TuiReporter(TerminalReporter):
             found.append(Phase("model", state, elapsed))
         return found
 
+    @property
+    def extraction(self) -> Extraction | None:
+        """What the model is working on this instant, or None between jobs.
+
+        One job at a time is not an assumption this makes, it is what the
+        pipeline does: a single `ai_worker` pulls the queue, so the site that
+        started last is the site being read now.
+
+        BOTH halves are required to be present. The parent's site name outlives
+        an abandoned job, and the timestamp is what this class clears when a
+        pass ends for any reason -- so requiring the pair is what stops a dead
+        run from reading as a live one.
+        """
+        site = self._ai_current_site
+        if not site or self._extraction_started_at is None:
+            return None
+        return Extraction(
+            site_name=site,
+            elapsed=self._elapsed_since(self._extraction_started_at),
+        )
+
+    @property
+    def synthesis(self) -> Phase | None:
+        """Pass 2 as a startup-style phase, or None before it is reached.
+
+        A `Phase` rather than a type of its own, because it is drawn by
+        `phase_line` exactly like the browser and the model: the whole point is
+        that one slow step looks the same wherever the app is waiting on one.
+
+        None while `_synthesis_state` is empty. The row is HIDDEN then rather
+        than drawn as `waiting`, and the distinction is load-bearing: most runs
+        never reach Pass 2 at all -- analysis off, or nothing extracted -- and
+        a permanent `profile · waiting` on those runs would describe work that
+        was never going to happen.
+        """
+        if not self._synthesis_state:
+            return None
+        elapsed = (
+            self._elapsed_since(self._synthesis_started_at)
+            if self._synthesis_started_at is not None
+            else self._synthesis_elapsed
+        )
+        return Phase("profile", self._synthesis_state, elapsed)
+
+    @property
+    def throughput(self) -> float | None:
+        """Output tokens per second, averaged over the extractions so far.
+
+        Both halves come from the server's own timings, so this is the model's
+        generation rate and comparable to the figure llama.cpp prints: the
+        seconds it spent PREDICTING, not the seconds the request took. The
+        difference is not a rounding error on Pass 1, where the prompt is a
+        whole scraped page and prompt processing can cost as much again as the
+        generation -- dividing by the round trip put 22 tok/s on screen for a
+        model benchmarked at 46 on the same card (see `llama_server.py`).
+
+        An average over finished requests rather than a live rate, because the
+        requests are not streamed: nothing is observable between sending one and
+        getting the whole reply back, so a "current" speed would be a guess
+        dressed as a measurement. Weighted by tokens, since that is what summing
+        each side separately does -- a long generation counts for more than a
+        two-token one, which is the average someone reads a speed as.
+
+        None until there is something to average -- a server that reports no
+        timings leaves the totals at zero, and `0 tok/s` beside a model that is
+        visibly working reads as a fault rather than as a missing figure.
+        """
+        if not self._ai_generation_tokens or self._ai_generation_seconds <= 0:
+            return None
+        return self._ai_generation_tokens / self._ai_generation_seconds
+
     def drain_pending(self) -> list[Finding]:
         """Hand over the findings not yet drawn, and forget them.
 
@@ -618,3 +817,94 @@ def describe_settings(values: dict[str, Any]) -> str:
     if not analysis_is_on(values):
         parts.append("no model configured")
     return "  ·  ".join(parts)
+
+
+def _pending_note(*, enabled: bool) -> str:
+    """What a toggle flipped mid-scan actually applies to.
+
+    Both toggles are read once, when the scan starts -- `use_ai` is passed to
+    `run_scan_session` and the reporter's verbosity is fixed by its constructor
+    -- so flipping either mid-run changes the NEXT scan and nothing about this
+    one. Left unsaid, the toggle reads as a live control and the run looks
+    broken: analysis switched on at site 40 of 680 extracts nothing for the
+    remaining 640, and the screen offers no reason why.
+
+    Says which run it applies to AND what the current one is doing, because
+    "from the next scan" alone still leaves the more urgent question open.
+    """
+    return (
+        "Takes effect from the NEXT scan — this run was started "
+        f"{'without' if enabled else 'with'} it."
+    )
+
+
+def describe_options(
+    values: dict[str, Any],
+    *,
+    use_ai: bool,
+    verbose: bool,
+    running: tuple[bool, bool] | None = None,
+) -> tuple[str, str]:
+    """Hover text for the two per-run toggles, as `(analysis, verbose)`.
+
+    Delivered as Textual tooltips rather than as lines under the row. The
+    toggles are read far more often than they are pressed, and a permanent
+    paragraph explaining two controls that never change during a scan is three
+    rows the counters and the feed want back -- but the explanation still has to
+    exist somewhere for the person meeting `analysis ‹ off ›` for the first
+    time. A tooltip is the shape that fits both: nothing on screen until asked,
+    and no width limit when it is.
+
+    Each opens by naming its toggle and its state, because a floating box that
+    appears beside the pointer carries no other clue about which of the two
+    controls it belongs to.
+
+    `running` is the pair the in-flight scan was actually started with, or None
+    when nothing is running. Only a toggle that DIFFERS from it gets the pending
+    note, so a scan started with analysis on is not told that analysis applies
+    from the next scan -- it is already applying.
+    """
+    ran_with_ai, ran_verbose = running if running is not None else (use_ai, verbose)
+
+    if not use_ai:
+        # The consequence, not just the state: someone turning this off wants a
+        # faster scan and does not necessarily know they are also giving up the
+        # profile the RESULTS tab builds from what it stores.
+        analysis = (
+            "AI analysis — OFF\n\n"
+            "The scan finds accounts and reads nothing. No evidence is stored, "
+            "so the RESULTS tab cannot build a profile for this username."
+        )
+    elif not analysis_is_on(values):
+        # The one state the toggle cannot honour on its own, and the fix is two
+        # tabs away -- so the tooltip has to name where to go.
+        analysis = (
+            "AI analysis — ON, but no model is configured\n\n"
+            "Nothing will be extracted. Choose a model on the SETTINGS tab "
+            "first."
+        )
+    else:
+        analysis = (
+            "AI analysis — ON\n\n"
+            "A local model reads every hit and stores the facts it finds. That "
+            "evidence is what the RESULTS tab builds a profile from."
+        )
+    if use_ai != ran_with_ai:
+        analysis = f"{analysis}\n\n{_pending_note(enabled=use_ai)}"
+
+    if verbose:
+        verbose_text = (
+            "Verbose — ON\n\n"
+            "ACTIVITY adds a trace per AI request: token counts, timings, and "
+            "the diagnostics behind a model failure."
+        )
+    else:
+        verbose_text = (
+            "Verbose — OFF\n\n"
+            "ACTIVITY carries only what has no panel of its own: warnings, "
+            "failures, and the reasons behind them."
+        )
+    if verbose != ran_verbose:
+        verbose_text = f"{verbose_text}\n\n{_pending_note(enabled=verbose)}"
+
+    return analysis, verbose_text
