@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from sherlock_project.ai_engine import pass_one_contract_hash
 from sherlock_project.database import SherlockDB, default_database_path
 from sherlock_project.notify import TerminalReporter
 from sherlock_project.profile_synthesis import ProfileSynthesis
@@ -229,6 +230,18 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
     cache = await db.get_profile_summary_cache(username)
     raw_summary = cache.profile_summary if cache is not None else None
     model_counts = await db.get_extraction_model_counts(username)
+    # Stored pages that Pass 1 has never read -- the evidence an analysis run
+    # would work from WITHOUT re-fetching anything. Kept distinct from
+    # `extraction_models`, which counts pages already read: "nothing extracted"
+    # and "nothing left to extract from" look identical on screen otherwise,
+    # and only one of them is fixed by scanning again.
+    #
+    # Reading it here costs one indexed query and keeps this module's promise:
+    # the contract hash is a file read, not a model load, and nothing is
+    # written.
+    pending_analysis = await db.get_pending_ai_extraction_ids(
+        username, contract_hash=pass_one_contract_hash()
+    )
 
     return {
         "username": username,
@@ -239,6 +252,7 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
         "accounts": _claimed_accounts(saved_rows),
         "unresolved": _unresolved_sites(saved_rows),
         "extraction_models": _extraction_models(model_counts),
+        "pending_analysis": len(pending_analysis),
         "profile_updated_at": cache.updated_at if cache is not None else None,
         "profile": _load_profile(raw_summary),
         "profile_unreadable": bool(raw_summary) and _load_profile(raw_summary) is None,
