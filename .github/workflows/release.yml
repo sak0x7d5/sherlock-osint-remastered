@@ -1,0 +1,103 @@
+name: Release
+
+# Publishes the GitHub Release that `sherlock-rm` checks for updates against.
+#
+# Tag-driven, and deliberately the ONLY way a release gets made. The update
+# check reads `releases/latest` and installs `git+<repo>@<tag_name>`, so a
+# release is not a formality here -- it is the thing that decides what lands on
+# someone's machine. Making it by hand is how a tag ends up pointing at a
+# commit that was never built, or a release gets published for a tag whose
+# pyproject still carries the previous version.
+#
+# `releases/latest` excludes drafts and prereleases, so this publishes neither.
+# A tag shaped other than vX.Y.Z is rejected before anything is built: the
+# comparison in `updater.parse_version` returns None for anything it cannot
+# read as dotted numbers, which would make the release invisible to the very
+# check it exists to feed.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual runs are for rehearsing the build, not for publishing. The publish
+  # step is gated on the ref being a tag, so a dispatch run builds and stops.
+  workflow_dispatch:
+
+# The one workflow here that needs to write. `release-checks.yml` is read-only
+# and stays that way; this is the boundary where that changes, which is reason
+# enough to keep the two files apart rather than adding a job over there.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      # Pinned for the reason release-checks.yml gives at length: an unpinned
+      # tool turns a green branch red with no code change, and every
+      # [tool.poetry] field here is already deprecated in favour of [project].
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v4
+        with:
+          poetry-version: '2.3.3'
+
+      - name: Validate project metadata
+        run: poetry check
+
+      # The check that stops the failure mode this whole feature is exposed to.
+      # `updater.is_newer` compares the tag against the version baked into the
+      # installed distribution; if they disagree, every installed copy either
+      # never sees the release or is told forever that it is out of date. Cheap
+      # to assert here, invisible until someone's tool starts nagging them.
+      - name: Tag must match the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          packaged="$(poetry version --short)"
+          if [ "$tag" != "$packaged" ]; then
+            echo "::error::tag v$tag does not match pyproject version $packaged."
+            echo "Bump [tool.poetry] version and re-tag; they move together."
+            exit 1
+          fi
+          echo "tag v$tag matches packaged version $packaged"
+
+      # A tag the update check cannot parse is a release nobody is offered.
+      - name: Tag must be readable as a version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if ! printf '%s' "${GITHUB_REF_NAME#v}" \
+              | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            echo "::error::${GITHUB_REF_NAME} is not vX.Y.Z."
+            echo "updater.parse_version returns None for it, so the release"
+            echo "would never be offered to anyone."
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: poetry build
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Not a draft and not a prerelease, because `releases/latest` returns
+        # neither -- and that endpoint is the only thing the update check reads.
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --latest \
+            dist/*

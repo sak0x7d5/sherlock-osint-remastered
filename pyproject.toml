@@ -3,9 +3,6 @@ requires = [ "poetry-core>=1.2.0" ]
 build-backend = "poetry.core.masonry.api"
 # poetry-core 1.8 not available in .fc39. Can upgrade to 1.8.0 at .fc39 EOL
 
-[tool.poetry-version-plugin]
-source = "init"
-
 [tool.poetry]
 name = "sherlock-rm"
 # NOT "sherlock-project": that is upstream's distribution name on PyPI, and
@@ -14,7 +11,11 @@ name = "sherlock-rm"
 # installed", and a forced install silently replaced upstream under a name and
 # version indistinguishable from it in `pip list`. The console script moves for
 # the same reason. Interim: see README's "A rename is coming".
-version = "0.1.0"
+# Moves in lockstep with the git tag. `updater.is_newer` compares this, as
+# reported by importlib.metadata, against the `tag_name` of the latest GitHub
+# release -- so a tag without a bump leaves every installed copy permanently
+# convinced it is out of date, and a bump without a tag is invisible.
+version = "0.2.0"
 description = "Hunt down social media accounts by username across social networks, with local-model profile analysis"
 license = "MIT"
 # Independent derivative of the Sherlock Project; upstream authors and

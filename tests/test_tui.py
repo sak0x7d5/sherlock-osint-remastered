@@ -3630,11 +3630,29 @@ def _enable_update_check(enabled: bool = True) -> None:
     )
 
 
-def _stub_release(monkeypatch, version: str = "0.2.0"):
+def _a_newer_version() -> str:
+    """A version this build will accept as newer, whatever this build is.
+
+    Derived rather than written down. These tests originally hardcoded
+    "0.2.0" as the newer side, which held only while the package was 0.1.0 --
+    the first real version bump turned three of them red, because 0.2.0 had
+    become what was installed and `is_newer` correctly refused to call it an
+    upgrade. Bumping the major keeps the comparison true for every version
+    this package will ever carry.
+    """
+    from sherlock_project import __version__
+    from sherlock_project.updater import parse_version
+
+    numbers = parse_version(__version__) or (0,)
+    return ".".join(str(part) for part in (numbers[0] + 1, 0, 0))
+
+
+def _stub_release(monkeypatch, version: str | None = None):
     """Answer the forge without going near it, and record that it was asked."""
     import sherlock_project.updater as updater_module
     from sherlock_project.updater import Release
 
+    version = _a_newer_version() if version is None else version
     asked: list[str] = []
 
     async def fake_fetch(*, timeout: float = 10.0):
