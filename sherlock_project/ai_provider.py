@@ -134,6 +134,11 @@ class AIGenerationStats:
     output_tokens: int | None = None
     reasoning_tokens: int | None = None
     tokens_per_second: float | None = None
+    # How long the model spent GENERATING, as timed by the server. Distinct
+    # from `AICompletion.elapsed_seconds`, which is the round trip: prompt
+    # processing, transport and JSON parsing included. Only this number belongs
+    # underneath an output-token count.
+    generation_seconds: float | None = None
     time_to_first_token_seconds: float | None = None
     model_load_time_seconds: float | None = None
 
@@ -466,14 +471,31 @@ class LlamaCppProvider:
         timings = raw_timings if isinstance(raw_timings, dict) else {}
 
         prompt_ms = self._number(timings, "prompt_ms", float)
+        predicted_ms = self._number(timings, "predicted_ms", float)
+        output_tokens = self._number(usage, "completion_tokens", int)
+        tokens_per_second = self._number(timings, "predicted_per_second", float)
+
+        generation_seconds = (
+            predicted_ms / 1000.0 if predicted_ms is not None else None
+        )
+        if generation_seconds is None and tokens_per_second and output_tokens:
+            # A server that reports the rate but not the duration still pins the
+            # duration exactly: `predicted_per_second` IS `predicted_n` over
+            # `predicted_ms`, so this inverts a measurement rather than
+            # estimating one. Left None when neither is reported, so that a
+            # request nobody timed is dropped from the average instead of being
+            # charged its whole round trip.
+            generation_seconds = output_tokens / tokens_per_second
+
         return AIGenerationStats(
             input_tokens=self._number(usage, "prompt_tokens", int),  # type: ignore[arg-type]
-            output_tokens=self._number(usage, "completion_tokens", int),  # type: ignore[arg-type]
+            output_tokens=output_tokens,  # type: ignore[arg-type]
             # llama-server does not break reasoning out of the token count the
             # way LM Studio did. Left None rather than guessed -- a fabricated
             # number here would land in the -v trace looking measured.
             reasoning_tokens=None,
-            tokens_per_second=self._number(timings, "predicted_per_second", float),  # type: ignore[arg-type]
+            tokens_per_second=tokens_per_second,  # type: ignore[arg-type]
+            generation_seconds=generation_seconds,
             time_to_first_token_seconds=(
                 prompt_ms / 1000.0 if prompt_ms is not None else None
             ),
