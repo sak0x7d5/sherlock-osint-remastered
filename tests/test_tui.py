@@ -2194,8 +2194,7 @@ async def test_the_profile_button_carries_the_hover_text_too():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        await pilot.pause()
+        await _open_results(app, pilot)
         anchors = app.query_one("#profile-anchors", Button)
         assert "Anchors" in anchors.tooltip
         assert "merging every name every site showed" in anchors.tooltip
@@ -3305,8 +3304,7 @@ async def test_the_accounts_list_says_what_pass_one_made_of_each_site():
 
     app = SherlockUI()
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("alt+2")
-        await pilot.pause()
+        await _open_results(app, pilot)
         rows = _accounts_rows(app)
 
         # Two values under two keys is two facts, not two keys.
@@ -3342,18 +3340,14 @@ async def _open_extractions(pilot):
 
     from sherlock_project.tui.results_pane import SEC_EXTRACTIONS, SECTION_FOR_TAB
 
-    await pilot.press("alt+2")
-    for _ in range(12):
-        await pilot.pause()
+    await _open_results(pilot.app, pilot)
     for _ in range(len(SECTION_FOR_TAB)):
         switcher = pilot.app.query_one("#detail-switch", ContentSwitcher)
         if switcher.current == SEC_EXTRACTIONS:
             break
         await pilot.press("alt+right")
-        for _ in range(3):
-            await pilot.pause()
-    for _ in range(6):
-        await pilot.pause()
+        await _settle(pilot.app, pilot)
+    await _settle(pilot.app, pilot)
 
 
 async def test_the_extraction_panel_ranks_by_yield_not_alphabetically():
@@ -3496,9 +3490,7 @@ async def test_the_extractions_tab_counts_yield_not_rows():
 
     app = SherlockUI()
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("alt+2")
-        for _ in range(12):
-            await pilot.pause()
+        await _open_results(app, pilot)
         label = str(app.query_one("#tab-extractions", Tab).label)
         assert label == "EXTRACTIONS 1"
 
@@ -3604,16 +3596,15 @@ async def test_switching_username_does_not_carry_extractions_across():
 
     app = SherlockUI()
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("alt+2")
-        await pilot.pause()
+        await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
 
         pane.select_username("marcus")
-        await pilot.pause()
+        await _settle(app, pilot)
         assert pane._extractions["GitHub"].fact_count == 1
 
         pane.select_username("avery")
-        await pilot.pause()
+        await _settle(app, pilot)
         # avery's GitHub was never analysed, and must not inherit marcus's.
         assert pane._extractions["GitHub"].analysed is False
 
