@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,11 @@ class AIExtractionJob:
     username: str
     site_name: str
     response_text: str
+    # The profile URL this response came from. Content extraction needs the
+    # host to recognise the site's own branding in a page title, which the
+    # display name alone does not cover: "Steam" does not contain "Community",
+    # but `steamcommunity.com` does.
+    site_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +59,75 @@ class AIProfileEvidenceRecord:
     scanned_at: str | None
     ai_extraction: str | None
     ai_extraction_contract_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SiteExtractionRecord:
+    """One claimed site and whatever Pass 1 made of it.
+
+    A superset of `AIProfileEvidenceRecord` and NOT a replacement for it: that
+    one is the input to Pass 2 and is hashed, so it stays exactly as wide as
+    synthesis needs. This one is for reading, and carries the two fields that
+    make an extraction reviewable rather than merely present -- which model
+    produced it, and the reasoning it produced on the way.
+
+    Every field after `site_name` is nullable, and each None means something
+    different: no extraction at all (never analysed), no model (row predates the
+    column), no reasoning (row predates it, or the model reasons natively and
+    was sent the variant prompt that has no such field).
+    """
+
+    site_id: int
+    site_name: str
+    site_url: str | None
+    scanned_at: str | None
+    ai_extraction: str | None
+    ai_extraction_contract_hash: str | None
+    ai_extraction_model: str | None
+    ai_extraction_reasoning: str | None
+
+    @property
+    def facts(self) -> dict[str, list[str]]:
+        """The extraction as a dict, or empty if there is nothing readable.
+
+        Parsed here rather than at the call site so a row whose JSON is corrupt
+        degrades to "no facts" instead of taking down whatever is drawing it.
+        A stored extraction is model output that was valid when written; it is
+        not a promise about what is on disk months later.
+        """
+        if not self.ai_extraction:
+            return {}
+        try:
+            parsed = json.loads(self.ai_extraction)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            str(key): [str(item) for item in value]
+            for key, value in parsed.items()
+            if isinstance(value, list) and value
+        }
+
+    @property
+    def fact_count(self) -> int:
+        """How many individual values were extracted, not how many keys.
+
+        The number someone judges a model by is how much it found, and one key
+        holding four values is four facts. Counting keys would make a model that
+        found four emails look identical to one that found a single name.
+        """
+        return sum(len(values) for values in self.facts.values())
+
+    @property
+    def analysed(self) -> bool:
+        """Whether Pass 1 ever wrote a verdict for this site.
+
+        Distinct from having facts. An analysed page that yielded nothing is a
+        result; a page never sent to a model is a gap, and the two must not
+        render the same way.
+        """
+        return self.ai_extraction is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +396,29 @@ class SherlockDB:
             column_name="ai_extraction_model",
             definition="TEXT",
         )
+        # The model's own account of HOW it read the page: one clause per
+        # evidence line, in page order, each either "include VALUE as KEY" or
+        # "skip: REASON". Stored so an extraction can be reviewed rather than
+        # only trusted -- the extraction says what came out, this says why, and
+        # it is the half that moves when the Pass 1 prompt is edited.
+        #
+        # NOT part of the cache contract, and the field's own schema description
+        # still calls it "Transient and never stored". That wording is now
+        # slightly untrue and is deliberately LEFT ALONE: the description is
+        # inside `OSINTResponse.model_json_schema()`, which is hashed into
+        # `pass_one_contract_hash`, so editing one string would mark every
+        # cached extraction on disk as stale and silently re-extract every
+        # username on the next --ai run. A stale comment is much cheaper.
+        #
+        # NULL means the row predates this column, OR that the model was one
+        # whose native thinking cannot be turned off -- those are sent the
+        # variant prompt with no reasoning field at all, so there is genuinely
+        # nothing to record. The viewer distinguishes the two.
+        await self._ensure_column(
+            table_name="results",
+            column_name="ai_extraction_reasoning",
+            definition="TEXT",
+        )
         # How much of the site rule actually matched. Orthogonal to status:
         # status is what was decided, confidence is how much agreed. Persisted
         # so cross-site synthesis can weight a confirmed hit above a probable
@@ -499,6 +597,22 @@ class SherlockDB:
                                 THEN NULL
                             ELSE results.ai_extraction_model
                         END,
+                        -- Cleared on exactly the conditions that clear the
+                        -- extraction. Reasoning that outlived the extraction it
+                        -- explains would be worse than none: it would describe
+                        -- a reading of the page that is no longer on the row,
+                        -- and the viewer would show it beside whatever came
+                        -- next.
+                        ai_extraction_reasoning = CASE
+                            WHEN excluded.ai_extraction IS NOT NULL
+                                THEN NULL
+                            WHEN ?
+                                THEN NULL
+                            WHEN excluded.status IS NOT results.status
+                                OR excluded.response_text IS NOT results.response_text
+                                THEN NULL
+                            ELSE results.ai_extraction_reasoning
+                        END,
                         scanned_at = CURRENT_TIMESTAMP
                         RETURNING id, ai_extraction
                     """,
@@ -519,6 +633,7 @@ class SherlockDB:
                         ),
                         confidence,
                         transport,
+                        force_ai_extraction,
                         force_ai_extraction,
                         force_ai_extraction,
                         force_ai_extraction,
@@ -585,6 +700,7 @@ class SherlockDB:
                         r.username_id,
                         u.username,
                         r.site_name,
+                        r.site_url,
                         r.response_text,
                         r.ai_extraction_contract_hash
                     FROM results r
@@ -612,7 +728,8 @@ class SherlockDB:
                         SET
                             ai_extraction = NULL,
                             ai_extraction_contract_hash = NULL,
-                            ai_extraction_model = NULL
+                            ai_extraction_model = NULL,
+                            ai_extraction_reasoning = NULL
                         WHERE id = ?
                         """,
                         (site_id,),
@@ -629,6 +746,9 @@ class SherlockDB:
             username=str(row["username"]),
             site_name=str(row["site_name"]),
             response_text=str(row["response_text"]),
+            site_url=(
+                str(row["site_url"]) if row["site_url"] is not None else None
+            ),
         )
 
     async def update_result_ai_extraction(
@@ -638,7 +758,17 @@ class SherlockDB:
         *,
         contract_hash: str,
         model_key: str,
+        reasoning: str | None = None,
     ) -> None:
+        """Store one site's extraction, and how the model got there.
+
+        `reasoning` defaults to None so every existing caller keeps working and
+        so the two cases that genuinely have none stay honest: a page that
+        reduced to nothing was never sent to a model at all, and a model whose
+        native thinking cannot be disabled is sent the variant prompt, which has
+        no reasoning field. Written as NULL rather than "" for both, so the
+        viewer can tell "not recorded" from "the model said nothing".
+        """
         db = self._require_db()
 
         async with self._write_lock:
@@ -649,10 +779,17 @@ class SherlockDB:
                     SET
                         ai_extraction = ?,
                         ai_extraction_contract_hash = ?,
-                        ai_extraction_model = ?
+                        ai_extraction_model = ?,
+                        ai_extraction_reasoning = ?
                     WHERE id = ?
                     """,
-                    (ai_extraction, contract_hash, model_key, site_id),
+                    (
+                        ai_extraction,
+                        contract_hash,
+                        model_key,
+                        reasoning or None,
+                        site_id,
+                    ),
                 ) as cur:
                     if cur.rowcount == 0:
                         raise RuntimeError(f"Failed to update AI extraction for site id {site_id!r}")
@@ -753,6 +890,68 @@ class SherlockDB:
                     if row["ai_extraction_contract_hash"] is not None
                     else None
                 ),
+            )
+            for row in rows
+        ]
+
+    async def get_site_extractions(
+        self,
+        username: str,
+    ) -> list[SiteExtractionRecord]:
+        """Every claimed site for a username, with its extraction if it has one.
+
+        DELIBERATELY SEPARATE FROM `get_ai_profile_evidence`, which looks almost
+        identical and must not be reused here. That one is the INPUT TO PASS 2,
+        and its rows are covered by `compute_synthesis_input_hash` -- adding the
+        model and the reasoning to it would change the synthesis input for every
+        username on disk and invalidate every cached profile, to feed a viewer
+        that only reads. Two queries over the same table is the cheap half of
+        that trade.
+
+        Returns sites with NO extraction too. "This site was found and nothing
+        was extracted from it" is a fact about the run, and a list that silently
+        omitted those rows would make a model that extracted from 8 of 149 sites
+        look like one that was only ever asked about 8.
+        """
+        db = self._require_db()
+        async with db.execute(
+            """
+            SELECT
+                r.id,
+                r.site_name,
+                r.site_url,
+                r.scanned_at,
+                r.ai_extraction,
+                r.ai_extraction_contract_hash,
+                r.ai_extraction_model,
+                r.ai_extraction_reasoning
+            FROM results r
+            JOIN usernames u
+                ON u.id = r.username_id
+            WHERE u.username = ?
+                AND r.status = ?
+            ORDER BY r.site_name COLLATE NOCASE
+            """,
+            (username, str(QueryStatus.CLAIMED)),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        def text(row: Any, column: str) -> str | None:
+            value = row[column]
+            return str(value) if value is not None else None
+
+        return [
+            SiteExtractionRecord(
+                site_id=int(row["id"]),
+                site_name=str(row["site_name"]),
+                site_url=text(row, "site_url"),
+                scanned_at=text(row, "scanned_at"),
+                ai_extraction=text(row, "ai_extraction"),
+                ai_extraction_contract_hash=text(
+                    row, "ai_extraction_contract_hash"
+                ),
+                ai_extraction_model=text(row, "ai_extraction_model"),
+                ai_extraction_reasoning=text(row, "ai_extraction_reasoning"),
             )
             for row in rows
         ]
@@ -985,6 +1184,87 @@ class SherlockDB:
         await db.execute("DELETE FROM usernames WHERE id = ?", (username_id,))
         await db.commit()
         return removed
+
+    async def delete_retired_sites(
+        self,
+        username: str,
+        known_site_names: Collection[str],
+    ) -> int:
+        """Drop stored results for sites the manifest no longer contains.
+
+        A username's record accumulates across manifests. When the site list
+        changed the old rows were never removed, so a name scanned under both
+        the legacy manifest and WMN ends up holding the union of the two -- and
+        because the two spell sites differently, the union carries duplicates
+        (`Threads` and `threads`, `CodePen` and `Codepen`) plus hundreds of
+        sites nothing checks any more. Every count downstream reads that union:
+        the scan summary, `show`, the exports.
+
+        Called on a full re-scan, which is the moment it is safe. A re-scan
+        rewrites every row for a site the manifest still has, so the only rows
+        this can reach are ones the run would leave untouched and stale.
+
+        WHY NOT DELETE THE WHOLE USERNAME instead, which is the obvious way to
+        start a scan over: for a completed re-scan the end state is identical,
+        and for everything else it is worse. Wiping the record takes the stored
+        pass-two profile and every AI extraction with it, and a re-scan without
+        analysis rebuilds neither -- so "start over" would silently cost work a
+        model spent minutes on. An interrupted re-scan would leave the record
+        emptied and only partly refilled, which is worse than the state it was
+        asked to improve.
+
+        `known_site_names` is the COMPLETE manifest, before the NSFW filter and
+        before any `--site` narrowing. Passing the filtered scan set would make
+        this delete the NSFW results of an earlier `--nsfw` run, and rows this
+        run merely did not look at are not retired.
+
+        An empty `known_site_names` is treated as "unknown", not "nothing is
+        known": a manifest that failed to load must not read as every site
+        having been retired. Returns the number of rows removed.
+        """
+        if not known_site_names:
+            return 0
+
+        db = self._require_db()
+
+        async with db.execute(
+            "SELECT id FROM usernames WHERE username = ?", (username,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return 0
+        username_id = int(row["id"])
+
+        async with db.execute(
+            "SELECT site_name FROM results WHERE username_id = ?",
+            (username_id,),
+        ) as cur:
+            stored = await cur.fetchall()
+
+        keep = set(known_site_names)
+        retired = [
+            (username_id, site["site_name"])
+            for site in stored
+            if site["site_name"] not in keep
+        ]
+        if not retired:
+            return 0
+
+        # One statement per row rather than a `NOT IN (...)` over the whole
+        # manifest: that would be 700+ bound parameters against a limit this
+        # code does not control, and the retired set is the small one anyway.
+        async with self._write_lock:
+            try:
+                await db.executemany(
+                    "DELETE FROM results WHERE username_id = ? AND site_name = ?",
+                    retired,
+                )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+        return len(retired)
 
     async def get_saved_results(self, username: str) -> dict[str, dict[str, Any]]:
         """Return stored results for a username, keyed by site name.
