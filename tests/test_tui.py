@@ -4717,6 +4717,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
         if reporter is not None:
             reporter.ai_model_starting()
         await release.wait()
+        return {}
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", slow_synthesis)
 
@@ -4771,6 +4772,49 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
         assert "LM Studio is not running" in shown
         # And the controls come back, so it can be tried again.
         assert app.query_one("#profile-buttons").display is True
+
+
+async def test_a_synthesis_that_failed_is_not_announced_as_a_built_profile(
+    monkeypatch,
+):
+    """`synthesize_profiles` isolates each username and does not re-raise.
+
+    So the absence of an exception says nothing about whether anything was
+    built, and reading it as success is how this button came to report
+    "Profile built for x" over a failure that had left the old profile in
+    place. The reporter knew; nothing that could act on it did.
+    """
+    from textual.widgets import Static
+
+    from sherlock_project import sherlock as sherlock_module
+    from sherlock_project.tui.results_pane import ResultsPane
+
+    await _results_with("quietfail", extractions=1)
+
+    async def failed_but_returned(*, usernames, force, inline_anchors, reporter=None):
+        return {usernames[0]: RuntimeError("the model returned nothing usable")}
+
+    monkeypatch.setattr(sherlock_module, "run_synthesis_only", failed_but_returned)
+    notified: list[str] = []
+    monkeypatch.setattr(
+        ResultsPane,
+        "notify",
+        lambda self, message, *args, **kwargs: notified.append(str(message)),
+    )
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _open_profile_section(app, pilot)
+
+        await pilot.click("#profile-build")
+        status = app.query_one("#profile-status", Static)
+        await _settle(
+            app, pilot, lambda: "nothing usable" in status.render().plain
+        )
+
+        assert "the model returned nothing usable" in status.render().plain
+        assert app.query_one("#profile-buttons").display is True
+        assert not any("Profile built" in message for message in notified)
 
 
 def test_force_follows_the_button_not_a_constant():

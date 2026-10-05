@@ -1339,7 +1339,7 @@ class ResultsPane(Vertical):
         self._build_started = perf_counter()
         self._set_building(True)
         try:
-            await run_synthesis_only(
+            failures = await run_synthesis_only(
                 usernames=[username],
                 force=rebuild,
                 inline_anchors=list(self._build_anchors),
@@ -1347,20 +1347,36 @@ class ResultsPane(Vertical):
             )
         except Exception as error:
             # Broad on purpose, as everywhere else here: a failed synthesis
-            # must not take the pane down with it. Written into the status line
-            # rather than a toast -- a failure that disappears after five
-            # seconds is a failure nobody can act on.
-            self._set_building(False)
-            self.query_one("#profile-status", Static).update(
-                Text(f"Could not build profile: {error}", style="red")
-            )
+            # must not take the pane down with it.
+            self._build_failed(error)
             return
         finally:
             self._build_reporter = None
 
+        # A synthesis that fails does NOT raise: `synthesize_profiles` isolates
+        # each username and reports it, so the absence of an exception says
+        # nothing about whether a profile was built. Reading it as success is
+        # how this button came to announce "Profile built" over a failure that
+        # had left the old profile untouched.
+        failure = failures.get(username)
+        if failure is not None:
+            self._build_failed(failure)
+            return
+
         self._set_building(False)
         self.notify(f"Profile built for {username}.")
         self._select(username)
+
+    def _build_failed(self, error: BaseException) -> None:
+        """Put the reason on screen and give the controls back to retry with.
+
+        Written into the status line rather than a toast -- a failure that
+        disappears after five seconds is a failure nobody can act on.
+        """
+        self._set_building(False)
+        self.query_one("#profile-status", Static).update(
+            Text(f"Could not build profile: {error}", style="red")
+        )
 
     def _profile_block(self, record: dict[str, Any]) -> Any:
         title = Text("AI PROFILE", style="bold")
