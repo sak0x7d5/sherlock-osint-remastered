@@ -2245,3 +2245,137 @@ async def test_fresh_redoes_extraction_and_silences_the_model_warning(
 
     assert scan_kwargs["force_ai_extraction"] is expected_force
     assert ("did not come from example/model" in output) is expects_warning
+
+
+async def test_an_anchored_rebuild_starts_a_server_like_a_scan_does(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The defect that made an anchored rebuild unusable from a cold start.
+
+    `run_ai_pipeline` was the only place in the codebase that auto-started
+    llama-server, and it is on the scan path alone -- so an anchored rebuild
+    connected to an endpoint nobody had started and died every time. Nothing in
+    the UI leaves one running: the scan stops its server on the way out and the
+    model picker stops its own.
+    """
+    from sherlock_project.profile_synthesis import IdentityAnchor
+
+    started: list[str] = []
+    server_settings: list[AISettings] = []
+    client_settings: list[AISettings | None] = []
+
+    class FakeServer:
+        def __init__(self, settings):
+            server_settings.append(settings)
+
+        async def ensure_running(self):
+            started.append("ensure_running")
+
+        async def stop(self):
+            started.append("stop")
+
+    class FakeDB:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    db = FakeDB()
+
+    async def fake_db_create(_path):
+        return db
+
+    class Service:
+        async def close(self):
+            return None
+
+    async def fake_model_create(*_args, settings=None, **_kwargs):
+        client_settings.append(settings)
+        return Service()
+
+    async def fake_synthesize_profiles(**_kwargs):
+        return {}
+
+    monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", FakeServer)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.AIService, "create", fake_model_create)
+    monkeypatch.setattr(
+        sherlock_module, "synthesize_profiles", fake_synthesize_profiles
+    )
+
+    # No `ai_settings`, which is how the UI calls it.
+    await sherlock_module.run_synthesis_only(
+        usernames=["blue"],
+        force=True,
+        inline_anchors=[IdentityAnchor(field="name", value="Avery Stone")],
+    )
+
+    assert "ensure_running" in started
+    # And it is stopped again by the existing shutdown, rather than left behind.
+    assert "stop" in started
+    assert db.closed is True
+    # One read of the config, handed to both: a server started on one endpoint
+    # while the client talks to another would look exactly like this bug.
+    assert len(server_settings) == 1
+    assert client_settings == server_settings
+
+
+async def test_an_unanchored_rebuild_starts_no_server_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Aggregate synthesis is a deterministic in-process merge. Starting a
+    model for it would turn a one-second operation into a cold load."""
+
+    class ForbiddenServer:
+        def __init__(self, settings):
+            raise AssertionError("an unanchored rebuild must not start a server")
+
+    class FakeDB:
+        async def close(self):
+            return None
+
+    db = FakeDB()
+
+    async def fake_db_create(_path):
+        return db
+
+    async def fake_synthesize_profiles(**_kwargs):
+        return {}
+
+    monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", ForbiddenServer)
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(
+        sherlock_module, "synthesize_profiles", fake_synthesize_profiles
+    )
+
+    await sherlock_module.run_synthesis_only(usernames=["blue"], force=False)
+
+
+async def test_synthesize_profiles_hands_back_the_usernames_that_failed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The caller used to be told nothing, so "no exception" read as success --
+    which is how the rebuild button announced a profile it had not built."""
+    boom = RuntimeError("model died")
+
+    async def fake_synthesize_username_profile(*, username, **_kwargs):
+        if username == "bad":
+            raise boom
+        return SimpleNamespace(profile=object(), cache_hit=False)
+
+    monkeypatch.setattr(
+        sherlock_module,
+        "synthesize_username_profile",
+        fake_synthesize_username_profile,
+    )
+
+    failures = await sherlock_module.synthesize_profiles(
+        db=object(),
+        ai_service=object(),
+        usernames=["good", "bad"],
+        force=False,
+    )
+
+    # Isolated, so "good" still got its profile -- and reported, so the caller
+    # can tell the difference.
+    assert failures == {"bad": boom}
