@@ -433,8 +433,21 @@ async def synthesize_profiles(
     force: bool,
     inline_anchors: Sequence[IdentityAnchor] = (),
     reporter: TerminalReporter | None = None,
-) -> None:
+) -> dict[str, Exception]:
+    """Build a profile per username. Returns the ones that failed, by name.
+
+    The per-username catch stays -- one username failing must not cost the
+    others theirs. What changed is that the caller is now TOLD. It used to
+    swallow the error, tell the reporter, and return None either way, so a
+    caller could only read "no exception raised" as "it worked": the UI's
+    rebuild button reported "Profile built for x" over a synthesis that had
+    failed and left the old profile in place. The reporter knew; nothing that
+    could act on it did.
+
+    Empty dict means every username succeeded.
+    """
     context = build_investigation_context(inline_anchors)
+    failures: dict[str, Exception] = {}
     for username in usernames:
         if reporter is not None:
             reporter.synthesis_started(username)
@@ -447,6 +460,7 @@ async def synthesize_profiles(
                 force=force,
             )
         except Exception as error:
+            failures[username] = error
             if reporter is not None:
                 reporter.synthesis_failed(username, error)
             continue
@@ -457,6 +471,8 @@ async def synthesize_profiles(
                 result.profile,
                 cache_hit=result.cache_hit,
             )
+
+    return failures
 
 
 async def report_cached_ai_evidence(
@@ -487,7 +503,14 @@ async def run_synthesis_only(
     inline_anchors: Sequence[IdentityAnchor] = (),
     reporter: TerminalReporter | None = None,
     ai_settings: AISettings | None = None,
-) -> None:
+) -> dict[str, Exception]:
+    """Rebuild pass two from stored evidence. Returns the usernames that failed.
+
+    Fetches nothing and extracts nothing: pass two merges extractions already on
+    disk. An UNANCHORED run needs no model at all -- the merge is deterministic
+    and in-process -- which is why the model is started only when anchors make
+    one necessary.
+    """
     database_path = default_database_path()
     if reporter is not None:
         reporter.debug(f"Using database at {database_path}")
@@ -495,6 +518,7 @@ async def run_synthesis_only(
     ai_service: AIService | None = None
     contract_hash = pass_one_contract_hash()
     interrupted = False
+    failures: dict[str, Exception] = {}
     try:
         await report_cached_ai_evidence(
             db=db,
@@ -505,6 +529,11 @@ async def run_synthesis_only(
         needs_model = build_investigation_context(inline_anchors).has_anchors
         if needs_model and reporter is not None:
             reporter.ai_model_starting()
+        if needs_model:
+            ai_settings = await _ensure_server_for_synthesis(
+                ai_settings=ai_settings,
+                reporter=reporter,
+            )
         trace_callback = reporter.ai_trace if reporter is not None else None
         ai_service = (
             await AIService.create(
@@ -516,7 +545,7 @@ async def run_synthesis_only(
         )
         if needs_model and reporter is not None:
             reporter.ai_model_ready()
-        await synthesize_profiles(
+        failures = await synthesize_profiles(
             db=db,
             ai_service=ai_service,
             usernames=usernames,
@@ -537,6 +566,58 @@ async def run_synthesis_only(
                 raise cleanup_cancellation
             if cleanup_error is not None:
                 raise cleanup_error
+
+    return failures
+
+
+async def _ensure_server_for_synthesis(
+    *,
+    ai_settings: AISettings | None,
+    reporter: TerminalReporter | None,
+) -> AISettings | None:
+    """Start llama-server for an anchored rebuild, the way a scan does.
+
+    `run_ai_pipeline` was the only place in the codebase that auto-started a
+    server, and it is on the scan path alone -- so an anchored rebuild
+    connected to an endpoint nobody had started and died with "Unable to reach
+    llama-server", every time, from a cold start. Nothing in the UI leaves one
+    running: the scan stops its server in `_close_ai_service_and_db` and the
+    model picker stops its own in `_release_server`. `--ai-synthesize-only
+    --anchor` had the same hole.
+
+    Returns the settings it resolved, and the caller hands THOSE to
+    `AIService.create` rather than letting it read the config a second time.
+    Two independent reads could disagree, and the failure that produces -- a
+    server started on one endpoint while the client talks to another -- looks
+    exactly like the bug this function exists to fix.
+
+    A failure to start is reported and NOT raised, matching `run_ai_pipeline`:
+    the endpoint may answer anyway, and if it does not, `AIService.create` is
+    about to say so in the one place every model failure is already reported.
+    """
+    settings = ai_settings
+    if settings is None:
+        try:
+            settings = load_ai_settings()
+        except Exception:
+            # Unconfigured or unreadable. `AIService.create` is next and fails
+            # on the same config with the message that names the fix.
+            return None
+
+    server = ManagedLlamaServer(settings)
+    # Registered BEFORE it is started, so `_close_ai_service_and_db` stops it
+    # even if `ensure_running` raises part way through. `stop()` is a no-op for
+    # a server this process did not spawn, so adopting someone else's is still
+    # free of side effects.
+    _MANAGED_SERVERS.append(server)
+    try:
+        await server.ensure_running()
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        if reporter is not None:
+            reporter.ai_model_failed(error)
+    return settings
 
 
 async def _close_ai_service_and_db(
