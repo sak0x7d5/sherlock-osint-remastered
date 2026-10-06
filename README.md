@@ -254,10 +254,23 @@ What that trades away, plainly:
 - **The key is never stored.** The config file records only the *name* of the
   environment variable to read it from (`--api-key-env`).
 
-This is the first step of a larger change: today Gemini runs the same
-one-request-per-site pipeline as the local model, which is correct but slow on
-a free tier. Fewer, larger requests are planned once their accuracy has been
-measured.
+**Anchored Pass 2 runs differently on a hosted model.** Locally it asks about
+one site at a time, because a small model cannot hold many at once. On Gemini
+it decides all of them together, in one to three requests instead of one per
+site:
+
+1. Code first settles what it can prove alone: an exact anchor match, a profile
+   linked from an already-matched one, an email shared with it.
+2. One request covers every remaining profile.
+3. A second covers what is still undecided, *including* rejects, if the first
+   added evidence that could change them.
+
+Every match must quote the facts it rests on, and a match whose quotes cannot
+be found is downgraded.
+
+Pass 1 still sends one request per site, which is correct but slow on a free
+tier (about seven minutes for 70 pages at 10 a minute). Packing several sites
+per request is planned once its accuracy has been measured.
 
 `sherlock-rm setup ai --provider llamacpp` switches back.
 
