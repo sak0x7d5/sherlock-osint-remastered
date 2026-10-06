@@ -57,7 +57,10 @@ This fork does that step for you, locally, and shows its working.
 
 Nothing leaves your machine except requests to the sites being checked, to the
 model endpoint you configure yourself, and one call per scan to GitHub's API to
-see whether a newer release exists. That last one is listed in
+see whether a newer release exists. **Choosing a hosted model (Gemini) changes
+the first of those:** the text of every profile page found is then sent to that
+provider, which is why it is opt-in, off by default, and announced each time
+it is configured — see [Hosted models](#hosted-models-gemini). That last one is listed in
 [NOTICE.md](NOTICE.md) with everything else this tool talks to; it fails
 silently and never blocks a scan.
 
@@ -199,8 +202,9 @@ below becomes `poetry run sherlock ...` (or run `poetry shell` once).
   never restarted or stopped — Sherlock only manages a server it started
   itself. That covers single-model servers (`-m model.gguf`) too.
 
-  Other OpenAI-compatible runtimes (Ollama, vLLM, plain endpoints) are not
-  supported.
+  Other local OpenAI-compatible runtimes (Ollama, vLLM, plain endpoints) are
+  not supported. Google Gemini is supported as a hosted alternative; see
+  [Hosted models](#hosted-models-gemini).
 - The first browser-backed run downloads a stealth Chromium build.
 
 ### Which model
@@ -226,6 +230,36 @@ fields or file facts under the wrong heading. Larger models help most in Pass 2,
 where the merge decisions live. Whatever you pick is recorded against every
 extraction, and `sherlock-rm show` names it, so a profile built by a model you no
 longer trust is identifiable rather than silently mixed in.
+
+### Hosted models (Gemini)
+
+No GPU, or want a larger model than yours can hold? Gemini can do both passes
+instead of `llama-server`:
+
+```bash
+export GEMINI_API_KEY=...        # from https://aistudio.google.com/apikey
+sherlock-rm setup ai --provider gemini
+```
+
+What that trades away, plainly:
+
+- **Page text leaves your machine.** Every profile page that produced a hit —
+  other people's profiles — is sent to Google. On the free tier Google's terms
+  allow that content to be used to improve its products. Setup says so before
+  it sends anything.
+- **It is metered.** Requests are paced under the free tier's per-minute limit
+  (`--requests-per-minute` changes it). When the day's quota runs out, the run
+  stops asking, says so, and leaves the remaining sites pending; the next run
+  picks them up from the database.
+- **The key is never stored.** The config file records only the *name* of the
+  environment variable to read it from (`--api-key-env`).
+
+This is the first step of a larger change: today Gemini runs the same
+one-request-per-site pipeline as the local model, which is correct but slow on
+a free tier. Fewer, larger requests are planned once their accuracy has been
+measured.
+
+`sherlock-rm setup ai --provider llamacpp` switches back.
 
 ## Quick start
 
@@ -347,6 +381,10 @@ username is taken, and it carries obligations.
   and deleting it when you are done are your responsibility.
 - **Scraping may breach a site's terms of service** regardless of whether the
   data is public. That is between you and the site.
+- **A hosted model is another recipient.** With `--provider gemini`, the pages
+  you collect are processed by Google as well as by you. If your basis for
+  collecting them does not cover sharing them with a processor, keep to the
+  local model.
 - **Do not republish captured page content.** Extractions and stored responses
   are working data, not something to commit to a repository or attach to a
   report.

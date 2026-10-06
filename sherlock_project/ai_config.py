@@ -37,8 +37,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # means a build that predates the section rejects any file containing it, and
 # the point of the version is that such a build says so in a sentence rather
 # than in a validation dump.
-CONFIG_VERSION = 7
+# 8 added cloud providers: `ai.provider` may now be "gemini", with
+# ai.api_key_env and ai.requests_per_minute. A build that predates them would
+# read `provider = "gemini"` as a validation dump, which is the whole reason
+# the number moves.
+CONFIG_VERSION = 8
 DEFAULT_LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
+# Google's OpenAI-compatible route. Not a separate SDK: every cloud provider
+# this project targets speaks OpenAI chat completions, so what differs between
+# them is data (see `ai_provider.CLOUD_PRESETS`), not a client per vendor.
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+AIProviderName = Literal["llamacpp", "gemini"]
+CLOUD_PROVIDERS: frozenset[str] = frozenset({"gemini"})
 DEFAULT_AI_TEMPERATURE = 0.1
 DEFAULT_AI_CONTEXT_LENGTH = 8192
 # Keys accepted and discarded on read, newest first. A key belongs here once
@@ -73,7 +84,7 @@ class AISettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    provider: Literal["llamacpp"] = "llamacpp"
+    provider: AIProviderName = "llamacpp"
     base_url: str
     # Advisory. llama-server serves whatever GGUF it was launched with and
     # cannot be told to switch, so this selects nothing -- it is recorded
@@ -107,6 +118,21 @@ class AISettings(BaseModel):
         default=DEFAULT_AI_CONTEXT_LENGTH,
         ge=512,
     )
+    # Cloud providers only. The NAME of the environment variable holding the
+    # key, never the key: this file is plain TOML in a per-user directory, and
+    # a key written here would travel with every backup and every pasted
+    # `setup ai --show`. Unset means the preset's conventional name.
+    api_key_env: str | None = None
+    # Cloud providers only. A ceiling the client paces itself under, so a
+    # free tier answers 200 instead of 429. Unset means the preset's default,
+    # which is a guess at the free tier: providers change these without notice
+    # and nothing in an OpenAI-compatible response states them reliably.
+    requests_per_minute: int | None = Field(default=None, ge=1)
+
+    @property
+    def is_cloud(self) -> bool:
+        """True when requests leave the machine for a hosted provider."""
+        return self.provider in CLOUD_PROVIDERS
 
     @field_validator("base_url")
     @classmethod
@@ -304,7 +330,9 @@ def load_ai_settings(
             "AI is not configured. Run `sherlock-rm setup ai` first."
         )
     base_url_override = environment.get("LLAMA_SERVER_BASE_URL")
-    if base_url_override:
+    # Only ever redirects llama-server. Applied to a cloud provider it would
+    # send that provider's API key to whatever local URL the variable names.
+    if base_url_override and not settings.is_cloud:
         try:
             settings = settings.model_copy(
                 update={

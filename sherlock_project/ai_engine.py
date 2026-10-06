@@ -25,7 +25,7 @@ from sherlock_project.ai_provider import (
     AIGenerationStats,
     AIModelInfo,
     AIProvider,
-    LlamaCppProvider,
+    create_provider,
     ProviderWideError,
 )
 from sherlock_project.content_extraction import strip_site_branding
@@ -927,7 +927,7 @@ class AIService:
         resolved_settings = settings or (
             provider.settings if provider is not None else load_ai_settings()
         )
-        resolved_provider = provider or LlamaCppProvider(resolved_settings)
+        resolved_provider = provider or create_provider(resolved_settings)
         self = cls(
             provider=resolved_provider,
             settings=resolved_settings,

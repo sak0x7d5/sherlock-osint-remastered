@@ -47,6 +47,7 @@ from sherlock_project.ai_engine import (
     PassOneKeyRegistry,
     pass_one_contract_hash,
 )
+from sherlock_project.ai_provider import AIQuotaExhaustedError
 from sherlock_project.ai_setup import run_ai_setup
 from sherlock_project.content_extraction import extract_profile_content
 from sherlock_project.database import SherlockDB, default_database_path
@@ -604,6 +605,11 @@ async def _ensure_server_for_synthesis(
             # on the same config with the message that names the fix.
             return None
 
+    # A hosted provider has no server of ours to start. Returning the settings
+    # still pins this run to the config read once, which is the point.
+    if settings.is_cloud:
+        return settings
+
     server = ManagedLlamaServer(settings)
     # Registered BEFORE it is started, so `_close_ai_service_and_db` stops it
     # even if `ensure_running` raises part way through. `stop()` is a no-op for
@@ -675,6 +681,7 @@ async def ai_worker(
             return
 
         site_name = f"site id {site_id}"
+        quota_exhausted = False
         try:
             job = await sherlock_db.get_ai_extraction_job(
                 site_id=site_id,
@@ -750,8 +757,16 @@ async def ai_worker(
             if reporter is not None:
                 reporter.ai_failed(site_name, error)
                 reporter.ai_job_finished("pending")
+            # The day's allowance is gone, so every further site would cost a
+            # round trip to be told the same thing. The rest are drained as
+            # deferred below -- still pending in the database, picked up by
+            # the next run.
+            quota_exhausted = isinstance(error, AIQuotaExhaustedError)
         finally:
             ai_queue.task_done()
+        if quota_exhausted:
+            await _drain_deferred_ai_jobs(ai_queue, reporter)
+            return
 
 
 async def _drain_deferred_ai_jobs(
@@ -793,7 +808,9 @@ async def run_ai_pipeline(
     # possibly with quite different flags, has made a decision worth leaving
     # alone.
     server = (
-        ManagedLlamaServer(ai_settings) if ai_settings is not None else None
+        ManagedLlamaServer(ai_settings)
+        if ai_settings is not None and not ai_settings.is_cloud
+        else None
     )
     if server is not None:
         try:

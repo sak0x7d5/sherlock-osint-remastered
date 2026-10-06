@@ -23,7 +23,13 @@ from sherlock_project.ai_config import (
     save_ai_settings,
     try_load_ai_settings,
 )
-from sherlock_project.ai_provider import AIModelInfo, AIProviderError, LlamaCppProvider
+from sherlock_project.ai_provider import (
+    CLOUD_PRESETS,
+    AIModelInfo,
+    AIProviderError,
+    LlamaCppProvider,
+    OpenAICompatibleProvider,
+)
 from sherlock_project.llama_server import LlamaServerError, ManagedLlamaServer
 
 
@@ -163,11 +169,12 @@ def _select_model(
     existing: AISettings | None,
     console: Console,
     interactive: bool,
+    source: str = "llama-server",
 ) -> AIModelInfo:
     if requested:
         selected = next((model for model in models if model.key == requested), None)
         if selected is None:
-            parser.error(f"llama-server has not loaded model {requested!r}")
+            parser.error(f"{source} does not offer model {requested!r}")
         _warn_native_reasoning(selected, console=console)
         return selected
 
@@ -223,8 +230,36 @@ def _select_model(
 def build_setup_parser() -> ArgumentParser:
     parser = ArgumentParser(prog="sherlock-rm setup ai")
     parser.add_argument(
+        "--provider",
+        choices=("llamacpp", *sorted(CLOUD_PRESETS)),
+        help=(
+            "Where the model runs. llamacpp (the default) keeps everything on "
+            "this machine; gemini sends page text to Google. Defaults to "
+            "whatever is already configured."
+        ),
+    )
+    parser.add_argument(
         "--base-url",
-        help="llama-server URL. Defaults to http://127.0.0.1:8080.",
+        help=(
+            "Provider URL. Defaults to http://127.0.0.1:8080 for llamacpp and "
+            "to the provider's own API for a hosted one."
+        ),
+    )
+    parser.add_argument(
+        "--api-key-env",
+        help=(
+            "Hosted providers: the NAME of the environment variable holding "
+            "your API key (default GEMINI_API_KEY for gemini). The key itself "
+            "is never written to the config file."
+        ),
+    )
+    parser.add_argument(
+        "--requests-per-minute",
+        type=int,
+        help=(
+            "Hosted providers: pace requests under this ceiling. Defaults to "
+            "the provider's free-tier limit."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -298,7 +333,26 @@ def _report_settings(
         ("model", settings.model),
         ("endpoint", settings.base_url),
         ("temperature", str(settings.temperature)),
-        ("context length", str(settings.context_length)),
+        *(
+            (
+                (
+                    "api key from",
+                    "$" + (
+                        settings.api_key_env
+                        or CLOUD_PRESETS[settings.provider].api_key_env
+                    ),
+                ),
+                (
+                    "requests/minute",
+                    str(
+                        settings.requests_per_minute
+                        or CLOUD_PRESETS[settings.provider].requests_per_minute
+                    ),
+                ),
+            )
+            if settings.is_cloud
+            else (("context length", str(settings.context_length)),)
+        ),
     ):
         # Text(), not an f-string into markup: a model key or URL carrying
         # square brackets would otherwise be eaten as a Rich style tag.
@@ -316,7 +370,7 @@ def _report_settings(
     # load_ai_settings has already applied the override, so the endpoint above
     # is the effective one, not necessarily what the file says. Saying so is
     # the difference between a useful readout and a misleading one.
-    if environ.get("LLAMA_SERVER_BASE_URL"):
+    if environ.get("LLAMA_SERVER_BASE_URL") and not settings.is_cloud:
         console.print(
             "[yellow][!] Endpoint comes from LLAMA_SERVER_BASE_URL, which "
             "overrides the config file.[/yellow]"
@@ -342,6 +396,7 @@ async def run_ai_setup(
         conflicting = [
             name
             for name, value in (
+                ("--provider", args.provider),
                 ("--base-url", args.base_url),
                 ("--model", args.model),
                 ("--temperature", args.temperature),
@@ -365,9 +420,24 @@ async def run_ai_setup(
             environ=environment,
         )
 
+    provider_name = args.provider or (
+        existing.provider if existing is not None else "llamacpp"
+    )
+    if provider_name in CLOUD_PRESETS:
+        return await _run_cloud_setup(
+            args,
+            parser=parser,
+            provider_name=provider_name,
+            existing=existing,
+            destination=destination,
+            environ=environment,
+            console=console,
+            stdin_isatty=stdin_isatty,
+        )
+
     base_url = discover_setup_base_url(
         args.base_url,
-        existing=existing,
+        existing=existing if existing is None or not existing.is_cloud else None,
         environ=environment,
     )
     temperature = (
@@ -489,5 +559,117 @@ async def run_ai_setup(
     )
     # soft_wrap: the config path is long and Rich would otherwise break it
     # across lines, leaving a path nobody can copy.
+    output.print(Text(str(saved_to), style="dim"), soft_wrap=True)
+    return 0
+
+
+async def _run_cloud_setup(
+    args,
+    *,
+    parser: ArgumentParser,
+    provider_name: str,
+    existing: AISettings | None,
+    destination: Path,
+    environ: Mapping[str, str],
+    console: Console | None,
+    stdin_isatty: bool | None,
+) -> int:
+    """Configure a hosted provider: key check, model choice, privacy notice.
+
+    No server is started -- there is none of ours to start. What replaces it
+    is the one network call that proves the configuration works: listing the
+    models the key can use, which fails fast on a missing or rejected key.
+    """
+    preset = CLOUD_PRESETS[provider_name]
+    output = console or Console(
+        no_color=args.no_color,
+        color_system=None if args.no_color else "auto",
+        highlight=False,
+    )
+    interactive = sys.stdin.isatty() if stdin_isatty is None else stdin_isatty
+    same_provider = existing is not None and existing.provider == provider_name
+    try:
+        provisional = AISettings(
+            provider=provider_name,
+            base_url=(
+                args.base_url
+                or (existing.base_url if same_provider else None)
+                or preset.base_url
+            ),
+            model=args.model or (existing.model if same_provider else "setup"),
+            api_key_env=(
+                args.api_key_env
+                or (existing.api_key_env if same_provider else None)
+            ),
+            requests_per_minute=(
+                args.requests_per_minute
+                if args.requests_per_minute is not None
+                else (existing.requests_per_minute if same_provider else None)
+            ),
+            temperature=(
+                args.temperature
+                if args.temperature is not None
+                else (existing.temperature if existing is not None else DEFAULT_AI_TEMPERATURE)
+            ),
+        )
+    except ValueError as error:
+        parser.error(str(error))
+
+    # Said before anything is sent, every time setup runs, because this is the
+    # point where the README's "nothing leaves your machine" stops being true.
+    output.print(f"[yellow]\\[!] {preset.privacy_note}[/yellow]")
+
+    provider = OpenAICompatibleProvider(provisional, environ=environ)
+    try:
+        models = await provider.list_models()
+    except AIProviderError as error:
+        output.print(f"[red]\\[x] {error}[/red]")
+        return 2
+    finally:
+        await provider.close()
+
+    # The listing includes embedding, image and speech models that cannot
+    # answer a chat request; offering them would only produce a failed scan.
+    models = [
+        model
+        for model in models
+        if not any(
+            marker in model.key
+            for marker in ("embedding", "imagen", "veo", "tts", "aqa", "image")
+        )
+    ]
+    if not models:
+        output.print(f"[red]\\[x] {preset.label} offered no chat models to this key.[/red]")
+        return 2
+
+    models.sort(key=lambda model: model.key)
+    selected = _select_model(
+        parser=parser,
+        models=models,
+        requested=args.model,
+        existing=existing if same_provider else None,
+        console=output,
+        interactive=interactive,
+        source=preset.label,
+    )
+    settings = provisional.model_copy(update={"model": selected.key})
+    try:
+        saved_to = save_ai_settings(settings, path=destination, environ=environ)
+    except AIConfigError as error:
+        output.print(f"[red]\\[x] {error}[/red]")
+        return 2
+
+    output.print(
+        f"[green][+] AI configured with {preset.label} {selected.key}[/green]"
+    )
+    output.print(
+        Text(
+            f"Key read from ${settings.api_key_env or preset.api_key_env} at run "
+            f"time; pacing at {settings.requests_per_minute or preset.requests_per_minute} "
+            "requests a minute.",
+            style="dim",
+        ),
+        soft_wrap=True,
+    )
     output.print(Text(str(saved_to), style="dim"), soft_wrap=True)
     return 0
