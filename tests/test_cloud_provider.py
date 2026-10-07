@@ -24,7 +24,6 @@ from sherlock_project.ai_provider import (
 from sherlock_project.ai_rate_limit import RequestRateLimiter, backoff_delay
 
 
-
 def _settings(**overrides) -> AISettings:
     values: dict[str, object] = {
         "provider": "gemini",

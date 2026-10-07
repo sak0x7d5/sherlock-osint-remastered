@@ -1940,7 +1940,7 @@ async def test_a_fully_stored_username_analyses_without_fetching_anything(
             try:
                 site_id = await ai_queue.get()
             except Exception:
-                return None
+                return
             enqueued.append(site_id)
             ai_queue.task_done()
 

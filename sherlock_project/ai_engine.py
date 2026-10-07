@@ -26,8 +26,8 @@ from sherlock_project.ai_provider import (
     AIGenerationStats,
     AIModelInfo,
     AIProvider,
-    create_provider,
     ProviderWideError,
+    create_provider,
 )
 from sherlock_project.content_extraction import strip_site_branding
 from sherlock_project.global_synthesis import (
