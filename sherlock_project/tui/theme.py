@@ -1180,6 +1180,15 @@ ModalScreen { align: center middle; }
     height: 3;
 }
 
+/* Four real buttons instead of three and a spacer, which the `1fr` column
+   cannot absorb: it is sized from what the fixed columns leave over, and at 80
+   cells they leave 10 -- enough to render "Analyse" and drop the count and the
+   noun. Every column is fixed here so the shortfall is shared instead of
+   landing entirely on the one button whose label carries a number. */
+#resume-buttons.-analysing {
+    grid-columns: 15 14 17 12;
+}
+
 /* DataTable: no zebra striping on the live feed. Stripes imply the rows are
    uniform records to be scanned in bulk; these rows are findings, and the
    status colour is doing the differentiating already. Two competing row

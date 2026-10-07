@@ -81,6 +81,11 @@ class ScanPlan:
     # is what this run will CHECK, this one is what the site list still COVERS,
     # and pruning against the first retires an earlier NSFW run's results.
     known_site_names: frozenset[str] = frozenset()
+    # Stored pages Pass 1 has never read. Part of the plan rather than a
+    # separate lookup because it is the OTHER thing a run does, and the screen
+    # cannot describe the run honestly without it: a username with nothing left
+    # to fetch is not a username with nothing left to do.
+    pending_analysis: int = 0
 
     @property
     def stored(self) -> int:
@@ -99,6 +104,17 @@ class ScanPlan:
         """Whether anything is stored for this username at all."""
         return bool(self.saved_rows)
 
+    @property
+    def has_work(self) -> bool:
+        """Whether a resumed run would do anything at all.
+
+        The distinction the resume screen turns on. Fetching and analysing are
+        separate halves of a run, and `to_scan == 0` only settles the first --
+        a fully fetched username with unread pages still has a whole AI pass
+        waiting, and it is the half that needs no network.
+        """
+        return bool(self.to_scan or self.pending_analysis)
+
 
 async def build_scan_plan(
     *,
@@ -114,6 +130,7 @@ async def build_scan_plan(
     manifest load is around 11ms, cheap enough to repeat for a question asked
     once per scan.
     """
+    from sherlock_project.ai_engine import pass_one_contract_hash
     from sherlock_project.sherlock import is_resumable
 
     use_browser = resolved(settings_values, "scan.webbrowser")
@@ -128,6 +145,15 @@ async def build_scan_plan(
     connection = db or await SherlockDB.create(str(default_database_path()))
     try:
         stored_rows = await connection.get_saved_results(username=username)
+        # Asked on the same connection as the rows, so the two halves of the
+        # plan describe one moment. `fresh` deliberately does not zero this:
+        # a fresh run re-extracts everything anyway, so the count still
+        # describes work that will happen.
+        pending_analysis = len(
+            await connection.get_pending_ai_extraction_ids(
+                username, contract_hash=pass_one_contract_hash()
+            )
+        )
     finally:
         if owned:
             await connection.close()
@@ -154,6 +180,7 @@ async def build_scan_plan(
         saved_rows=saved_rows,
         site_data_all=site_data_all,
         known_site_names=known_site_names,
+        pending_analysis=pending_analysis,
     )
 
 

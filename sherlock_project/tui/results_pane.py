@@ -1191,28 +1191,65 @@ class ResultsPane(Vertical):
             # weight tracks what a control commits, which is why the scan
             # pane's toggles are flat. The class carries that rule here.
             actions.add_class(NO_EVIDENCE)
-            hint.update(
-                Text.assemble(
-                    ("No AI evidence stored\n", "bold"),
-                    (
+            # Two different problems wearing one label until now. Pages are
+            # stored for every result whether or not analysis was on, so a
+            # username scanned without it is not missing evidence -- it is
+            # holding unread evidence, and reading it costs no network at all.
+            # Saying "scan again" there sent people to a 680-site refetch for
+            # work the stored pages already support.
+            pending = int(record.get("pending_analysis") or 0)
+            if pending:
+                hint.update(
+                    Text.assemble(
+                        ("No AI evidence stored\n", "bold"),
                         (
-                            "This username was scanned without analysis, so "
-                            "the second pass has nothing to merge. Scanning "
-                            "again with analysis on collects it."
+                            (
+                                f"This username was scanned without analysis, "
+                                f"but {count_of(pending, 'page')} "
+                                f"{'is' if pending == 1 else 'are'} stored and "
+                                f"ready to read. Analysing them re-fetches "
+                                f"nothing."
+                            ),
+                            "dim",
                         ),
-                        "dim",
-                    ),
+                    )
                 )
-            )
-            # Named for where it goes and what it carries: pressing it opens
-            # the scan tab with this username and analysis already set, so the
-            # label promises the trip rather than a build that cannot happen.
-            build.label = "▸ Scan this username with analysis"
-            build.tooltip = (
-                "Scan with analysis — no evidence stored\n\n"
-                "Loads this username on the SCAN tab with analysis on. Nothing "
-                "starts until you press SCAN there."
-            )
+                build.label = f"▸ Analyse {count_of(pending, 'stored page')}"
+                # The stored-pages arm gets its own hover text, not the scan
+                # one: this button re-fetches nothing, and a tooltip promising a
+                # scan would describe the opposite of what pressing it does.
+                build.tooltip = (
+                    "Analyse stored pages — no refetch\n\n"
+                    "Loads this username on the SCAN tab with analysis on, "
+                    "where the stored pages can be read without fetching them "
+                    "again. Nothing starts until you press SCAN there."
+                )
+            else:
+                # Genuinely nothing to work from: no confirmed accounts, or
+                # their pages came back empty. Here a scan really is the fix.
+                hint.update(
+                    Text.assemble(
+                        ("No AI evidence stored\n", "bold"),
+                        (
+                            (
+                                "No stored page can be analysed, so the second "
+                                "pass has nothing to merge. Scanning again with "
+                                "analysis on collects it."
+                            ),
+                            "dim",
+                        ),
+                    )
+                )
+                # Named for where it goes and what it carries: pressing it opens
+                # the scan tab with this username and analysis already set, so
+                # the label promises the trip rather than a build that cannot
+                # happen.
+                build.label = "▸ Scan this username with analysis"
+                build.tooltip = (
+                    "Scan with analysis — no evidence stored\n\n"
+                    "Loads this username on the SCAN tab with analysis on. "
+                    "Nothing starts until you press SCAN there."
+                )
             anchors.display = False
             return
 
