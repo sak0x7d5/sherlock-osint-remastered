@@ -355,19 +355,24 @@ class ScanPane(Vertical):
         self.set_interval(REDRAW_INTERVAL, self._flush)
 
     def prepare_analysis_scan(self, username: str) -> None:
-        """Set up a scan that will collect AI evidence, without starting it.
+        """Set up a run that will collect AI evidence, without starting it.
 
         Sent here when the results pane could not build a profile because
         nothing was extracted. It fills the field and turns analysis on, then
         stops: starting a 680-site scan because someone pressed a button on
         another tab would be doing considerably more than was asked.
+
+        How much that run fetches is not known yet -- it depends on what is
+        stored, which the resume screen works out when SCAN is pressed -- so
+        the wording promises the analysis and leaves the fetching to the
+        dialog that has the counts.
         """
         self.query_one("#target-input", Input).value = username
         self._use_ai = True
         self._redraw_options()
         self.query_one("#target-input", Input).focus()
         self.notify(
-            f"Analysis is on — press SCAN to collect evidence for {username}.",
+            f"Analysis is on — press SCAN to analyse {username}.",
         )
 
     def refresh_settings(self, values: dict[str, Any]) -> None:
@@ -1108,7 +1113,7 @@ class ScanPane(Vertical):
         there is nothing to warn about on a first scan.
         """
         from sherlock_project.tui.resume_screen import ResumeChoice, ResumeScreen
-        from sherlock_project.tui.runner import peek_stored
+        from sherlock_project.tui.runner import ai_is_configured, peek_stored
 
         plan = await peek_stored(
             username=username, settings_values=self._settings_values
@@ -1125,7 +1130,21 @@ class ScanPane(Vertical):
             elif choice == "view":
                 self.post_message(self.ShowStored(username))
 
-        self.app.push_screen(ResumeScreen(username, plan), chosen)
+        # Both conditions, matching what the run will actually do: the per-run
+        # toggle AND a configured model. `run_scan_session` turns analysis off
+        # with a warning when the model is missing, and a dialog offering an
+        # analysis pass that the run would then decline is the same broken
+        # promise this screen exists to prevent.
+        self.app.push_screen(
+            ResumeScreen(
+                username,
+                plan,
+                analysis_on=(
+                    self._use_ai and ai_is_configured(self._settings_values)
+                ),
+            ),
+            chosen,
+        )
 
     class ShowStored(Message):
         """Asked to look at what is already stored rather than scan again.

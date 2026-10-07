@@ -11,6 +11,7 @@ no test that renders a screen would notice.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -1900,6 +1901,96 @@ async def test_no_browser_is_started_when_there_is_nothing_to_scan(monkeypatch):
     )
 
 
+async def test_a_fully_stored_username_analyses_without_fetching_anything(
+    monkeypatch,
+):
+    """The pass the resume dialog now offers, asserted where it happens.
+
+    Two halves have to hold at once for "analyse without scanning" to be real:
+    nothing may be fetched, and the model must still be given every stored page
+    it has not read. The engine is skipped because the plan has nothing to
+    fetch, and the backfill after it enqueues from the database -- so this is
+    the guarantee the dialog's wording depends on, and the one that would break
+    silently if the backfill ever moved inside the `if site_data:` branch.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.tui import runner as runner_module
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        for site in ("GitHub", "Reddit"):
+            await db.save_result(
+                username="someone",
+                site_name=site,
+                site_url=f"https://{site.lower()}.com/someone",
+                status=str(QueryStatus.CLAIMED),
+                status_code=200,
+                query_time_ms=1.0,
+                error_context=None,
+                response_text="<html>Avery Stone</html>",
+                transport="browser",
+            )
+    finally:
+        await db.close()
+
+    enqueued: list[int] = []
+
+    async def fake_pipeline(*, ai_queue, sherlock_db, reporter, ai_settings):
+        while True:
+            try:
+                site_id = await ai_queue.get()
+            except Exception:
+                return
+            enqueued.append(site_id)
+            ai_queue.task_done()
+
+    async def fake_synthesize(**kwargs):
+        return None
+
+    import sherlock_project.sherlock as sherlock_module
+
+    monkeypatch.setattr(sherlock_module, "run_ai_pipeline", fake_pipeline)
+    monkeypatch.setattr(sherlock_module, "synthesize_profiles", fake_synthesize)
+
+    class _Stored:
+        ai = SimpleNamespace(model="vendor/m")
+
+    monkeypatch.setattr(runner_module, "try_load_settings", lambda: _Stored())
+
+    scanned: list[dict] = []
+
+    async def scan_spy(**kwargs):
+        scanned.append(kwargs)
+        return {}
+
+    await _run_with_fakes(
+        monkeypatch,
+        {"scan.webbrowser": True, "ai.model": "vendor/m"},
+        scan_spy=scan_spy,
+        sites=("GitHub", "Reddit"),
+        use_ai=True,
+    )
+
+    assert _FakeEngine.instances == [], "an engine was built with nothing to fetch"
+    assert scanned == [], "a fetch happened for pages already stored"
+    # And the model was still given both stored pages.
+    expected = await _pending_ids("someone")
+    assert enqueued == expected != []
+
+
+async def _pending_ids(username: str) -> list[int]:
+    from sherlock_project.ai_engine import pass_one_contract_hash
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        return await db.get_pending_ai_extraction_ids(
+            username, contract_hash=pass_one_contract_hash()
+        )
+    finally:
+        await db.close()
+
+
 async def test_nothing_left_to_check_says_so_rather_than_scanning_zero_sites(
     monkeypatch,
 ):
@@ -2626,6 +2717,180 @@ async def test_choosing_re_scan_passes_fresh(monkeypatch):
         await _settle(app, pilot, lambda: captured.get("fresh") is True)
 
     assert captured.get("fresh") is True
+
+
+async def _fully_stored_with_unread_pages(username: str, *, pages: int) -> None:
+    """Every site answered, `pages` of them confirmed hits never analysed.
+
+    The exact state the resume dialog used to have no honest answer for: no
+    site left to fetch, and a whole AI pass still waiting on evidence already
+    on disk.
+    """
+    from sherlock_project.database import SherlockDB, default_database_path
+    from sherlock_project.sites import SitesInformation
+
+    sites = SitesInformation(honor_exclusions=False)
+    sites.remove_nsfw_sites(do_not_remove=[])
+    names = [site.name for site in sites]
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        for index, name in enumerate(names):
+            claimed = index < pages
+            await db.save_result(
+                username=username,
+                site_name=name,
+                site_url=f"https://example.com/{username}",
+                status=str(
+                    QueryStatus.CLAIMED if claimed else QueryStatus.AVAILABLE
+                ),
+                status_code=200,
+                query_time_ms=1.0,
+                error_context=None,
+                response_text="<html>Avery Stone</html>" if claimed else None,
+                transport="browser",
+            )
+    finally:
+        await db.close()
+
+
+async def test_stored_pages_offer_an_analysis_pass_that_fetches_nothing(
+    monkeypatch,
+):
+    """The dead end this change exists to remove.
+
+    With every site answered, the dialog offered `View results` (which returns
+    to the pane that sent you) and `Re-scan all` (which re-fetches 680 pages to
+    reach work that needs none). The pass over stored pages already existed in
+    the runner -- a resumed run with nothing to fetch builds no engine and
+    analyses what is on disk -- and nothing on screen had ever said so.
+    """
+    from textual.widgets import Button
+
+    from sherlock_project.tui.scan_pane import ScanPane
+
+    await _fully_stored_with_unread_pages("marcus", pages=2)
+    captured = await _run_with_prompt(monkeypatch, "marcus")
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values["ai.model"] = "vendor/m"
+        pane._use_ai = True
+
+        await pilot.press(*"marcus")
+        await pilot.press("enter")
+        await _settle(app, pilot, lambda: app.screen.query("#resume-detail"))
+
+        detail = app.screen.query_one("#resume-detail").render().plain
+        assert "have not been analysed" in detail
+        assert "re-fetches nothing" in detail
+        button = app.screen.query_one("#resume-analyse", Button)
+        assert "Analyse 2" in str(button.label)
+        # The cheap action holds focus, so Enter cannot start the expensive one.
+        assert app.screen.focused is button
+
+        await pilot.click("#resume-analyse")
+        await _settle(app, pilot, lambda: captured.get("username") == "marcus")
+
+    # `fresh=False` is the whole mechanism: the plan resumes every stored row,
+    # leaves nothing to fetch, and the runner never builds an engine -- so the
+    # model runs over pages already on disk.
+    assert captured.get("fresh") is False
+    assert captured.get("use_ai") is True
+
+
+@pytest.mark.parametrize("size", [(80, 30), (110, 34), (140, 40)])
+async def test_the_analysis_button_draws_its_whole_label(monkeypatch, size):
+    """A control that cannot say what it does is not a control.
+
+    The same failure this file already guards on the profile pane, and it was
+    real here: the row is a grid whose first column is `1fr`, sized from what
+    the fixed columns leave over. At 80 cells they left ten, so the primary
+    button rendered as "Analyse" -- no count, no noun -- while `Button.label`
+    read back in full. The count is the part that makes the offer legible
+    against `Re-scan all 680` beside it, so losing it is losing the choice.
+    """
+    from textual.geometry import Region
+    from textual.widgets import Button
+
+    from sherlock_project.tui.scan_pane import ScanPane
+
+    await _fully_stored_with_unread_pages("marcus", pages=3)
+    await _run_with_prompt(monkeypatch, "marcus")
+
+    app = SherlockUI()
+    async with app.run_test(size=size) as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values["ai.model"] = "vendor/m"
+        pane._use_ai = True
+
+        await pilot.press(*"marcus")
+        await pilot.press("enter")
+        await _settle(app, pilot, lambda: app.screen.query("#resume-analyse"))
+
+        # Every button in the row, not only the new one: it takes the cell the
+        # spacer used to hold, so adding it re-sizes the three that were there.
+        for button_id in (
+            "#resume-analyse",
+            "#resume-view",
+            "#resume-fresh",
+            "#resume-cancel",
+        ):
+            button = app.screen.query_one(button_id, Button)
+            drawn = " ".join(
+                strip.text
+                for strip in button.render_lines(
+                    Region(0, 0, button.region.width, button.region.height)
+                )
+            )
+            for word in str(button.label).split():
+                assert word in drawn, (
+                    f"{word!r} clipped out of {button_id} at {size}: {drawn!r}"
+                )
+
+
+async def test_stored_pages_are_not_offered_when_analysis_is_off(monkeypatch):
+    """Both halves are required, or the button promises a pass that will not run.
+
+    With analysis off the run skips those pages exactly as the last one did,
+    so offering to analyse them would be the same broken promise in reverse.
+    """
+    await _fully_stored_with_unread_pages("marcus", pages=2)
+    await _run_with_prompt(monkeypatch, "marcus")
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.press(*"marcus")
+        await pilot.press("enter")
+        await _settle(app, pilot, lambda: app.screen.query("#resume-detail"))
+
+        assert not app.screen.query("#resume-analyse")
+        detail = app.screen.query_one("#resume-detail").render().plain
+        assert "Nothing is left to check" in detail
+
+
+async def test_stored_pages_are_not_offered_without_a_configured_model(
+    monkeypatch,
+):
+    """`run_scan_session` turns analysis off with a warning when no model is
+    set, so a dialog offering the pass would be contradicted by the run."""
+    from sherlock_project.tui.scan_pane import ScanPane
+
+    await _fully_stored_with_unread_pages("marcus", pages=2)
+    await _run_with_prompt(monkeypatch, "marcus")
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.pop("ai.model", None)
+        pane._use_ai = True
+
+        await pilot.press(*"marcus")
+        await pilot.press("enter")
+        await _settle(app, pilot, lambda: app.screen.query("#resume-detail"))
+
+        assert not app.screen.query("#resume-analyse")
 
 
 async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
@@ -4377,13 +4642,31 @@ async def test_the_progress_strip_sits_with_the_findings():
         assert isinstance(app.query_one("#feed", DataTable), DataTable)
 
 
-async def _results_with(username: str, *, extractions: int = 0):
-    """Seed a username, optionally with stored Pass 1 evidence."""
+async def _results_with(
+    username: str, *, extractions: int = 0, unanalysed: int = 0
+):
+    """Seed a username, optionally with stored Pass 1 evidence.
+
+    Three states, because the profile pane has to tell them apart:
+      - neither         -> one hit whose page was never kept; nothing to work
+                           from, and scanning again really is the fix
+      - `extractions`   -> pages stored AND already read
+      - `unanalysed`    -> pages stored and NEVER read, which is what a scan
+                           without analysis leaves behind and what an analysis
+                           pass consumes without re-fetching anything
+
+    The real contract hash is used rather than a stand-in, because eligibility
+    is now read back through it: a row stored under a fake hash looks stale,
+    and would count as pending work that is not pending.
+    """
+    from sherlock_project.ai_engine import pass_one_contract_hash
     from sherlock_project.database import SherlockDB, default_database_path
 
+    contract_hash = pass_one_contract_hash()
+    seeded = extractions + unanalysed
     db = await SherlockDB.create(str(default_database_path()))
     try:
-        for index in range(max(1, extractions)):
+        for index in range(max(1, seeded)):
             site = f"Site{index:02d}"
             await db.save_result(
                 username=username,
@@ -4395,18 +4678,18 @@ async def _results_with(username: str, *, extractions: int = 0):
                 error_context=None,
                 # Page text is what extraction runs on -- a row without it is
                 # never eligible, which is why seeding it matters here.
-                response_text="<html>Avery Stone</html>" if extractions else None,
+                response_text="<html>Avery Stone</html>" if seeded else None,
                 transport="browser",
             )
         if extractions:
             pending = await db.get_pending_ai_extraction_ids(
-                username, contract_hash="hash"
+                username, contract_hash=contract_hash
             )
             for site_id in pending[:extractions]:
                 await db.update_result_ai_extraction(
                     site_id,
                     '{"full_name": ["Avery Stone"]}',
-                    contract_hash="hash",
+                    contract_hash=contract_hash,
                     model_key="vendor/m",
                 )
     finally:
@@ -4430,7 +4713,10 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "scanned without analysis" in hint
+        # This fixture kept no page, so there is genuinely nothing to read and
+        # a scan is the honest answer. The wording says which of the two
+        # no-evidence states this is.
+        assert "No stored page can be analysed" in hint
         # Named for the trip it makes, not for a build it cannot do.
         assert "Scan this username with analysis" in str(
             app.query_one("#profile-build", Button).label
@@ -4448,6 +4734,51 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
             )
         )
         assert "No profile stored" not in drawn
+
+
+async def test_stored_pages_offer_analysis_rather_than_another_scan():
+    """The other no-evidence state, and the one that used to be mislabelled.
+
+    Pages are stored for every result whether or not analysis was on, so a
+    username scanned without it is not missing evidence -- it is holding unread
+    evidence. Saying "scan again" there sent someone to a full re-fetch to
+    reach a pass that needs no network at all, and `View results` on the dialog
+    they landed on returned them right back to this pane.
+    """
+    from textual.widgets import Button, Static
+
+    await _results_with("unread", unanalysed=3)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _open_profile_section(app, pilot)
+
+        hint = app.query_one("#profile-anchor-line", Static).render().plain
+        assert "3 pages are stored and ready to read" in hint
+        # The promise that distinguishes this from the scan it used to offer.
+        assert "re-fetches nothing" in hint
+        assert "Analyse 3 stored pages" in str(
+            app.query_one("#profile-build", Button).label
+        )
+        # Still a build that cannot happen yet, so still no anchors.
+        assert app.query_one("#profile-anchors", Button).display is False
+
+
+async def test_one_stored_page_is_not_described_in_the_plural():
+    """"1 pages are stored" is how a careful tool looks careless."""
+    from textual.widgets import Button, Static
+
+    await _results_with("single", unanalysed=1)
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await _open_profile_section(app, pilot)
+
+        hint = app.query_one("#profile-anchor-line", Static).render().plain
+        assert "1 page is stored and ready to read" in hint
+        assert "Analyse 1 stored page" in str(
+            app.query_one("#profile-build", Button).label
+        )
 
 
 async def test_the_pointer_state_does_not_stick_to_the_next_username():

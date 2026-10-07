@@ -8,6 +8,7 @@ import pytest
 from rich.console import Console
 
 from sherlock_project.ai_engine import StructuredResponseError
+from sherlock_project.ai_provider import AIQuotaExhaustedError
 from sherlock_project.database import SherlockDB
 from sherlock_project.notify import QueryNotify, TerminalReporter
 from sherlock_project.profile_synthesis import CANONICAL_PROFILE_FIELDS
@@ -581,6 +582,47 @@ async def test_ai_worker_continues_after_job_failure(
     assert "model failed" not in rendered
     assert reporter.ai_stats.with_facts == 1
     assert reporter.ai_stats.pending == 1
+
+
+class QuotaAIService(FakeAIService):
+    async def extract_profile(self, username, site_name, site_content, *, known_profile_keys):
+        self.calls.append({"site_name": site_name})
+        raise AIQuotaExhaustedError("daily quota used up")
+
+
+async def test_ai_worker_stops_calling_the_model_once_the_daily_quota_is_spent(
+    db: SherlockDB,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "sherlock_project.sherlock.extract_profile_content",
+        lambda content, **kwargs: content,
+    )
+    site_ids = [
+        await db.save_result(
+            username="blue",
+            site_name=name,
+            status=str(QueryStatus.CLAIMED),
+            response_text=f"{name} profile",
+        )
+        for name in ("first", "second", "third")
+    ]
+    queue: asyncio.Queue[int] = asyncio.Queue()
+    service = QuotaAIService()
+    reporter, _ = _reporter()
+    worker_task = asyncio.create_task(
+        ai_worker(queue, db, service, reporter=reporter)
+    )
+    for site_id in site_ids:
+        await queue.put(site_id)
+    await _finish_worker(queue, worker_task)
+
+    # One request learns the quota is gone; the rest are not sent at all, and
+    # every site is still pending for the next run.
+    assert [call["site_name"] for call in service.calls] == ["first"]
+    for site_id in site_ids:
+        assert await _get_ai_extraction(db, site_id) is None
+    assert reporter.ai_stats.pending == 3
 
 
 async def test_ai_worker_leaves_malformed_response_pending_after_one_call(

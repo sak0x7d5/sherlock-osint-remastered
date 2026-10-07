@@ -71,7 +71,8 @@ None of the following exists upstream:
   cross-site profile synthesis (`ai_engine.py`, `profile_synthesis.py`,
   `synthesis_pipeline.py`, `investigation_context.py`).
 - A local AI provider integration and its setup flow (`ai_provider.py`,
-  `ai_config.py`, `ai_setup.py`).
+  `ai_config.py`, `ai_setup.py`), plus an opt-in hosted provider (Gemini) and
+  its client-side pacing (`ai_rate_limit.py`).
 - The `rich`-based terminal reporter (`notify.py`).
 
 ## Services still consumed from upstream
@@ -97,6 +98,7 @@ tool talks to:
 | - | - | - |
 | `https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest` | Update check, once per scan, and once when the UI opens if `update.check_on_startup` is on | `sherlock_project/__init__.py`, `sherlock_project/updater.py` |
 | `https://github.com/sak0x7d5/sherlock-osint-remastered` | Downloading a release, and only after the update dialog is confirmed | `sherlock_project/updater.py` |
+| `https://generativelanguage.googleapis.com/v1beta/openai` | Both AI passes, **only** when `ai.provider = "gemini"` is configured; sends the text of every profile page found | `sherlock_project/ai_provider.py` |
 
 The check runs off-thread with a 10s timeout, and any failure -- including the
 404 returned while no release exists -- is swallowed into a verbose-only debug
