@@ -474,3 +474,100 @@ async def test_setup_survives_a_terminal_that_cannot_answer(
     assert not path.exists()
     # argparse writes its own errors to stderr, not through the console.
     assert "--model is required" in capsys.readouterr().err
+
+
+class FakeCloudProvider:
+    models: ClassVar[list[AIModelInfo]] = []
+    error: Exception | None = None
+    settings_seen = None
+
+    def __init__(self, settings, **_kwargs) -> None:
+        type(self).settings_seen = settings
+
+    async def list_models(self) -> list[AIModelInfo]:
+        if type(self).error is not None:
+            raise type(self).error
+        return type(self).models
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def cloud_provider(monkeypatch: pytest.MonkeyPatch):
+    FakeCloudProvider.models = [
+        _model("gemini-2.5-flash"),
+        _model("text-embedding-004"),
+    ]
+    FakeCloudProvider.error = None
+    FakeCloudProvider.settings_seen = None
+    monkeypatch.setattr(ai_setup, "OpenAICompatibleProvider", FakeCloudProvider)
+
+    class ForbiddenServer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise AssertionError("a hosted provider must not start llama-server")
+
+    monkeypatch.setattr(ai_setup, "ManagedLlamaServer", ForbiddenServer)
+    return FakeCloudProvider
+
+
+@pytest.mark.asyncio
+async def test_gemini_setup_saves_provider_and_warns_before_sending(
+    tmp_path: Path, cloud_provider
+):
+    path = tmp_path / "config.toml"
+    console, output = _console()
+    result = await ai_setup.run_ai_setup(
+        ["--provider", "gemini", "--model", "gemini-2.5-flash", "--no-color"],
+        environ={},
+        config_path=path,
+        console=console,
+        stdin_isatty=False,
+    )
+    assert result == 0
+    settings = load_ai_settings(path=path, environ={})
+    assert settings.provider == "gemini"
+    assert settings.model == "gemini-2.5-flash"
+    assert settings.base_url.startswith("https://generativelanguage.googleapis.com")
+    rendered = output.getvalue()
+    assert "sent to Google" in rendered
+    assert "GEMINI_API_KEY" in rendered
+
+
+@pytest.mark.asyncio
+async def test_gemini_setup_does_not_offer_embedding_models(
+    tmp_path: Path, cloud_provider
+):
+    console, _ = _console()
+    with pytest.raises(SystemExit):
+        await ai_setup.run_ai_setup(
+            ["--provider", "gemini", "--model", "text-embedding-004"],
+            environ={},
+            config_path=tmp_path / "config.toml",
+            console=console,
+            stdin_isatty=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_gemini_setup_failure_leaves_existing_config(
+    tmp_path: Path, cloud_provider
+):
+    path = tmp_path / "config.toml"
+    save_ai_settings(
+        AISettings(base_url=DEFAULT_LLAMACPP_BASE_URL, model="local.gguf"),
+        path=path,
+        environ={},
+    )
+    cloud_provider.error = AIProviderUnavailableError("no key")
+    console, output = _console()
+    result = await ai_setup.run_ai_setup(
+        ["--provider", "gemini", "--model", "gemini-2.5-flash"],
+        environ={},
+        config_path=path,
+        console=console,
+        stdin_isatty=False,
+    )
+    assert result == 2
+    assert load_ai_settings(path=path, environ={}).provider == "llamacpp"
+    assert "no key" in output.getvalue()

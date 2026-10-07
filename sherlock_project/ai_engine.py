@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -25,10 +26,21 @@ from sherlock_project.ai_provider import (
     AIGenerationStats,
     AIModelInfo,
     AIProvider,
-    LlamaCppProvider,
+    create_provider,
     ProviderWideError,
 )
 from sherlock_project.content_extraction import strip_site_branding
+from sherlock_project.global_synthesis import (
+    GLOBAL_MAX_MODEL_ROUNDS,
+    GlobalDecisions,
+    Verdict,
+    apply_decisions,
+    chunk_refs,
+    deterministic_round,
+    reference_values,
+    site_refs,
+    strong_profile_of,
+)
 from sherlock_project.profile_synthesis import (
     CANONICAL_PROFILE_FIELDS,
     IdentityStatus,
@@ -59,6 +71,16 @@ PASS_ONE_NATIVE_REASONING_PROMPT_PATH = (
 PASS_TWO_PROMPT_PATH = Path(__file__).resolve().parent / "resources" / "pass_two.md"
 PASS_TWO_MAX_INPUT_BYTES = 12_000
 PASS_TWO_MAX_OUTPUT_TOKENS = 2_048
+PASS_TWO_GLOBAL_PROMPT_PATH = (
+    Path(__file__).resolve().parent / "resources" / "pass_two_global.md"
+)
+# Thirty decisions with citations, plus a hosted model's thinking, which is
+# spent from the same allowance.
+PASS_TWO_GLOBAL_MAX_OUTPUT_TOKENS = 8_192
+# Names the decision procedure in the synthesis input hash, so a profile built
+# one way is never served from cache as if built the other. Bump it when the
+# procedure changes in a way that could change a decision.
+GLOBAL_SYNTHESIS_STRATEGY = "global-rounds-v1"
 SAFE_EXTRACTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 PASS_ONE_VALIDATION_POLICY_VERSION = "open-dynamic-profile-keys-v5"
 PROFILE_CONTENT_EXTRACTION_POLICY_VERSION = "profile-content-v5"
@@ -896,6 +918,86 @@ class TargetDecision(StrictResponse):
     )
 
 
+def _assemble_anchored_profile(
+    *,
+    username: str,
+    input_hash: str,
+    context: InvestigationContext,
+    evidence: SynthesisEvidence,
+    extractions: list[SiteExtraction],
+    decisions: dict[int, SourceDecision],
+    warnings: list[str],
+) -> ProfileSynthesis:
+    """Build the anchored profile from final per-site decisions.
+
+    Shared by the sequential and the global Pass 2: they differ in how a
+    decision is reached, never in what a set of decisions means.
+    """
+    # Rebuild the two output profiles from final source decisions. An unsure
+    # source promoted during sweep two must not remain in both profiles.
+    final_strong_profile: dict[str, Any] = {}
+    final_unsure_profile: dict[str, Any] = {}
+    extractions_by_site_id = {
+        extraction.site_id: extraction
+        for extraction in extractions
+    }
+    for site_id in sorted(decisions):
+        decision = decisions[site_id]
+        extraction = extractions_by_site_id[site_id]
+        if decision.identity_status == "strong_match":
+            merge_extraction(
+                final_strong_profile,
+                extraction.extraction,
+                username=username,
+            )
+        elif decision.identity_status == "unsure":
+            merge_extraction(
+                final_unsure_profile,
+                extraction.extraction,
+                username=username,
+            )
+
+    source_decisions = [decisions[site_id] for site_id in sorted(decisions)]
+    visible_profile: dict[str, Any] = {}
+    merge_extraction(
+        visible_profile,
+        final_strong_profile,
+        username=username,
+    )
+    merge_extraction(
+        visible_profile,
+        final_unsure_profile,
+        username=username,
+    )
+    included_extractions = [
+        extractions_by_site_id[decision.site_id]
+        for decision in source_decisions
+        if decision.identity_status in {"strong_match", "unsure"}
+    ]
+    included = any(
+        decision.disposition == "included" for decision in source_decisions
+    )
+    failed = any(
+        decision.disposition == "failed" for decision in source_decisions
+    )
+    return ProfileSynthesis(
+        username=username,
+        input_hash=input_hash,
+        mode="anchored",
+        resolution_status="resolved" if included else "insufficient_evidence",
+        completeness=("partial" if failed else evidence.completeness),
+        strong_profile=final_strong_profile,
+        unsure_profile=final_unsure_profile,
+        provenance=build_profile_provenance(
+            visible_profile,
+            included_extractions,
+        ),
+        source_decisions=source_decisions,
+        anchors=context.anchors,
+        warnings=warnings,
+    )
+
+
 class AIService:
     def __init__(
         self,
@@ -912,6 +1014,7 @@ class AIService:
         self._extraction_prompt = ""
         self._native_reasoning_extraction_prompt = ""
         self._identity_prompt = ""
+        self._global_identity_prompt = ""
         self._closed = False
         self._model_info: AIModelInfo | None = None
         self._load_prompts()
@@ -927,7 +1030,7 @@ class AIService:
         resolved_settings = settings or (
             provider.settings if provider is not None else load_ai_settings()
         )
-        resolved_provider = provider or LlamaCppProvider(resolved_settings)
+        resolved_provider = provider or create_provider(resolved_settings)
         self = cls(
             provider=resolved_provider,
             settings=resolved_settings,
@@ -946,6 +1049,9 @@ class AIService:
             PASS_ONE_NATIVE_REASONING_PROMPT_PATH.read_text(encoding="utf-8")
         )
         self._identity_prompt = PASS_TWO_PROMPT_PATH.read_text(encoding="utf-8")
+        self._global_identity_prompt = PASS_TWO_GLOBAL_PROMPT_PATH.read_text(
+            encoding="utf-8"
+        )
 
     async def close(self) -> None:
         if self._closed:
@@ -1033,6 +1139,16 @@ class AIService:
         )
 
     @property
+    def uses_global_synthesis(self) -> bool:
+        """Whether anchored Pass 2 runs as a few global rounds.
+
+        A hosted model, where requests are metered and context is large. The
+        local path keeps its per-site sweeps: they were tuned for a model that
+        cannot hold many profiles at once, and nothing measured says otherwise.
+        """
+        return self._settings is not None and self._settings.is_cloud
+
+    @property
     def model_key(self) -> str:
         return self._settings.model if self._settings is not None else "unconfigured"
 
@@ -1051,6 +1167,20 @@ class AIService:
             ).hexdigest(),
             "max_output_tokens": str(PASS_TWO_MAX_OUTPUT_TOKENS),
         }
+        # Only for the global path. Adding a key here for the sequential one
+        # would change the input hash of every profile already cached locally.
+        if self.uses_global_synthesis:
+            fingerprints.update(
+                {
+                    "strategy": GLOBAL_SYNTHESIS_STRATEGY,
+                    "global_identity": sha256(
+                        self._global_identity_prompt.encode("utf-8")
+                    ).hexdigest(),
+                    "global_schema": sha256(
+                        self._compact_schema(GlobalDecisions).encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
         if self._settings is not None:
             fingerprints.update(
                 {
@@ -1087,6 +1217,15 @@ class AIService:
 
         if self._provider is None:
             raise RuntimeError("Load a model before anchored profile synthesis.")
+
+        if self.uses_global_synthesis:
+            return await self._synthesize_global(
+                username=username,
+                extractions=extractions,
+                context=context,
+                input_hash=input_hash,
+                evidence=evidence,
+            )
 
         strong_profile: dict[str, Any] = {}
         decisions: dict[int, SourceDecision] = {}
@@ -1190,69 +1329,218 @@ class AIService:
                 decisions[extraction.site_id].disposition = "excluded"
                 decisions[extraction.site_id].identity_status = "reject"
 
-        # Rebuild the two output profiles from final source decisions. An unsure
-        # source promoted during sweep two must not remain in both profiles.
-        final_strong_profile: dict[str, Any] = {}
-        final_unsure_profile: dict[str, Any] = {}
-        extractions_by_site_id = {
-            extraction.site_id: extraction
-            for extraction in extractions
-        }
-        for site_id in sorted(decisions):
-            decision = decisions[site_id]
-            extraction = extractions_by_site_id[site_id]
-            if decision.identity_status == "strong_match":
-                merge_extraction(
-                    final_strong_profile,
-                    extraction.extraction,
-                    username=username,
-                )
-            elif decision.identity_status == "unsure":
-                merge_extraction(
-                    final_unsure_profile,
-                    extraction.extraction,
-                    username=username,
-                )
-
-        source_decisions = [decisions[site_id] for site_id in sorted(decisions)]
-        visible_profile: dict[str, Any] = {}
-        merge_extraction(
-            visible_profile,
-            final_strong_profile,
-            username=username,
-        )
-        merge_extraction(
-            visible_profile,
-            final_unsure_profile,
-            username=username,
-        )
-        included_extractions = [
-            extractions_by_site_id[decision.site_id]
-            for decision in source_decisions
-            if decision.identity_status in {"strong_match", "unsure"}
-        ]
-        included = any(
-            decision.disposition == "included" for decision in source_decisions
-        )
-        failed = any(
-            decision.disposition == "failed" for decision in source_decisions
-        )
-        return ProfileSynthesis(
+        return _assemble_anchored_profile(
             username=username,
             input_hash=input_hash,
-            mode="anchored",
-            resolution_status="resolved" if included else "insufficient_evidence",
-            completeness=("partial" if failed else evidence.completeness),
-            strong_profile=final_strong_profile,
-            unsure_profile=final_unsure_profile,
-            provenance=build_profile_provenance(
-                visible_profile,
-                included_extractions,
-            ),
-            source_decisions=source_decisions,
-            anchors=context.anchors,
+            context=context,
+            evidence=evidence,
+            extractions=extractions,
+            decisions=decisions,
             warnings=warnings,
         )
+
+    async def _synthesize_global(
+        self,
+        *,
+        username: str,
+        extractions: list[SiteExtraction],
+        context: InvestigationContext,
+        input_hash: str,
+        evidence: SynthesisEvidence,
+    ) -> ProfileSynthesis:
+        """Anchored Pass 2 in rounds. See `global_synthesis` for the design."""
+        warnings = synthesis_warnings(evidence)
+        decisions: dict[int, SourceDecision] = {}
+        candidates: list[SiteExtraction] = []
+        for extraction in extractions:
+            if extraction.extraction:
+                candidates.append(extraction)
+            else:
+                decisions[extraction.site_id] = SourceDecision(
+                    site_id=extraction.site_id,
+                    site_name=extraction.site_name,
+                    site_url=extraction.site_url,
+                    disposition="ignored",
+                )
+
+        sites = site_refs(candidates)
+        verdicts: dict[str, Verdict] = {}
+        failed: set[str] = set()
+        anchors = self._format_anchors(context)
+        deterministic_round(
+            username=username, context=context, sites=sites, verdicts=verdicts
+        )
+
+        asked_profile: dict[str, Any] | None = None
+        for round_number in range(1, GLOBAL_MAX_MODEL_ROUNDS + 1):
+            strong_profile = strong_profile_of(
+                username=username, sites=sites, verdicts=verdicts
+            )
+            if round_number == 1:
+                pending = [ref for ref in sites if ref not in verdicts]
+            else:
+                # Round 2 is only worth a request if round 1 grew the evidence:
+                # otherwise it would ask the same question and get the same
+                # answer. Rejects are re-asked too -- the sequential path never
+                # revisits them, which is its blind spot.
+                if strong_profile == asked_profile:
+                    break
+                pending = [
+                    ref
+                    for ref in sites
+                    if ref not in failed
+                    and verdicts.get(ref) is not None
+                    and verdicts[ref].status != "strong_match"
+                ]
+            if not pending:
+                break
+            asked_profile = strong_profile
+            try:
+                failed |= await self._global_round(
+                    username=username,
+                    anchors=anchors,
+                    strong_profile=strong_profile,
+                    sites=sites,
+                    pending=pending,
+                    verdicts=verdicts,
+                    origin=f"round {round_number}",
+                    warnings=warnings,
+                )
+            except ProviderWideError:
+                warnings.append(
+                    "The AI provider became unavailable during pass two; "
+                    "remaining sources were left unresolved."
+                )
+                break
+            deterministic_round(
+                username=username, context=context, sites=sites, verdicts=verdicts
+            )
+
+        downgraded = 0
+        for ref, extraction in sites.items():
+            verdict = verdicts.get(ref)
+            if verdict is None:
+                decisions[extraction.site_id] = SourceDecision(
+                    site_id=extraction.site_id,
+                    site_name=extraction.site_name,
+                    site_url=extraction.site_url,
+                    disposition="failed",
+                )
+                continue
+            downgraded += int(verdict.downgraded)
+            decisions[extraction.site_id] = SourceDecision(
+                site_id=extraction.site_id,
+                site_name=extraction.site_name,
+                site_url=extraction.site_url,
+                disposition=(
+                    "excluded" if verdict.status == "reject" else "included"
+                ),
+                identity_status=verdict.status,
+            )
+        if downgraded:
+            warnings.append(
+                f"{downgraded} pass-two decision(s) cited facts that could not "
+                "be found and were downgraded."
+            )
+
+        return _assemble_anchored_profile(
+            username=username,
+            input_hash=input_hash,
+            context=context,
+            evidence=evidence,
+            extractions=extractions,
+            decisions=decisions,
+            warnings=warnings,
+        )
+
+    async def _global_round(
+        self,
+        *,
+        username: str,
+        anchors: dict[str, list[str]],
+        strong_profile: dict[str, Any],
+        sites: dict[str, SiteExtraction],
+        pending: list[str],
+        verdicts: dict[str, Verdict],
+        origin: str,
+        warnings: list[str],
+    ) -> set[str]:
+        """One model round over `pending`, chunked and sent concurrently.
+
+        Returns the refs that ended the round without an answer. A chunk that
+        fails costs its own sites, not the round; a provider-wide error is
+        re-raised for the caller to stop on.
+        """
+        base: dict[str, object] = {"username": username, "anchors": anchors}
+        if strong_profile:
+            base["strong_profile"] = strong_profile
+        base_bytes = len(json.dumps(base, ensure_ascii=False).encode("utf-8"))
+        references = reference_values(anchors, strong_profile)
+        chunks = chunk_refs(pending, sites, base_payload_bytes=base_bytes)
+
+        async def ask(chunk: list[str]) -> list[str]:
+            payload = dict(base)
+            payload["sites"] = [
+                {"ref": ref, "extraction": sites[ref].extraction} for ref in chunk
+            ]
+            response = await self._respond_structured(
+                phase="pass_two",
+                username=username,
+                site_name=f"{len(chunk)} sites",
+                site_id=None,
+                attempt=1,
+                system_prompt=self._global_identity_prompt,
+                payload=payload,
+                response_model=GlobalDecisions,
+                error_context=f"global pass-two {origin} for {len(chunk)} sites",
+                max_tokens=PASS_TWO_GLOBAL_MAX_OUTPUT_TOKENS,
+                reasoning_off=False,
+            )
+            return apply_decisions(
+                response,
+                chunk=chunk,
+                sites=sites,
+                references=references,
+                verdicts=verdicts,
+                origin=origin,
+            )
+
+        results = await asyncio.gather(
+            *(ask(chunk) for chunk in chunks), return_exceptions=True
+        )
+        unanswered: set[str] = set()
+        missing_retry: list[str] = []
+        for chunk, result in zip(chunks, results, strict=True):
+            if isinstance(result, ProviderWideError):
+                raise result
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                unanswered |= set(chunk)
+                diagnostics = (
+                    f" [{result.safe_diagnostics()}]"
+                    if isinstance(result, StructuredResponseError)
+                    else ""
+                )
+                warnings.append(
+                    f"Pass-two {origin} failed for {len(chunk)} sites "
+                    f"({type(result).__name__}){diagnostics}; their facts were "
+                    "not merged."
+                )
+                continue
+            missing_retry.extend(result)
+
+        # The model skipped some refs. Ask once more for exactly those, in a
+        # request of their own; whatever is still missing is reported failed.
+        if missing_retry:
+            try:
+                left = await ask(missing_retry)
+            except ProviderWideError:
+                raise
+            except Exception:
+                left = missing_retry
+            unanswered |= set(left)
+        return unanswered
 
     async def _assess_target(
         self,

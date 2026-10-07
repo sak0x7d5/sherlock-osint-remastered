@@ -634,6 +634,16 @@ class SettingsPane(Vertical):
     def action_edit(self) -> None:
         field = SETTING_FIELDS[self._cursor]
         if field.kind == "model":
+            # The picker drives a local llama-server. Pointed at a hosted
+            # provider it would try to start one against Google's URL.
+            stored_ai = self._stored.ai
+            if stored_ai is not None and stored_ai.is_cloud:
+                self._status = (
+                    f"Configured for {stored_ai.provider} -- change its model "
+                    f"with `sherlock-rm setup ai --provider {stored_ai.provider}`."
+                )
+                self._redraw()
+                return
             endpoint = self._values.get("ai.base_url")
             if not endpoint:
                 self._status = "Set the endpoint first."
