@@ -101,6 +101,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import (
     Button,
@@ -203,6 +204,31 @@ KEY_MIN_DETAIL_WIDTH = 46
 # picker over the detail (ctrl+l). At 80 columns the 37-cell list took almost
 # half the screen and left the record a link column three characters wide.
 NARROW_WIDTH = 100
+
+def _unless_torn_down(method):
+    """Skip a late callback whose widgets are already gone.
+
+    Several things here finish AFTER the event that started them: a database
+    read in a worker, a measurement queued with `call_after_refresh`, a timer
+    tick. If the app closes in between, the pane's children are removed first
+    and the callback's first `query_one` raises `NoMatches` -- inside the app,
+    on its way out, which is how a test that never touched this tab failed on
+    Windows CI. There is nothing left to draw, so doing nothing is correct.
+    """
+
+    def guarded(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except NoMatches:
+            if self.is_attached and self.children:
+                # Still mounted: a missing widget is a real bug, not teardown.
+                raise
+            return None
+
+    guarded.__name__ = method.__name__
+    guarded.__doc__ = method.__doc__
+    return guarded
+
 
 class ResultsPane(Vertical):
     """What the database already knows, for every username in it."""
@@ -503,6 +529,7 @@ class ResultsPane(Vertical):
             await db.close()
         self._fill_list()
 
+    @_unless_torn_down
     def _fill_list(self) -> None:
         table = self.query_one("#username-list", DataTable)
         table.clear()
@@ -787,6 +814,7 @@ class ResultsPane(Vertical):
         }
         self._show_record(record)
 
+    @_unless_torn_down
     def _set_detail(self, renderable: Any) -> None:
         """Show a bare message in place of a record."""
         self.query_one("#detail-header", Static).update(renderable)
@@ -868,7 +896,11 @@ class ResultsPane(Vertical):
         # label that changes width after layout left it drawn under the OLD
         # extent -- "3 PROFI" underlined while PROFILE was the section open.
         # Re-measured once the new label has been laid out.
-        self.call_after_refresh(tabs._highlight_active, False)
+        self.call_after_refresh(self._rehighlight_tabs)
+
+    @_unless_torn_down
+    def _rehighlight_tabs(self) -> None:
+        self.query_one("#detail-tabs", Tabs)._highlight_active(animate=False)
 
     @on(Tabs.TabActivated, "#detail-tabs")
     def _switch_section(self, event: Tabs.TabActivated) -> None:
@@ -902,6 +934,7 @@ class ResultsPane(Vertical):
             return
         self._focus_section()
 
+    @_unless_torn_down
     def focus_default(self) -> None:
         """Where focus lands when this tab is opened: the list, or -- when the
         list is a hidden picker -- the open section, so keys are heard at once."""
@@ -910,6 +943,7 @@ class ResultsPane(Vertical):
         else:
             self.query_one("#username-list", DataTable).focus()
 
+    @_unless_torn_down
     def _focus_section(self) -> None:
         target = {
             SEC_SITES: f"#{SEC_SITES}",
@@ -956,6 +990,7 @@ class ResultsPane(Vertical):
         self._fit_width()
         self._fit_keys()
 
+    @_unless_torn_down
     def _fit_keys(self) -> None:
         """Put the key beside the counts, under them, or nowhere.
 
@@ -972,6 +1007,7 @@ class ResultsPane(Vertical):
             width < KEY_INLINE_WIDTH, "-stacked"
         )
 
+    @_unless_torn_down
     def _fit_width(self) -> None:
         """Turn the username list into a picker below NARROW_WIDTH.
 
@@ -1064,6 +1100,7 @@ class ResultsPane(Vertical):
 
     # -- rendering ----------------------------------------------------------
 
+    @_unless_torn_down
     def _show_record(self, record: dict[str, Any]) -> None:
         if not record.get("known"):
             self._set_detail(
@@ -1085,6 +1122,7 @@ class ResultsPane(Vertical):
         )
         self._redraw_profile_actions(record)
 
+    @_unless_torn_down
     def _redraw_header(self) -> None:
         """Two lines that never wrap: who, then what the scan came to.
 

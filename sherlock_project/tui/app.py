@@ -260,6 +260,23 @@ class SherlockUI(App[None]):
         `_reload_settings`: arriving at that tab is the moment its answer has to
         be current, whichever route was taken to get there.
         """
+        try:
+            self._arrive_at(event)
+        except NoMatches:
+            # A tab activation still queued when the app closes arrives after
+            # the panes are gone -- macOS CI failed a test on exactly this, on
+            # the way out. Nothing is on screen to refresh or focus. With the
+            # panes still mounted, a missing widget is a real bug: raise it.
+            if self._panes_mounted():
+                raise
+
+    def _panes_mounted(self) -> bool:
+        # The BASE screen, not `self.screen`: with a dialog open the top screen
+        # is the dialog, which never holds the panes.
+        stack = self.screen_stack
+        return bool(stack) and bool(stack[0].query(ResultsPane))
+
+    def _arrive_at(self, event: TabbedContent.TabActivated) -> None:
         if event.pane.id == RESULTS_TAB:
             self.query_one(ResultsPane).action_reload()
         elif event.pane.id == SCAN_TAB:

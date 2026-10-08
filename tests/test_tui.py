@@ -5924,3 +5924,29 @@ async def test_show_all_works_as_terminals_send_it():
         await pilot.press(_decoded("\x1bs"))
         await pilot.pause()
         assert pane._visible == set(STATUS_ORDER)
+
+
+async def test_late_callbacks_after_the_app_closes_do_nothing():
+    """A tab activation or a database read can finish after the app has gone.
+
+    Both happened on CI: a queued TabActivated reached `_tab_activated` once the
+    panes were unmounted (macOS), and the results loader's worker returned into
+    `_fill_list` after its table was removed (Windows, in a test that never
+    opened RESULTS). Each raised NoMatches inside the app on its way out. Called
+    here deliberately after teardown, every one of those paths must be a no-op.
+    """
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pane = app.query_one(ResultsPane)
+        results_tab = app.query_one("#tab-results")
+
+    class Activated:
+        pane = results_tab
+
+    app._tab_activated(Activated())
+    pane._fill_list()
+    pane._fit_keys()
+    pane._focus_section()
+    pane.focus_default()
+    pane._rehighlight_tabs()
