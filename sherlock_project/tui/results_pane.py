@@ -39,19 +39,17 @@ header is blank, which left the distinction this tool exists to make -- blocked
 is not inconclusive is not rejected -- drawn in symbols nobody had been shown a
 glossary for. The live feed on the scan pane does not have that problem because
 it prints the word beside every symbol; a table has no room for that, so the
-glossary goes in the header band, in the half of it that was empty at every
-width. It is the one bordered block on this screen, deliberately: a key is not
-data, and in an otherwise flat pane the border is what says so at a glance.
+glossary sits on the filter line directly above the column, on SITES only.
+
+It was a bordered box in the header first, on every section -- including the
+two that draw no symbol -- and it cost the header four rows. Now it shares the
+filter line when there is room, takes a line of its own under it when there is
+not, and goes only on a very narrow pane, because the counts on that line are
+the part that must not clip.
 
 Not beside the tabs, which is where the spare width looks like it is. Measured,
 that space is not spare: `Tabs` is a scrolling strip, so squeezed it drops tabs
-rather than wrapping or ellipsizing them, silently and from the left. A key
-sharing that row needed a 126-column terminal to leave three tabs intact.
-
-The border costs the two rows it occupies, and the box costs 30 cells of width
-that the header beside it does not have on a narrow terminal -- so below
-`KEY_MIN_DETAIL_WIDTH` the key is taken off screen rather than wrapping the
-timestamp next to it into a column of fragments.
+rather than wrapping or ellipsizing them, silently and from the left.
 
 **Everything that is not interactive is still a Rich renderable inside a
 `Static`.** Widgets earn their keep when something can be clicked or focused --
@@ -67,14 +65,18 @@ So selection, section switching and scrolling touch nothing, deletion asks
 first, a first build passes `force=False` because there is nothing to replace,
 and a rebuild passes `force=True` because that is what the button says.
 
-**Both of those writes are buttons in the detail pane, not marks on the list.**
-Deleting was a `✕` on the row under the pointer first, and a `DataTable` cannot
-hold a control: the row cursor paints every cell of its row, so the thing
-either lost its colours to the highlight or punched a hole in it. The list is
-for picking a record; what can be DONE to a record lives with the record, where
-the target is the name two lines above the button and there is one of them
-rather than one per row -- which also keeps the only irreversible action in the
-app out from under the pointer while someone reads down a column of names.
+**Neither write is a mark on the list.** Deleting was a `✕` on the row under
+the pointer first, and a `DataTable` cannot hold a control: the row cursor
+paints every cell of its row. Then it was a permanent red button in the record
+header -- the loudest thing on screen, on every section, and the first Tab stop
+after the list. It now lives last in the `⋯ Actions` menu beside the name,
+apart from the safe actions and red only there, behind a confirmation. Building
+lives on PROFILE, directly under the card that says what a build would do.
+
+**Focus always lands somewhere visible.** Switching section moves focus into
+the section, and the narrow layout moves it off the list it hides. A section
+that is hidden takes its focused widget with it, and Textual then focuses
+nothing: every key on this pane went unheard on PROFILE until that was fixed.
 
 **A rebuild keeps the profile's own anchors.** `--ai-synthesize-only` takes them
 from the command line and never from the profile it overwrites, so rebuilding
@@ -87,6 +89,7 @@ and shown above the button, so the safe default is also the visible one.
 from __future__ import annotations
 
 import webbrowser
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from time import perf_counter
@@ -97,7 +100,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Vertical, VerticalScroll
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import (
     Button,
@@ -188,13 +191,18 @@ KEY_STATUSES: tuple[QueryStatus, ...] = (
     QueryStatus.ILLEGAL,
 )
 
-# Detail-pane width below which the key is taken off screen. The box is 30
-# cells and the line it sits beside is 32 (`last scanned` plus a timestamp), so
-# under their sum the header does not shorten -- it WRAPS. Measured at an
-# 80-column terminal that is six lines of broken-up timestamp where there were
-# two, and the table is pushed down by all of them. A glossary is worth a lot
-# less than being able to read the record it is a glossary for.
-KEY_MIN_DETAIL_WIDTH = 64
+# Detail-pane widths for the status key. At KEY_INLINE_WIDTH and above it
+# shares one line with the filter chip and the counts; below that it drops to a
+# line of its own under them -- a row of findings is a fair price for knowing
+# what the symbols mean -- and below KEY_MIN_DETAIL_WIDTH it goes, because the
+# counts are the part of that band that must survive and the key is a glossary.
+KEY_INLINE_WIDTH = 100
+KEY_MIN_DETAIL_WIDTH = 46
+
+# Pane width below which the username list stops being a column and becomes a
+# picker over the detail (ctrl+l). At 80 columns the 37-cell list took almost
+# half the screen and left the record a link column three characters wide.
+NARROW_WIDTH = 100
 
 class ResultsPane(Vertical):
     """What the database already knows, for every username in it."""
@@ -207,15 +215,29 @@ class ResultsPane(Vertical):
     # A binding at all, rather than relying on the strip's own arrow keys,
     # because reaching the strip means cycling focus with Tab: true, and
     # undiscoverable. This way the sections appear in the footer.
+    #
+    # Section-scoped keys are filtered by `check_action`, so the footer lists
+    # only what does something in the section on screen. A footer that offered
+    # `found only` on PROFILE and `notes` on SITES taught people that keys here
+    # do nothing.
     BINDINGS: ClassVar = [
-        Binding("ctrl+r", "reload", "refresh"),
+        Binding("f", "toggle_found_only", "found only"),
+        Binding("b", "build_profile", "build"),
+        Binding("a", "edit_anchors", "anchors"),
         Binding("s", "toggle_sources", "sources"),
         Binding("v", "toggle_notes", "notes"),
-        Binding("ctrl+e", "export", "export json"),
-        Binding("f", "toggle_found_only", "found only"),
-        Binding("alt+right", "next_section", "next section"),
-        Binding("alt+left", "prev_section", "prev section", show=False),
-        Binding("delete", "delete_username", "delete"),
+        # ctrl+arrows as well, for terminals whose alt+arrow never arrives as
+        # one: macOS Terminal.app sends Option+arrow as ESC f / ESC b, the
+        # readline word-jump, and Textual decodes those as ctrl+right/left.
+        # Nothing on this pane takes ctrl+arrows -- it has no text field, and
+        # DataTable binds only the plain arrows.
+        Binding("alt+right,ctrl+right", "next_section", "section"),
+        Binding("alt+left,ctrl+left", "prev_section", "prev section", show=False),
+        Binding("m", "record_actions", "actions"),
+        Binding("ctrl+l", "toggle_picker", "usernames"),
+        Binding("ctrl+e", "export", "export", show=False),
+        Binding("ctrl+r", "reload", "refresh", show=False),
+        Binding("delete", "delete_username", "delete…", show=False),
     ]
 
     def __init__(self) -> None:
@@ -228,6 +250,15 @@ class ResultsPane(Vertical):
         # A username to open once the list has loaded, when something sent us
         # here to look at one in particular.
         self._pending_selection: str | None = None
+        # The username at the top of the list when it was last loaded, so a
+        # reload can tell a freshly scanned name from a list that only shuffled.
+        self._last_top: str | None = None
+        # Which section is showing, for `check_action` -- the footer offers a
+        # section's keys only while that section is the one on screen.
+        self._section = SEC_SITES
+        # Below NARROW_WIDTH the username list is a picker over the detail
+        # rather than a column beside it. See `_fit_width`.
+        self._narrow = False
         # Anchors for a profile built from this pane. Run-only, like the scan
         # pane's -- and edited with the SAME dialog, not a second one.
         self._build_anchors: list[IdentityAnchor] = []
@@ -285,30 +316,30 @@ class ResultsPane(Vertical):
                 # fill 90 cells -- so the glossary goes in the space the header
                 # was already paying for rather than in a row of its own.
                 with Grid(id="detail-head"):
-                    # Identity, and under it the one thing that can be DONE to
-                    # the record it names. Actions on a record belong with the
-                    # record: here the target is whatever the header says, and
-                    # the header is two lines above it.
-                    with Vertical(id="detail-identity"):
-                        # Always visible, whichever section is showing: who
-                        # this is and when it was scanned is context for both.
-                        yield Static(id="detail-header")
-                        yield Button(
-                            "✕ Delete this username", id="delete-username"
-                        )
-                    yield Static(id="detail-keys")
+                    # Who this is and what the scan came to, on two lines that
+                    # never wrap. Always visible, whichever section is showing.
+                    yield Static(id="detail-header")
+                    # Everything that can be DONE to the record, behind one
+                    # quiet chip. Delete used to be a permanent red button
+                    # here: the most saturated thing on screen, the first Tab
+                    # stop after the list, and on every section. It now lives
+                    # last in this menu, and the chip is not a Tab stop -- `m`
+                    # opens it from the keyboard, and the footer says so.
+                    yield Button("⋯ Actions", id="record-actions", classes="chip")
                 yield Tabs(
                     Tab("SITES", id=TAB_SITES),
                     Tab("EXTRACTIONS", id=TAB_EXTRACTIONS),
                     Tab("PROFILE", id=TAB_PROFILE),
                     id="detail-tabs",
                 )
-                # The filter, and what it is hiding. Only on SITES: PROFILE has
-                # nothing to filter, and a control that cannot do anything is
-                # worse than an absent one.
+                # The filter, what it is hiding, and the key to the symbols in
+                # the table under it -- one line, only on SITES. The key used to
+                # be a bordered box in the header on every section, including
+                # the two that draw no status symbol.
                 with Grid(id="sites-controls"):
-                    yield Button(id="toggle-found-only", classes="toggle")
+                    yield Button(id="toggle-found-only", classes="chip")
                     yield Static(id="sites-counts")
+                    yield Static(id="sites-key")
                 # Each section owns its own scrolling, and only one is mounted
                 # visible at a time -- which is the whole fix for the double
                 # scrollbar.
@@ -339,9 +370,13 @@ class ResultsPane(Vertical):
                         with VerticalScroll(id="extraction-detail-col"):
                             yield Static(id="extraction-detail")
                     with VerticalScroll(id=SEC_PROFILE):
-                        yield Static(id="detail-profile")
-                        # Shown only when there is no profile to display. The
-                        # section otherwise stays a viewer.
+                        # The actions come FIRST. With a profile on screen they
+                        # are a two-line status bar with Rebuild in it; below a
+                        # long profile, Rebuild needed a scroll to find. With
+                        # no profile they are the whole section: a card that
+                        # reads evidence, anchors, result, then the button
+                        # directly under them -- not right-aligned forty cells
+                        # away from the sentence it acts on.
                         with Vertical(id="profile-actions"):
                             yield Static(id="profile-anchor-line")
                             # Progress reports HERE, not in the scan tab's
@@ -351,17 +386,16 @@ class ResultsPane(Vertical):
                             # which has been measured at 187s cold, so silence
                             # is the one thing this must not do.
                             yield Static(id="profile-status")
-                            with Grid(id="profile-buttons"):
-                                # Named, because the pointer state removes it:
-                                # a right-aligning spacer is exactly wrong when
-                                # the action belongs under the sentence.
-                                yield Static(id="profile-spacer")
-                                yield Button("Anchors", id="profile-anchors")
+                            with Horizontal(id="profile-buttons"):
                                 yield Button(
                                     "Build profile",
                                     variant="primary",
                                     id="profile-build",
                                 )
+                                yield Button(
+                                    "Anchors…", id="profile-anchors", classes="chip"
+                                )
+                        yield Static(id="detail-profile")
 
     def on_mount(self) -> None:
         table = self.query_one("#username-list", DataTable)
@@ -373,7 +407,9 @@ class ResultsPane(Vertical):
         # list for, and the total is context for it. Reversed, the eye lands on
         # the larger, less interesting number first on every row.
         table.add_column("found", key="found", width=5)
-        table.add_column("sites", key="sites", width=5)
+        # "checked", not "sites": beside "found" the bare noun read as "sites
+        # it was found on", which is the other number.
+        table.add_column("checked", key="sites", width=7)
 
         sites = self.query_one(f"#{SEC_SITES}", DataTable)
         sites.add_column("", key="mark", width=2)
@@ -390,17 +426,26 @@ class ResultsPane(Vertical):
         # than what half of it happens to hold.
         sites.add_column("detail", key="detail")
 
-        # Hidden until a record is on screen. Composed visible it would flash
-        # under an empty header for the length of the first database read --
-        # an irreversible control offering itself before there is anything to
-        # act on.
-        self.query_one("#delete-username", Button).display = False
+        # Hidden until a record is on screen: a menu of things to do to a
+        # record has nothing to act on under "Nothing scanned yet".
+        actions = self.query_one("#record-actions", Button)
+        actions.display = False
+        # Mouse-reachable, keyboard-reachable through `m` -- but never a Tab
+        # stop. Tab from the list now goes to the content, not to a menu whose
+        # last item erases the record.
+        actions.can_focus = False
+        actions.tooltip = "Export, re-scan, copy links or delete  (m)"
+        # The section strip is switched with alt+arrows or the mouse. As a Tab
+        # stop it took focus invisibly -- its focus style is deliberately
+        # suppressed -- so the next key seemed to go nowhere.
+        self.query_one("#detail-tabs", Tabs).can_focus = False
 
         # Drawn once. The key is the app's vocabulary, not this record's, so
-        # nothing that happens to the data can change it.
-        keys = self.query_one("#detail-keys", Static)
-        keys.border_title = "keys"
-        keys.update(status_key(KEY_STATUSES, columns=2))
+        # nothing that happens to the data can change it. One line, beside the
+        # filter, on the one section whose table draws these symbols.
+        self.query_one("#sites-key", Static).update(
+            status_key(KEY_STATUSES, columns=len(KEY_STATUSES))
+        )
         self._redraw_found_only()
         self._fit_keys()
 
@@ -482,12 +527,22 @@ class ResultsPane(Vertical):
                 Text(str(listing.total_sites), style="dim"),
                 key=listing.username,
             )
-        # Open on whichever row was asked for, otherwise the first. The list is
-        # sorted most-recent-first, so the top row is almost always the one
-        # someone came back to look at.
+        # Which row to open, in order of authority:
+        #   1. one something asked for by name (the scan pane's "view results");
+        #   2. a username that has just risen to the top -- the list is sorted
+        #      most-recent-first, so a new top is a scan that just finished,
+        #      and it is the one someone came here to read;
+        #   3. otherwise the row that was open before the reload.
+        # The third rule is the fix. This tab reloads on every visit, and it
+        # used to land on row 0 each time, so checking the scan tab and coming
+        # back lost your place in the list.
+        names = [listing.username for listing in self._listings]
         wanted = self._pending_selection
         self._pending_selection = None
-        names = [listing.username for listing in self._listings]
+        top_changed = bool(names) and names[0] != self._last_top
+        self._last_top = names[0] if names else None
+        if wanted not in names:
+            wanted = names[0] if top_changed else self._selected
         row = names.index(wanted) if wanted in names else 0
         table.move_cursor(row=row)
         self._select(names[row])
@@ -548,7 +603,16 @@ class ResultsPane(Vertical):
             return
         from sherlock_project.show import _as_json
 
-        target = Path.cwd() / f"{self._record['username']}.json"
+        # Never over an earlier export. Two exports of one username are two
+        # snapshots of an investigation at two moments, and the second one
+        # silently replacing the first lost the earlier state with no warning.
+        # The timestamp also sorts them in the order they were taken.
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        target = Path.cwd() / f"{self._record['username']}-{stamp}.json"
+        suffix = 2
+        while target.exists():
+            target = Path.cwd() / f"{self._record['username']}-{stamp}-{suffix}.json"
+            suffix += 1
         try:
             target.write_text(_as_json([self._record]), encoding="utf-8")
         except OSError as error:
@@ -569,10 +633,52 @@ class ResultsPane(Vertical):
             return
         self._confirm_delete(self._selected)
 
-    @on(Button.Pressed, "#delete-username")
-    def _delete_pressed(self) -> None:
-        """The button is the key, drawn. One action, so one implementation."""
-        self.action_delete_username()
+    @on(Button.Pressed, "#record-actions")
+    def _actions_pressed(self) -> None:
+        self.action_record_actions()
+
+    def action_record_actions(self) -> None:
+        """Open the menu of things that can be done to the open record.
+
+        Ordered by risk, safest first, with Delete last and set apart -- the
+        same rule a confirmation dialog follows for its buttons. Each item is
+        also a key, and the menu names it, so the menu teaches the shortcuts
+        rather than standing in for them.
+        """
+        from sherlock_project.tui.record_actions import RecordActionsScreen
+
+        username = self._selected
+        if username is None:
+            return
+        found = [
+            str(account["url"])
+            for account in (self._record or {}).get("accounts") or []
+            if account.get("url")
+        ] if self._record and self._record.get("username") == username else []
+
+        def chosen(choice: str | None) -> None:
+            if choice == "export":
+                self.action_export()
+            elif choice == "rescan":
+                self.post_message(self.Rescan(username))
+            elif choice == "copy":
+                self.app.copy_to_clipboard("\n".join(found))
+                self.notify(f"Copied {count_of(len(found), 'link')}.")
+            elif choice == "profile":
+                self._show_section(TAB_PROFILE)
+            elif choice == "delete":
+                self._confirm_delete(username)
+
+        self.app.push_screen(
+            RecordActionsScreen(username, links=len(found)), chosen
+        )
+
+    class Rescan(Message):
+        """Asked to scan this username again. The app owns which tab scans."""
+
+        def __init__(self, username: str) -> None:
+            super().__init__()
+            self.username = username
 
     def _confirm_delete(self, username: str) -> None:
         """Ask, with figures, before erasing everything stored for a username.
@@ -601,14 +707,23 @@ class ResultsPane(Vertical):
             self.notify("Nothing selected to delete.", severity="warning")
             return
 
-        profile = "and its AI profile " if listing.has_profile else ""
-        detail = (
-            f"Delete everything stored for {username!r}?\n\n"
-            f"{count_of(listing.total_sites, 'site result')} {profile}will be "
-            f"removed, including {count_of(listing.claimed_sites, 'account')} "
-            f"found.\n"
-            f"This cannot be undone, and the scan itself cannot be recovered "
-            f"without running it again."
+        # Consequence first, as a list of what goes, then permanence. The name
+        # is in the title and on the button, so the body does not repeat it --
+        # the old body opened by asking the title's question a second time.
+        detail = Text()
+        detail.append("This removes everything stored for this username:\n")
+        detail.append(f"  {count_of(listing.total_sites, 'site result')}, including ")
+        detail.append(
+            f"{count_of(listing.claimed_sites, 'found account')}\n", style="bold"
+        )
+        # Stored page text and Pass 1 extractions live on the result rows, so
+        # they go with them -- worth saying, because they are the expensive part.
+        detail.append("  the stored pages and their AI extractions")
+        if listing.has_profile:
+            detail.append("\n  the AI profile")
+        detail.append(
+            "\n\nThis cannot be undone. Getting it back means scanning again.",
+            style="dim",
         )
 
         def erase(confirmed: bool | None) -> None:
@@ -616,7 +731,14 @@ class ResultsPane(Vertical):
                 self._erase(username)
 
         self.app.push_screen(
-            ConfirmScreen(f"Delete {username}", detail), erase
+            ConfirmScreen(
+                f"Delete {username}?",
+                detail,
+                confirm_label=f"Delete {username}",
+                cancel_label="Keep it",
+                danger=True,
+            ),
+            erase,
         )
 
     @work(exclusive=True, group="results-delete")
@@ -669,9 +791,10 @@ class ResultsPane(Vertical):
         """Show a bare message in place of a record."""
         self.query_one("#detail-header", Static).update(renderable)
         # An empty database, or a username with nothing stored: the header is
-        # a sentence now, not an identity, and an action under it would have
-        # nothing to act on.
-        self.query_one("#delete-username", Button).display = False
+        # a sentence now, not an identity. Everything that acts on a record --
+        # the actions menu, the sections and the filter -- goes with it, rather
+        # than sitting under the sentence with nothing to act on.
+        self._show_record_chrome(False)
         self.query_one(f"#{SEC_SITES}", DataTable).clear()
         self.query_one("#detail-profile", Static).update("")
         self._row_urls.clear()
@@ -685,6 +808,16 @@ class ResultsPane(Vertical):
         self.query_one("#extraction-summary", Static).update("")
         self.query_one("#extraction-detail", Static).update("")
         self._redraw_counts(found=0, unresolved=0)
+
+    def _show_record_chrome(self, shown: bool) -> None:
+        """Show or hide everything that only means something with a record open."""
+        self.query_one("#record-actions", Button).display = shown
+        self.query_one("#detail-tabs", Tabs).display = shown
+        self.query_one("#detail-switch", ContentSwitcher).display = shown
+        self.query_one("#sites-controls").display = shown and (
+            self._section == SEC_SITES
+        )
+        self.refresh_bindings()
 
     def _redraw_counts(self, *, found: int, unresolved: int) -> None:
         """Say what the table holds, and what the filter is holding back.
@@ -700,14 +833,20 @@ class ResultsPane(Vertical):
         not quieter. `show` refuses to let "we could not tell" read as "nobody
         was home"; a filter that silently dropped 183 rows would undo that in
         the one place someone is most likely to conclude a scan found nothing.
+
+        And it is the part of this line that must survive a narrow terminal.
+        At 80 columns it was clipped clean off the end -- "6 found ·" and then
+        nothing -- so the hidden count now comes FIRST when there is one, and
+        the line wraps rather than clipping.
         """
         line = Text()
-        line.append(f"{found} found", style="green" if found else "dim")
-        line.append("  ·  ", style="dim")
         if unresolved and self._found_only:
-            line.append(f"{unresolved} unresolved", style="yellow")
-            line.append(" hidden", style="dim")
+            line.append(f"{unresolved} unresolved hidden", style="yellow")
+            line.append("  ·  ", style="dim")
+            line.append(f"{found} found", style="green" if found else "dim")
         else:
+            line.append(f"{found} found", style="green" if found else "dim")
+            line.append("  ·  ", style="dim")
             line.append(
                 f"{unresolved} unresolved", style="dim" if not unresolved else ""
             )
@@ -725,59 +864,178 @@ class ResultsPane(Vertical):
         tabs.query_one(f"#{TAB_EXTRACTIONS}", Tab).label = (
             f"EXTRACTIONS {with_facts}" if with_facts else "EXTRACTIONS"
         )
+        # The underline is measured against the label it sits under, and a
+        # label that changes width after layout left it drawn under the OLD
+        # extent -- "3 PROFI" underlined while PROFILE was the section open.
+        # Re-measured once the new label has been laid out.
+        self.call_after_refresh(tabs._highlight_active, False)
 
     @on(Tabs.TabActivated, "#detail-tabs")
     def _switch_section(self, event: Tabs.TabActivated) -> None:
         section = SECTION_FOR_TAB.get(event.tab.id or "")
         if section is None:
             return
+        self._section = section
         self.query_one("#detail-switch", ContentSwitcher).current = section
-        # that cannot do anything, which is worse than an absent one -- the
-        # same rule the scan pane's anchors block follows.
+        # The filter only means something on SITES; a control that cannot do
+        # anything is worse than an absent one -- the same rule the scan pane's
+        # anchors block follows.
         self.query_one("#sites-controls").display = section == SEC_SITES
-        if section == SEC_EXTRACTIONS:
-            # The extraction list has to hold focus or the arrow keys never
-            # reach it, and the arrow keys ARE this panel -- the detail follows
-            # the cursor, so a list that cannot be moved through is a panel that
-            # only ever shows its first row.
-            #
-            # Only this section. The others are either a table the section
-            # switch already leaves usable or, for PROFILE, a pane whose focus
-            # behaviour is covered by its own tests; grabbing focus there would
-            # change which control Enter hits.
-            self.query_one("#extraction-list", DataTable).focus()
+        # The footer lists each section's own keys, so it has to be re-asked.
+        self.refresh_bindings()
+        # FOCUS MOVES INTO THE SECTION, every time. Hiding a section hides the
+        # widget that had focus in it, and Textual then focuses nothing at all
+        # -- which on PROFILE meant every key on this pane went unheard, Tab
+        # included, and the only way out was the mouse or another tab. `v` and
+        # `s` exist only for PROFILE and could never be pressed there.
+        #
+        # Only when focus is already in this pane, or nowhere while the pane
+        # is on screen. The strip announces its first section while the app
+        # is still mounting, on a tab nobody is looking at -- moving focus then
+        # took it out of the username field on SCAN, and the first keystrokes
+        # of a session went nowhere.
+        focused = self.app.focused
+        if focused is None:
+            if not self.region.area:
+                return
+        elif self not in focused.ancestors_with_self:
+            return
+        self._focus_section()
+
+    def focus_default(self) -> None:
+        """Where focus lands when this tab is opened: the list, or -- when the
+        list is a hidden picker -- the open section, so keys are heard at once."""
+        if self._narrow and not self.has_class("-picking"):
+            self._focus_section()
+        else:
+            self.query_one("#username-list", DataTable).focus()
+
+    def _focus_section(self) -> None:
+        target = {
+            SEC_SITES: f"#{SEC_SITES}",
+            # The extraction list holds focus because the arrow keys ARE that
+            # panel -- the detail follows the cursor.
+            SEC_EXTRACTIONS: "#extraction-list",
+            # The scroller itself, so the profile scrolls with the arrows and
+            # the section's keys reach this pane.
+            SEC_PROFILE: f"#{SEC_PROFILE}",
+        }[self._section]
+        self.query_one(target).focus()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Offer a key only where it does something.
+
+        False takes the binding out of the footer and stops it firing, which
+        is what "does nothing here" should look like.
+        """
+        record = self._record if self._record and self._record.get("known") else None
+        if action == "toggle_found_only":
+            return record is not None and self._section == SEC_SITES
+        if action in ("toggle_sources", "toggle_notes"):
+            return (
+                record is not None
+                and self._section == SEC_PROFILE
+                and record.get("profile") is not None
+            )
+        if action in ("build_profile", "edit_anchors"):
+            return (
+                record is not None
+                and self._section == SEC_PROFILE
+                and bool(self._extraction_count(record))
+                and not self._building
+            )
+        if action in ("record_actions", "export", "delete_username"):
+            return self._selected is not None
+        if action in ("next_section", "prev_section"):
+            return record is not None
+        if action == "toggle_picker":
+            return self._narrow
+        return True
 
     def on_resize(self) -> None:
+        self._fit_width()
         self._fit_keys()
 
     def _fit_keys(self) -> None:
-        """Take the key off screen when the header cannot afford it.
+        """Put the key beside the counts, under them, or nowhere.
 
-        Hiding the box does not change the width it is measured against -- the
-        header band is the full width of the detail pane either way -- so this
-        settles rather than oscillating around the threshold.
+        The counts are the part of that band that must not clip, so the key is
+        the one to move -- it is a glossary, and the record is what it explains.
         """
-        width = self.query_one("#detail-head").size.width
+        width = self.query_one("#result-detail").size.width
         # Zero before the first layout. Leaving it alone rather than guessing
-        # keeps the box from flickering off and on again during mount.
-        if width:
-            self.query_one("#detail-keys", Static).display = (
-                width >= KEY_MIN_DETAIL_WIDTH
-            )
+        # keeps the key from flickering off and on again during mount.
+        if not width:
+            return
+        self.query_one("#sites-key", Static).display = width >= KEY_MIN_DETAIL_WIDTH
+        self.query_one("#sites-controls").set_class(
+            width < KEY_INLINE_WIDTH, "-stacked"
+        )
+
+    def _fit_width(self) -> None:
+        """Turn the username list into a picker below NARROW_WIDTH.
+
+        The list is a fixed 37 cells, which is right beside a wide detail and
+        wrong at 80 columns: there it took almost half the screen, the link
+        column shrank to "htt", and the extraction reading pane to eight cells.
+        Narrow, the record gets the full width and the list is one key away
+        (ctrl+l), drawn over the detail rather than beside it.
+        """
+        width = self.size.width
+        if not width:
+            return
+        narrow = width < NARROW_WIDTH
+        if narrow == self._narrow:
+            return
+        self._narrow = narrow
+        self.set_class(narrow, "-narrow")
+        if not narrow:
+            self.remove_class("-picking")
+        self._redraw_header()
+        self.refresh_bindings()
+        # The detail is a different width once the list has moved, and the
+        # key is measured against the detail -- so measure again after the
+        # new layout lands, not against the one it replaced.
+        self.call_after_refresh(self._fit_keys)
+        # Going narrow hides the list. If it had focus, focus has to go
+        # somewhere visible, or every key on the tab goes unheard.
+        focused = self.app.focused
+        username_list = self.query_one("#username-list", DataTable)
+        if (
+            narrow
+            and (focused is None or focused is username_list)
+            and self.region.area
+        ):
+            self.call_after_refresh(self._focus_section)
+
+    def action_toggle_picker(self) -> None:
+        """Show the username list over the detail, or put it away again."""
+        if not self._narrow:
+            return
+        picking = not self.has_class("-picking")
+        self.set_class(picking, "-picking")
+        if picking:
+            self.query_one("#username-list", DataTable).focus()
+        else:
+            self._focus_section()
+
+    @on(DataTable.RowSelected, "#username-list")
+    def _picked(self) -> None:
+        """Enter on a username closes the picker onto it."""
+        if self.has_class("-picking"):
+            self.remove_class("-picking")
+            self._focus_section()
 
     def _redraw_found_only(self) -> None:
-        """Draw the filter as the same control the scan pane's toggles are.
+        """Draw the filter as a checkbox chip, like every other toggle here.
 
-        A `Button` with the `‹ on ›` brackets, not a checkbox or a keybinding
-        alone: those brackets already mean "press to change this" on the
-        settings editor and on `analysis` and `verbose`, and one visual
-        language across the app is worth more than a control tuned for this
-        pane alone. It reports its own state, which is the part a keybinding
-        cannot do.
+        A ticked box, not `‹ on ›`. Those brackets mean "step through values"
+        on the settings screen, where left and right really do step; on a
+        toggle they promised a spinner and delivered a switch. ☑ and ☐ say
+        "this is on" in the shape every checkbox has, without reading a word.
         """
-        self.query_one("#toggle-found-only", Button).label = (
-            f"found only ‹ {'on' if self._found_only else 'off'} ›"
-        )
+        mark = "☑" if self._found_only else "☐"
+        self.query_one("#toggle-found-only", Button).label = f"{mark} found only"
 
     @on(Button.Pressed, "#toggle-found-only")
     def _pressed_found_only(self) -> None:
@@ -801,6 +1059,9 @@ class ResultsPane(Vertical):
     def action_prev_section(self) -> None:
         self.query_one("#detail-tabs", Tabs).action_previous_tab()
 
+    def _show_section(self, tab_id: str) -> None:
+        self.query_one("#detail-tabs", Tabs).active = tab_id
+
     # -- rendering ----------------------------------------------------------
 
     def _show_record(self, record: dict[str, Any]) -> None:
@@ -813,20 +1074,8 @@ class ResultsPane(Vertical):
         unresolved = record.get("unresolved") or []
         accounts = record["accounts"]
 
-        self.query_one("#detail-header", Static).update(
-            Text.assemble(
-                (record["username"], "bold cyan"),
-                ("\n", ""),
-                (
-                    (
-                        f"last scanned {record['last_scanned_at']}  ·  "
-                        f"{count_of(record['sites_checked'], 'site')} checked"
-                    ),
-                    "dim",
-                ),
-            )
-        )
-        self.query_one("#delete-username", Button).display = True
+        self._redraw_header()
+        self._show_record_chrome(True)
         self._fill_sites(accounts, unresolved)
         self._fill_extractions()
         self._redraw_counts(found=len(accounts), unresolved=len(unresolved))
@@ -835,6 +1084,49 @@ class ResultsPane(Vertical):
             self._profile_block(record)
         )
         self._redraw_profile_actions(record)
+
+    def _redraw_header(self) -> None:
+        """Two lines that never wrap: who, then what the scan came to.
+
+        It was a name, a timestamp that wrapped onto a third line, a red Delete
+        button and a four-row bordered key -- five rows before any data on
+        every section, which at 80x24 left about twelve for the table. The
+        counts come first on the second line because they are what the record
+        IS; when it was scanned is context for them.
+        """
+        record = self._record
+        if record is None or not record.get("known"):
+            return
+        accounts = record.get("accounts") or []
+        unresolved = record.get("unresolved") or []
+        name = Text(no_wrap=True, overflow="ellipsis")
+        if self._narrow:
+            # Narrow, the list is a picker, so the header is where you learn
+            # there is one and which entry you are on.
+            names = [listing.username for listing in self._listings]
+            position = (
+                f"  {names.index(record['username']) + 1} of {len(names)}"
+                if record["username"] in names
+                else ""
+            )
+            name.append("▾ ", style="dim")
+            name.append(str(record["username"]), style="bold cyan")
+            name.append(f"{position} · ^l list", style="dim")
+        else:
+            name.append(str(record["username"]), style="bold cyan")
+        facts = Text(no_wrap=True, overflow="ellipsis")
+        facts.append(
+            f"{len(accounts)} found", style="green" if accounts else "dim"
+        )
+        if unresolved:
+            facts.append(" · ", style="dim")
+            facts.append(f"{len(unresolved)} unresolved", style="yellow")
+        facts.append(
+            f" · {record['sites_checked']} checked"
+            f" · scanned {record['last_scanned_at']}",
+            style="dim",
+        )
+        self.query_one("#detail-header", Static).update(Group(name, facts))
 
     def _fill_sites(
         self,
@@ -1071,6 +1363,8 @@ class ResultsPane(Vertical):
         twice.
         """
         self._building = building
+        # `b` and `a` leave the footer while the work runs, with the buttons.
+        self.refresh_bindings()
         self.query_one("#profile-buttons").display = not building
         status = self.query_one("#profile-status", Static)
         status.display = building
@@ -1254,59 +1548,104 @@ class ResultsPane(Vertical):
             return
 
         actions.remove_class(NO_EVIDENCE)
+        actions.set_class(has_profile, "-has-profile")
         anchors.display = True
+        count = len(self._build_anchors)
+        anchors.label = f"Edit anchors ({count})…" if count else "+ Add anchor…"
+        # Primary when building is the point of the section; a quiet chip once
+        # a profile is on screen, where reading is the point and Rebuild is an
+        # occasional correction. One raised amber button per view, and on a
+        # profile view that is nothing.
         build.label = "Rebuild profile" if has_profile else "Build profile"
-        # Hover text says what the button IS; the line below it says what
-        # pressing it would do RIGHT NOW -- how many sites of evidence, which
-        # anchors, and the warning when rebuilding would abandon an identity.
-        # Splitting it that way is what keeps the two from being one answer
-        # written twice: the mechanism never changes, the state changes on every
-        # redraw.
+        build.variant = "default" if has_profile else "primary"
+        build.set_class(has_profile, "chip")
+        # Hover text says what the button IS; the card says what pressing it
+        # would do RIGHT NOW -- how many sites of evidence, which anchors, and
+        # the warning when rebuilding would abandon an identity. Splitting it
+        # that way keeps the two from being one answer written twice: the
+        # mechanism never changes, the state changes on every redraw.
         build.tooltip = (
-            f"{'Rebuild' if has_profile else 'Build'} profile\n\n"
+            f"{'Rebuild' if has_profile else 'Build'} profile  (b)\n\n"
             "Runs the second AI pass, merging the facts Pass 1 already "
             "extracted into one profile. Reads stored evidence only — no site "
             "is contacted and no page is fetched again."
         )
 
-        line = Text()
+        card = Text()
         if has_profile:
-            line.append(
-                f"Re-runs the second AI pass over the same evidence from "
-                f"{count_of(evidence, 'site')}. Nothing is re-fetched.\n"
-            )
+            # A status line over the profile, not a paragraph under it.
+            card.append(str(record["username"]), style="bold")
+            for part in (
+                getattr(profile, "resolution_status", ""),
+                getattr(profile, "mode", ""),
+                getattr(profile, "completeness", ""),
+            ):
+                if part:
+                    card.append(f" · {part}", style="dim")
+            card.append(f" · built {record.get('profile_updated_at')}", style="dim")
+            card.append("\n")
         else:
-            line.append(f"Evidence from {count_of(evidence, 'site')} is ready.\n")
+            card.append("No profile yet. ", style="bold")
+            card.append(
+                f"Evidence from {count_of(evidence, 'site')} is ready to merge.\n\n"
+            )
+            sources = [
+                entry.site_name
+                for entry in self._extraction_order
+                if entry.fact_count
+            ]
+            card.append("EVIDENCE  ", style="dim")
+            if sources:
+                shown = " · ".join(sources[:4])
+                more = f" +{len(sources) - 4}" if len(sources) > 4 else ""
+                card.append(f"{shown}{more}\n")
+            else:
+                card.append(f"{count_of(evidence, 'site')} analysed\n")
+
+        card.append("ANCHORS   " if not has_profile else "Anchored to ", style="dim")
+        if self._build_anchors:
+            card.append(
+                " · ".join(
+                    f"{a.field} = {a.value}" for a in self._build_anchors[:3]
+                )
+            )
+            if count > 3:
+                card.append(f" +{count - 3}", style="dim")
+            card.append("\n")
+        else:
+            card.append("none\n", style="dim")
 
         if self._build_anchors:
-            fields = ", ".join(a.field for a in self._build_anchors[:3])
-            extra = len(self._build_anchors) - 3
-            line.append(
-                f"anchored to {fields}{f' +{extra}' if extra > 0 else ''} — "
-                f"needs the local model",
-                style="dim",
+            result = (
+                "anchored resolution · uses the model · slow on a cold start"
             )
+            if not has_profile:
+                card.append("RESULT    ", style="dim")
+                card.append(result)
         elif has_profile and getattr(profile, "mode", "") == "anchored":
             # The downgrade this pane exists to prevent. Rebuilding an anchored
             # profile with no anchors does not recompute the identity -- it
             # ABANDONS it, and the result looks bigger while being worse: a
             # resolved identity replaced by a merge of every name every site
             # showed. Measured at 4 fields/7 values becoming 11 fields/73.
-            line.append(
+            card.append(
                 "This profile is anchored, but no anchors are set — rebuilding "
                 "now would replace it with an unresolved merge.",
                 style="yellow",
             )
-        else:
+        elif not has_profile:
             # The unanchored path needs no model at all: aggregate synthesis
             # merges stored extractions and never calls one. Worth saying,
-            # because "build a profile" otherwise reads as a slow operation.
-            line.append(
-                "No anchors — builds instantly, and the result describes "
-                "anyone sharing this username.",
-                style="dim",
+            # because "build a profile" otherwise reads as a slow operation --
+            # and so is the cost of skipping anchors, in the same breath.
+            card.append("RESULT    ", style="dim")
+            card.append("unanchored merge · instant · no model needed\n")
+            card.append(
+                "          Without anchors it describes anyone using this name.",
+                style="yellow",
             )
-        hint.update(line)
+        card.rstrip()
+        hint.update(card)
 
     @on(Button.Pressed, "#profile-anchors")
     def _edit_build_anchors(self) -> None:
@@ -1324,7 +1663,18 @@ class ResultsPane(Vertical):
             if self._record is not None:
                 self._redraw_profile_actions(self._record)
 
-        self.app.push_screen(AnchorScreen(self._build_anchors), adopt)
+        username = (self._record or {}).get("username")
+        self.app.push_screen(
+            AnchorScreen(self._build_anchors, username=username), adopt
+        )
+
+    def action_edit_anchors(self) -> None:
+        """`a` on PROFILE: the anchors button, as a key."""
+        self._edit_build_anchors()
+
+    def action_build_profile(self) -> None:
+        """`b` on PROFILE: the build button, as a key."""
+        self._build_profile()
 
     @on(Button.Pressed, "#profile-build")
     def _build_profile(self) -> None:
@@ -1416,52 +1766,50 @@ class ResultsPane(Vertical):
         )
 
     def _profile_block(self, record: dict[str, Any]) -> Any:
-        title = Text("AI PROFILE", style="bold")
+        """The stored profile, or nothing -- the card above owns every other state.
+
+        This used to add its own sentence to the no-profile states ("No profile
+        stored. Scanning with a model configured builds one.") directly above a
+        card saying evidence was ready and offering Build. Two paragraphs about
+        one state, disagreeing, is what made the section read as improvised; one
+        owner per state is the fix, and the card is that owner.
+        """
         if record.get("profile_unreadable"):
-            return Group(
-                title,
-                Text(
-                    "A profile is stored but no longer matches the current "
-                    "format. Rebuild it from the CLI:\n"
-                    f"  sherlock-rm {record['username']} --ai-synthesize-only",
-                    style="yellow",
-                ),
+            return Text(
+                "A profile is stored but no longer matches the current "
+                "format. Rebuild it from the CLI:\n"
+                f"  sherlock-rm {record['username']} --ai-synthesize-only",
+                style="yellow",
             )
         profile = record.get("profile")
         if profile is None:
-            if record.get("known") and not self._extraction_count(record):
-                # The actions block answers this case exactly -- what is
-                # missing and what fixes it. This line answers it vaguely and
-                # wrongly: it offers a model-configured scan, but this username
-                # HAS been scanned; what it lacks is the analysis pass. Two
-                # paragraphs disagreeing about one state is what made the empty
-                # profile tab read as improvised.
-                return Group(title)
-            return Group(
-                title,
-                Text(
-                    "No profile stored. Scanning with a model configured "
-                    "builds one.",
-                    style="dim italic",
-                ),
-            )
-        return Group(
-            title,
-            Text(f"built {record['profile_updated_at']}", style="dim"),
-            Text(),
-            render_profile_text(
-                profile,
-                show_sources=self._show_sources,
-                show_notes=self._show_notes,
-            ),
+            return Text("")
+        return render_profile_text(
+            profile,
+            show_sources=self._show_sources,
+            show_notes=self._show_notes,
+            width=self._profile_width(),
         )
 
+    def _profile_width(self) -> int:
+        """Lay the profile out to the pane it is drawn in.
+
+        It was rendered at a fixed 96 columns: wider than the pane at 120, so
+        the right edge fell short of everything else, and wrapped at 80.
+        Measured per render rather than per resize -- a toggle or a new record
+        re-renders anyway, and chasing every resize event would re-render a
+        profile nobody has asked to see again.
+        """
+        width = self.query_one(f"#{SEC_PROFILE}").size.width
+        # Two cells for the scrollbar. Zero before the first layout.
+        return max(40, width - 2) if width else PROFILE_RENDER_WIDTH
 
 def render_profile_text(
     profile: Any,
     *,
     show_sources: bool = False,
     show_notes: bool = False,
+    width: int = PROFILE_RENDER_WIDTH,
 ) -> Text:
     """The stored profile, drawn by the renderer both other surfaces use.
 
@@ -1480,7 +1828,7 @@ def render_profile_text(
     buffer = StringIO()
     console = Console(
         file=buffer,
-        width=PROFILE_RENDER_WIDTH,
+        width=width,
         color_system="truecolor",
         highlight=False,
         force_terminal=True,
@@ -1496,5 +1844,8 @@ def render_profile_text(
         # at, which is how CLI advice ended up on screen with no way to act on
         # it.
         notes_hint="press v to read them.",
+        # No box. The section is already a frame with the username above it;
+        # the CLI's panel inside it drew a second border and a second title.
+        framed=False,
     )
     return Text.from_ansi(buffer.getvalue())

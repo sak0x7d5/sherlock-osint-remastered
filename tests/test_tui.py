@@ -442,12 +442,12 @@ async def test_the_verbose_toggle_starts_from_the_stored_setting():
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         assert pane._verbose is False
-        assert "off" in str(app.query_one("#toggle-verbose", Button).label)
+        assert str(app.query_one("#toggle-verbose", Button).label).startswith("☐")
 
         await pilot.click("#toggle-verbose")
         await pilot.pause()
         assert pane._verbose is True
-        assert "on" in str(app.query_one("#toggle-verbose", Button).label)
+        assert str(app.query_one("#toggle-verbose", Button).label).startswith("☑")
 
 
 async def test_the_scan_reporter_is_built_with_the_chosen_verbosity():
@@ -2158,11 +2158,17 @@ async def test_clicking_the_scan_button_starts_a_scan(monkeypatch):
     assert await _start_scan_and_capture(monkeypatch, press) == ["alice"]
 
 
-async def test_the_run_binding_starts_a_scan(monkeypatch):
+async def test_ctrl_r_does_not_start_a_scan(monkeypatch):
+    """ctrl+r refreshes RESULTS. Here it used to start a 680-site run.
+
+    One chord with two meanings, one of them a network operation, is a scan
+    started by a hand still in the habit of the other tab. Enter and the SCAN
+    button are the ways to start one, and both are tested above.
+    """
     async def press(pilot, app):
         await pilot.press("ctrl+r")
 
-    assert await _start_scan_and_capture(monkeypatch, press) == ["alice"]
+    assert await _start_scan_and_capture(monkeypatch, press) == []
 
 
 async def test_analysis_is_off_unless_asked_for(monkeypatch):
@@ -2193,7 +2199,7 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
 
         # The analysis toggle reaches the scan.
         await pilot.click("#toggle-ai")
-        await pilot.press("ctrl+r")
+        await pilot.click("#scan-button")
         # `captured` carries the previous run's value, so wait for the CHANGE.
         await _settle(app, pilot, lambda: captured.get("use_ai") is True)
         assert captured["use_ai"] is True
@@ -2207,9 +2213,9 @@ async def test_the_toggles_show_their_own_state():
     app = SherlockUI()
     async with app.run_test() as pilot:
         ai = app.query_one("#toggle-ai", Button)
-        assert "off" in str(ai.label)
+        assert str(ai.label) == "☐ analysis"
         await pilot.click("#toggle-ai")
-        assert "on" in str(app.query_one("#toggle-ai", Button).label)
+        assert str(app.query_one("#toggle-ai", Button).label) == "☑ analysis"
 
 
 async def test_the_toggles_carry_hover_text_that_follows_their_state():
@@ -2529,14 +2535,14 @@ async def test_the_filter_works_before_any_scan_has_run():
         assert pane._reporter is None, "this test is about the pre-scan state"
 
         blocked = app.query_one("#count-waf", CounterRow)
-        assert any("strike" in str(span.style) for span in blocked.render().spans)
+        assert blocked.render().plain.startswith("☐")
 
         await pilot.click("#count-waf")
         await pilot.pause()
 
         assert QueryStatus.WAF in pane._visible
         after = app.query_one("#count-waf", CounterRow).render()
-        assert not any("strike" in str(span.style) for span in after.spans), (
+        assert after.plain.startswith("☑"), (
             "the row is in the filter but still drawn as excluded"
         )
 
@@ -2544,7 +2550,7 @@ async def test_the_filter_works_before_any_scan_has_run():
         await pilot.click("#count-waf")
         await pilot.pause()
         again = app.query_one("#count-waf", CounterRow).render()
-        assert any("strike" in str(span.style) for span in again.spans)
+        assert again.plain.startswith("☐")
 
 
 async def test_clicking_a_counter_shows_that_kind_in_the_feed():
@@ -2566,28 +2572,31 @@ async def test_clicking_a_counter_shows_that_kind_in_the_feed():
         assert table.row_count == 1
 
 
-async def test_a_hidden_kind_is_struck_through_not_removed():
+async def test_a_hidden_kind_is_unticked_not_removed():
     """The count has to stay exact and readable while its rows are hidden.
 
     What the panel counts and what the feed displays are two different facts,
     and only the second one is being toggled -- so the number never changes,
-    it is just struck through.
+    only the box beside it. It was strikethrough, which read as "crossed off":
+    on first launch four of five counters looked void before anything had run.
     """
     async for app, pane, pilot in _pane_with_results():
         absent = app.query_one("#count-available", CounterRow)
         hit = app.query_one("#count-claimed", CounterRow)
 
-        struck = absent.render()
+        hidden = absent.render()
         shown = hit.render()
-        assert any("strike" in str(span.style) for span in struck.spans)
-        assert not any("strike" in str(span.style) for span in shown.spans)
+        assert hidden.plain.startswith("☐")
+        assert shown.plain.startswith("☑")
+        # Nothing struck through: the number reads the same either way.
+        assert not any("strike" in str(span.style) for span in hidden.spans)
         # The number is still there and still right.
-        assert "1" in struck.plain
+        assert "1" in hidden.plain
 
         await pilot.click("#count-available")
         await pilot.pause()
         after = app.query_one("#count-available", CounterRow).render()
-        assert not any("strike" in str(span.style) for span in after.spans)
+        assert after.plain.startswith("☑")
 
 
 async def test_the_filter_cannot_be_emptied():
@@ -3054,7 +3063,7 @@ async def test_hidden_anchors_cannot_reach_a_scan(monkeypatch):
 
         # Turned on, the same anchors are used rather than needing retyping.
         await pilot.click("#toggle-ai")
-        await pilot.press("ctrl+r")
+        await pilot.click("#scan-button")
         # Same race, and `captured` is reused across both runs -- so the wait
         # is for the value to CHANGE, not merely for the key to exist.
         await _settle(app, pilot, lambda: bool(captured.get("anchors")))
@@ -4072,10 +4081,10 @@ async def test_filtering_to_hits_says_what_it_is_hiding():
 async def test_the_filter_is_the_same_control_as_the_scan_toggles():
     """One visual language for "press to change this", across the whole app.
 
-    The `‹ on ›` brackets mean that on the settings editor and on `analysis`
-    and `verbose`; a checkbox or a bare keybinding here would be a second
-    dialect for the same idea. The button also reports its own state, which is
-    the part a keybinding cannot do.
+    A ticked or empty box, as on `analysis`, `verbose` and the scan counters.
+    The `‹ on ›` brackets it used to wear mean "step through values" on the
+    settings editor, where the arrows really do step. The button also reports
+    its own state, which is the part a keybinding cannot do.
     """
     from textual.widgets import Button
 
@@ -4085,14 +4094,13 @@ async def test_the_filter_is_the_same_control_as_the_scan_toggles():
         await _open_results(app, pilot)
 
         toggle = app.query_one("#toggle-found-only", Button)
-        assert "toggle" in toggle.classes, "not the scan pane's toggle styling"
-        assert str(toggle.label) == "found only ‹ on ›"
+        assert "chip" in toggle.classes, "not the app's flat chip styling"
+        assert str(toggle.label) == "☑ found only"
 
         await pilot.press("f")
         await _settle(app, pilot)
-        # The whole label, not a clipped one: a Button measures itself when it
-        # is first drawn, and `off` is a character wider than `on`.
-        assert str(toggle.label) == "found only ‹ off ›"
+        # The whole label, not a clipped one.
+        assert str(toggle.label) == "☐ found only"
         assert toggle.size.width >= len(str(toggle.label))
 
 
@@ -4127,8 +4135,9 @@ def _key_text(app) -> str:
     """
     from textual.widgets import Static
 
-    keys = app.query_one("#detail-keys", Static)
-    return keys.render().plain if keys.display else ""
+    keys = app.query_one("#sites-key", Static)
+    shown = keys.display and app.query_one("#sites-controls").display
+    return keys.render().plain if shown else ""
 
 
 async def test_the_symbol_column_comes_with_a_key():
@@ -4182,12 +4191,12 @@ async def test_the_key_is_a_glossary_not_a_summary_of_one_record():
         assert "absent" not in key
 
 
-async def test_the_key_is_visible_from_both_sections():
-    """It lives in the header band, which every section shares.
+async def test_the_key_is_on_the_section_that_draws_the_symbols():
+    """On SITES, beside the filter; not on the sections with no symbol column.
 
-    It used to be section-scoped and cost a row of findings; in the header it
-    is drawn in space that was empty at every width, so it is simply always
-    there -- including on PROFILE, where it costs nothing to leave alone.
+    It was a bordered box in the header, on every section -- including
+    EXTRACTIONS and PROFILE, where no status symbol is drawn, so it was a
+    glossary for nothing on screen that also cost the header four rows.
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
     app = SherlockUI()
@@ -4197,34 +4206,37 @@ async def test_the_key_is_visible_from_both_sections():
 
         await pilot.press("alt+right")
         await _settle(app, pilot)
+        assert _key_text(app) == ""
+
+        await pilot.press("alt+left")
+        await _settle(app, pilot)
         assert "found" in _key_text(app)
 
 
-async def test_the_key_stands_down_when_the_header_cannot_afford_it():
-    """A bordered box is 30 cells, and the header does not shorten -- it wraps.
+async def test_the_key_moves_before_the_counts_clip():
+    """Beside the counts when there is room, under them when there is not.
 
-    Measured at an 80-column terminal, the timestamp beside it broke into six
-    lines where there were two, and the table was pushed down by all of them. A
-    glossary is worth a lot less than being able to read the record it is a
-    glossary for, so below the threshold the box goes rather than the record.
+    The counts line carries the unresolved count, which must never be the
+    thing that disappears. So on a short line the key drops to a row of its
+    own, and only on a very narrow pane does it go entirely.
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
 
     app = SherlockUI()
-    async with app.run_test(size=(120, 30)) as pilot:
+    async with app.run_test(size=(150, 30)) as pilot:
         await _open_results(app, pilot)
+        controls = app.query_one("#sites-controls")
         assert "found" in _key_text(app), "wide enough, and the key is missing"
+        assert not controls.has_class("-stacked")
 
         await pilot.resize_terminal(80, 30)
         await _settle(app, pilot)
-        assert _key_text(app) == "", (
-            "at 80 columns the key is still on screen, wrapping the header "
-            "it sits beside into a column of broken timestamps"
-        )
+        assert "found" in _key_text(app), "the key vanished instead of moving"
+        assert controls.has_class("-stacked")
 
-        await pilot.resize_terminal(120, 30)
+        await pilot.resize_terminal(150, 30)
         await _settle(app, pilot)
-        assert "found" in _key_text(app), "the key did not come back"
+        assert not controls.has_class("-stacked"), "the key did not move back"
 
 
 async def test_a_rejected_username_is_not_drawn_as_inconclusive():
@@ -4431,10 +4443,18 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
 
         # Cancel holds focus, not the destructive control.
         assert app.focused is screen.query_one("#confirm-no", Button)
-        # And the question names what will go, with figures.
+        # It names what will go -- in the title and on the button that does
+        # it, rather than asking the title's question again in the body -- and
+        # counts it.
+        title = str(screen.query_one(".dialog-title").render())
+        assert "marcus" in title
+        assert "marcus" in str(screen.query_one("#confirm-yes", Button).label)
         detail = screen.query_one("#confirm-detail").render().plain
-        assert "marcus" in detail
+        assert "1 found account" in detail
         assert "cannot be undone" in detail
+        # And it looks like what it is: the danger frame, not the amber one
+        # the harmless dialogs wear.
+        assert screen.has_class("-danger")
 
         await pilot.press("escape")
         for _ in range(10):
@@ -4506,16 +4526,29 @@ async def _list_with(**rows):
         yield app, table, pilot
 
 
-async def test_the_delete_action_appears_with_a_record_and_not_before():
-    """Erasing a username was a key with nothing on screen to say it existed.
+async def _open_actions(app, pilot):
+    from sherlock_project.tui.record_actions import RecordActionsScreen
 
-    `delete` worked and the footer named it, but nothing in the pane showed
-    that a stored record could be removed at all -- so the one action in the
-    app that destroys a dossier was the one you had to already know about.
+    await pilot.click("#record-actions")
+    await pilot.pause()
+    assert isinstance(app.screen, RecordActionsScreen)
+    return app.screen
 
-    It belongs to a RECORD, so it appears with one. Under a "Nothing scanned
-    yet" sentence it would be a control with nothing to act on, and this is the
-    worst kind to leave pressable: the irreversible kind.
+
+async def _choose(app, pilot, option_id: str) -> None:
+    from textual.widgets import OptionList
+
+    menu = app.screen.query_one(OptionList)
+    menu.highlighted = menu.get_option_index(option_id)
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def test_the_actions_menu_appears_with_a_record_and_not_before():
+    """Everything that can be done to a record belongs to a record.
+
+    Under a "Nothing scanned yet" sentence it would be a menu with nothing to
+    act on, and its last item is the irreversible kind.
     """
     from textual.widgets import Button
 
@@ -4523,24 +4556,59 @@ async def test_the_delete_action_appears_with_a_record_and_not_before():
     async with app.run_test() as pilot:
         await pilot.press("alt+2")
         await _settle(app, pilot)
-        assert app.query_one("#delete-username", Button).display is False
+        assert app.query_one("#record-actions", Button).display is False
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
     ) as (app, _table, _pilot):
-        button = app.query_one("#delete-username", Button)
-        assert button.display is True
-        # Named rather than a bare symbol. A `✕` alone reads as "close" in a
-        # header, and this is the one control here that destroys something.
-        assert "Delete" in str(button.label)
+        assert app.query_one("#record-actions", Button).display is True
+
+
+async def test_delete_is_never_a_tab_stop():
+    """It used to be the first stop after the username list.
+
+    A permanent red "Delete this username" button sat directly under the name,
+    so one press of Tab from the list armed the only irreversible action in the
+    app. It now lives last in the Actions menu, and neither the menu's chip nor
+    anything on the way to the table can be reached by Tab.
+    """
+    from textual.widgets import Button
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+    ) as (app, table, pilot):
+        table.focus()
+        await pilot.pause()
+        seen = []
+        for _ in range(4):
+            await pilot.press("tab")
+            await pilot.pause()
+            seen.append(app.focused)
+        assert app.query_one("#record-actions", Button) not in seen
+        assert all("delete" not in str(getattr(w, "id", "")) for w in seen)
+
+
+async def test_delete_is_last_in_the_menu_and_not_where_it_opens():
+    """Safest first, Delete last and set apart -- and the menu opens on the
+    first row, so Enter straight after opening it cannot erase anything."""
+    from textual.widgets import OptionList
+
+    async with _list_with(
+        marcus=[("GitHub", QueryStatus.CLAIMED)],
+    ) as (app, _table, pilot):
+        await _open_actions(app, pilot)
+        menu = app.screen.query_one(OptionList)
+        ids = [menu.get_option_at_index(i).id for i in range(menu.option_count)]
+        assert ids[-1] == "delete"
+        assert menu.highlighted == 0
+        assert ids[0] != "delete"
 
 
 async def test_the_delete_action_asks_about_the_record_on_screen():
     """It acts on whatever the header names, so changing rows changes its target.
 
-    That is the whole reason it sits with the record instead of on the rows: the
-    thing it deletes is the thing being read, and the dialog says which -- "are
-    you sure?" with no name is a question nobody can answer.
+    The thing it deletes is the thing being read, and the dialog says which --
+    "are you sure?" with no name is a question nobody can answer.
     """
     from sherlock_project.database import default_database_path
     from sherlock_project.tui.confirm_screen import ConfirmScreen
@@ -4553,10 +4621,10 @@ async def test_the_delete_action_asks_about_the_record_on_screen():
         opened = pane._selected
         assert opened is not None
 
-        await pilot.click("#delete-username")
-        await pilot.pause()
+        await _open_actions(app, pilot)
+        await _choose(app, pilot, "delete")
         assert isinstance(app.screen, ConfirmScreen)
-        assert opened in app.screen.query_one("#confirm-detail").render().plain
+        assert opened in str(app.screen.query_one(".dialog-title").render())
 
         await pilot.press("escape")
         await _settle(app, pilot)
@@ -4567,13 +4635,15 @@ async def test_the_delete_action_asks_about_the_record_on_screen():
         other = pane._selected
         assert other is not None and other != opened
 
-        await pilot.click("#delete-username")
-        await pilot.pause()
+        await _open_actions(app, pilot)
+        await _choose(app, pilot, "delete")
         assert isinstance(app.screen, ConfirmScreen)
-        detail = app.screen.query_one("#confirm-detail").render().plain
-        assert other in detail
-        assert opened not in detail, "the action is still aimed at the old row"
-        assert "cannot be undone" in detail
+        title = str(app.screen.query_one(".dialog-title").render())
+        assert other in title
+        assert opened not in title, "the action is still aimed at the old row"
+        assert "cannot be undone" in app.screen.query_one(
+            "#confirm-detail"
+        ).render().plain
 
         await pilot.press("escape")
         await _settle(app, pilot)
@@ -4585,8 +4655,8 @@ async def test_the_delete_action_asks_about_the_record_on_screen():
         await db.close()
 
 
-async def test_confirming_from_the_button_erases_the_open_username():
-    """The button and the key are one action, so confirming does one thing."""
+async def test_confirming_from_the_menu_erases_the_open_username():
+    """The menu item and the key are one action, so confirming does one thing."""
     from textual.widgets import Button
 
     from sherlock_project.database import default_database_path
@@ -4598,14 +4668,14 @@ async def test_confirming_from_the_button_erases_the_open_username():
         pane = app.query_one(ResultsPane)
         doomed = pane._selected
 
-        await pilot.click("#delete-username")
-        await pilot.pause()
+        await _open_actions(app, pilot)
+        await _choose(app, pilot, "delete")
         await pilot.click("#confirm-yes")
         await _settle(app, pilot, lambda: table.row_count == 1)
 
         assert table.row_count == 1
-        # A record still stands, so the action is still on offer for it.
-        assert app.query_one("#delete-username", Button).display is True
+        # A record still stands, so the menu is still on offer for it.
+        assert app.query_one("#record-actions", Button).display is True
 
     db = await SherlockDB.create(str(default_database_path()))
     try:
@@ -4613,7 +4683,6 @@ async def test_confirming_from_the_button_erases_the_open_username():
     finally:
         await db.close()
     assert doomed not in remaining
-    assert len(remaining) == 1
 
 
 async def test_the_progress_strip_sits_with_the_findings():
@@ -4805,7 +4874,6 @@ async def test_the_pointer_state_does_not_stick_to_the_next_username():
         pane = app.query_one(ResultsPane)
         actions = app.query_one("#profile-actions")
         build = app.query_one("#profile-build", Button)
-        spacer = app.query_one("#profile-spacer")
 
         for username, pointer in (("bare", True), ("stocked", False),
                                   ("bare", True)):
@@ -4814,7 +4882,6 @@ async def test_the_pointer_state_does_not_stick_to_the_next_username():
                 await pilot.pause()
             assert actions.has_class(NO_EVIDENCE) is pointer, username
             # And the layout that the class drives actually followed it.
-            assert spacer.display is not pointer, username
             assert build.region.height == (1 if pointer else 3), username
 
 
@@ -4912,7 +4979,7 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
         assert "Evidence from 3 sites is ready" in hint
-        assert "builds instantly" in hint
+        assert "instant" in hint and "no model needed" in hint
         assert "Build profile" in str(
             app.query_one("#profile-build", Button).label
         )
@@ -5502,3 +5569,358 @@ async def test_the_prune_set_is_the_manifest_before_the_nsfw_filter():
 
     assert plan.known_site_names > set(plan.site_data_all)
     assert len(plan.known_site_names) - len(plan.site_data_all) > 0
+
+
+# -- navigation, focus and narrow layouts -------------------------------------
+#
+# Each of these was found by driving the app with the keyboard alone. None of
+# them shows up in a test that only asserts what a widget holds: the content was
+# right every time, and the screen still could not be used.
+
+
+async def _seed_built_profile(username: str) -> None:
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    await _results_with(username, extractions=2)
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        await db.update_username_profile_summary(
+            username=username,
+            profile_summary=(
+                f'{{"username": "{username}", "input_hash": "h", "mode": "aggregate",'
+                ' "resolution_status": "aggregated", "completeness": "partial",'
+                ' "strong_profile": {"full_name": ["Avery"]},'
+                ' "warnings": ["a diagnostic note"]}'
+            ),
+            input_hash="h",
+        )
+    finally:
+        await db.close()
+
+
+async def test_the_profile_section_holds_focus_so_its_keys_are_heard():
+    """PROFILE was a keyboard trap.
+
+    Switching to it hid the extraction list that had focus, and Textual then
+    focused nothing -- so alt+left, Tab, `v` and `s` all went unheard, and the
+    only ways out were the mouse or another tab. `v` and `s` exist only for
+    this section and could never be pressed in it.
+    """
+    from textual.widgets import Static
+
+    await _seed_built_profile("trapped")
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_profile_section(app, pilot)
+        assert app.focused is app.query_one("#sec-profile")
+
+        before = app.query_one("#detail-profile", Static).render()
+        await pilot.press("v")
+        await _settle(app, pilot)
+        assert app.query_one(ResultsPane)._show_notes is True
+        after = app.query_one("#detail-profile", Static).render()
+        assert str(after) != str(before), "v changed nothing on screen"
+
+        await pilot.press("alt+left")
+        await _settle(app, pilot)
+        assert app.query_one("#detail-switch").current == "sec-extractions"
+
+
+async def test_the_footer_offers_a_sections_keys_only_on_that_section():
+    """A footer offering `found only` on PROFILE and `notes` on SITES taught
+    people that keys on this screen do nothing."""
+    await _seed_built_profile("scoped")
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        assert pane.check_action("toggle_found_only", ()) is True
+        assert pane.check_action("toggle_notes", ()) is False
+
+        await _open_profile_section(app, pilot)
+        assert pane.check_action("toggle_found_only", ()) is False
+        assert pane.check_action("toggle_notes", ()) is True
+        assert pane.check_action("build_profile", ()) is True
+
+
+async def test_coming_back_to_results_keeps_your_place():
+    """Every visit to RESULTS reloads it, and it used to land on row 0.
+
+    Checking the scan tab and coming back lost the username you were reading.
+    """
+    from textual.widgets import DataTable
+
+    await _seed(
+        first=[("GitHub", QueryStatus.CLAIMED)],
+        second=[("GitHub", QueryStatus.CLAIMED)],
+        third=[("GitHub", QueryStatus.CLAIMED)],
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_results(app, pilot)
+        table = app.query_one("#username-list", DataTable)
+        await _settle(app, pilot, lambda: table.row_count == 3)
+        table.focus()
+        await pilot.press("down", "down")
+        pane = app.query_one(ResultsPane)
+        chosen = pane._selected
+        await _settle(app, pilot, lambda: pane._selected == chosen)
+
+        await pilot.press("alt+1")
+        await _settle(app, pilot)
+        await pilot.press("alt+2")
+        await _settle(app, pilot)
+        assert pane._selected == chosen
+        assert table.cursor_row == 2
+
+
+async def test_a_new_scan_at_the_top_is_opened_on_arrival():
+    """The exception to keeping your place: a username that has just risen to
+    the top of a most-recent-first list is a scan that just finished, and it is
+    what someone came to RESULTS to read."""
+    from textual.widgets import DataTable
+
+    await _seed(older=[("GitHub", QueryStatus.CLAIMED)])
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._selected == "older")
+
+        await pilot.press("alt+1")
+        await _seed(newest=[("GitHub", QueryStatus.CLAIMED)])
+        await pilot.press("alt+2")
+        table = app.query_one("#username-list", DataTable)
+        await _settle(app, pilot, lambda: table.row_count == 2)
+        await _settle(app, pilot, lambda: pane._selected == "newest")
+        assert pane._selected == "newest"
+
+
+async def test_the_unresolved_count_survives_eighty_columns():
+    """At 80 columns it was clipped clean off: "6 found ·" and then nothing.
+
+    It is the number that keeps "no answer" from reading as "no account", and
+    the one on that line the design says must never hide.
+    """
+    from textual.widgets import Static
+
+    await _seed(
+        narrow=[("GitHub", QueryStatus.CLAIMED)]
+        + [(f"Slow{i}", QueryStatus.UNKNOWN) for i in range(12)]
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        counts = app.query_one("#sites-counts", Static)
+        drawn = " ".join(
+            strip.text for strip in counts.render_lines(counts.region.reset_offset)
+        )
+        assert "12 unresolved" in drawn, drawn
+
+
+async def test_eighty_columns_turns_the_list_into_a_picker():
+    """The 37-cell list took almost half an 80-column screen and left the link
+    column three characters wide. Narrow, the record gets the width and the
+    list is one key away."""
+    from textual.widgets import DataTable
+
+    await _seed(
+        one=[("GitHub", QueryStatus.CLAIMED)],
+        two=[("Reddit", QueryStatus.CLAIMED)],
+    )
+    app = SherlockUI()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        listing = app.query_one("#username-list", DataTable)
+        assert pane.has_class("-narrow")
+        assert listing.region.width == 0, "the list is still taking a column"
+        assert app.focused is not None, "nothing has focus, so no key is heard"
+
+        await pilot.press("ctrl+l")
+        await _settle(app, pilot)
+        assert listing.region.width > 0
+        assert app.focused is listing
+
+        await pilot.press("down", "enter")
+        await _settle(app, pilot)
+        assert not pane.has_class("-picking")
+
+
+async def test_the_section_underline_follows_a_relabelled_tab():
+    """EXTRACTIONS gains a count after layout, and the underline stayed sized
+    to the old label -- "3 PROFI" underlined while PROFILE was open."""
+    from textual.widgets import Tab, Tabs
+    from textual.widgets._tabs import Underline
+
+    await _seed_built_profile("underlined")
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_profile_section(app, pilot)
+        await _settle(app, pilot)
+        tabs = app.query_one("#detail-tabs", Tabs)
+        active = tabs.query_one("#tab-profile", Tab)
+        start, end = active.virtual_region.shrink(active.styles.gutter).column_span
+        underline = tabs.query_one(Underline)
+        assert (underline.highlight_start, underline.highlight_end) == (start, end)
+
+
+async def test_delete_in_the_anchor_editor_removes_an_anchor():
+    """It deleted a character instead.
+
+    The dialog opened with focus in a text field, where `del` is the field's
+    own delete-forward -- so the one key it advertised for removing an anchor
+    edited the box. With anchors listed, it now opens on the list.
+    """
+    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sherlock_project.tui.anchor_screen import AnchorScreen
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        app.push_screen(
+            AnchorScreen([IdentityAnchor(field="full_name", value="Avery Stone")])
+        )
+        await pilot.pause()
+        screen = app.screen
+        assert app.focused is screen.query_one("#anchor-list")
+
+        await pilot.press("delete")
+        await pilot.pause()
+        assert screen._anchors == []
+
+
+async def test_exporting_twice_keeps_both_files(tmp_path, monkeypatch):
+    """The second export silently replaced the first."""
+    monkeypatch.chdir(tmp_path)
+    await _seed(exported=[("GitHub", QueryStatus.CLAIMED)])
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        pane.action_export()
+        pane.action_export()
+    written = sorted(path.name for path in tmp_path.glob("exported-*.json"))
+    assert len(written) == 2, written
+
+
+async def test_scan_again_from_the_menu_sets_up_the_scan_without_starting_it(
+    monkeypatch,
+):
+    from textual.widgets import Input
+
+    from sherlock_project.tui import runner as runner_module
+
+    launched: list[str] = []
+
+    async def fake_session(*, username, **_options):
+        launched.append(username)
+
+    monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
+
+    async with _list_with(
+        again=[("GitHub", QueryStatus.CLAIMED)],
+    ) as (app, _table, pilot):
+        await _open_actions(app, pilot)
+        await _choose(app, pilot, "rescan")
+        await _settle(app, pilot)
+        assert app.query_one("#target-input", Input).value == "again"
+        assert app.focused is app.query_one("#target-input", Input)
+        assert launched == [], "a menu item on another tab started a scan"
+
+
+def test_a_long_database_path_is_cut_from_the_middle():
+    """It wrapped onto a hidden second line, so the bar said "db" and nothing."""
+    from sherlock_project.tui.app import _middle_truncate
+
+    path = "/home/someone/.local/share/a/very/deep/tree/sherlock/sherlock.db"
+    short = _middle_truncate(path, 30)
+    assert len(short) == 30
+    assert short.startswith("/home/")
+    assert short.endswith("sherlock.db")
+    assert _middle_truncate("/short.db", 30) == "/short.db"
+
+
+# -- what terminals actually send ---------------------------------------------
+#
+# The pilot presses key NAMES, so a binding can pass every test above and still
+# never fire in a real terminal: the bytes a terminal sends for alt+1 do not
+# decode to "alt+1" at all. These feed the bytes each terminal family sends
+# through Textual's own decoder and press whatever comes out, which is the path
+# a real keypress takes.
+
+
+def _decoded(sequence: str) -> str:
+    from textual._xterm_parser import XTermParser
+
+    parser = XTermParser()
+    keys = [
+        event.key
+        for event in [*parser.feed(sequence), *parser.feed("")]
+        if hasattr(event, "key")
+    ]
+    assert len(keys) == 1, keys
+    return keys[0]
+
+
+@pytest.mark.parametrize(
+    ("terminal", "sequence", "tab"),
+    [
+        # ESC-prefixed alt: GNOME Terminal, Konsole, xterm (metaSendsEscape),
+        # iTerm2 and Terminal.app with Option as Meta.
+        ("esc-prefixed alt+2", "\x1b2", "tab-results"),
+        ("esc-prefixed alt+3", "\x1b3", "tab-settings"),
+        # macOS with Option left as a compose key: Option+2 types ™.
+        ("macOS Option+2, no meta", "™", "tab-results"),
+        # kitty / WezTerm / foot with the CSI-u keyboard protocol.
+        ("CSI-u alt+2", "\x1b[50;3u", "tab-results"),
+    ],
+)
+async def test_tab_keys_work_as_terminals_send_them(terminal, sequence, tab):
+    from textual.widgets import Input, TabbedContent
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # The username field has focus on launch, which is the hard case: the
+        # character must switch tabs rather than be typed into the field.
+        assert isinstance(app.focused, Input)
+        await pilot.press(_decoded(sequence))
+        await _settle(app, pilot)
+        assert app.query_one(TabbedContent).active == tab, terminal
+        assert app.query_one("#target-input", Input).value == "", terminal
+
+
+@pytest.mark.parametrize(
+    ("terminal", "sequence"),
+    [
+        ("xterm-style alt+right (Linux, iTerm2 meta)", "\x1b[1;3C"),
+        ("macOS Terminal.app Option+right (ESC f)", "\x1bf"),
+    ],
+)
+async def test_section_keys_work_as_terminals_send_them(terminal, sequence):
+    await _seed(sections=[("GitHub", QueryStatus.CLAIMED)])
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await _open_results(app, pilot)
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        await pilot.press(_decoded(sequence))
+        await _settle(app, pilot)
+        assert app.query_one("#detail-switch").current == "sec-extractions", terminal
+
+
+async def test_show_all_works_as_terminals_send_it():
+    """ESC f decodes as ctrl+right, which the username field owns -- so the
+    shown key is alt+s, which arrives intact as ESC s."""
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pane = app.query_one(ScanPane)
+        await pilot.press(_decoded("\x1bs"))
+        await pilot.pause()
+        assert pane._visible == set(STATUS_ORDER)

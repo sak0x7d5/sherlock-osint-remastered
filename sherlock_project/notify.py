@@ -1370,12 +1370,17 @@ class TerminalReporter(QueryNotify):
         *,
         show_sources: bool = False,
         notes_hint: str | None = "run with --verbose to read them.",
+        framed: bool = True,
     ) -> None:
         """Render a synthesised profile.
 
         Presentation only: values keep the order synthesis produced and nothing
         is dropped. `show_sources` swaps the compact "3 sites: A, B +1" summary
         for the full site URLs.
+
+        `framed=False` drops the outer panel, for a surface that is already a
+        frame of its own -- the TUI's PROFILE section names the username above
+        it, and a boxed, titled panel inside that drew both twice.
 
         `notes_hint` is how this surface lets someone read the diagnostic
         notes. It defaults to the command-line answer because that is where
@@ -1575,6 +1580,9 @@ class TerminalReporter(QueryNotify):
         if footnotes:
             blocks = [*blocks, Text(""), *footnotes]
 
+        if not framed:
+            self._write(Group(*blocks))
+            return
         self._write(
             Panel(
                 Group(*blocks),

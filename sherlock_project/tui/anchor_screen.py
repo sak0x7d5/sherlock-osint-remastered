@@ -47,9 +47,9 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Label, Static
+from textual.widgets import Button, DataTable, Input, Label, Select, Static
 
 from sherlock_project.profile_synthesis import IdentityAnchor
 
@@ -58,6 +58,19 @@ from sherlock_project.profile_synthesis import IdentityAnchor
 # which surface an anchor was typed into months later. Not printed in the
 # profile panel -- see INTERNAL_ANCHOR_SOURCES.
 ANCHOR_SOURCE = "user_interface"
+
+# The fields offered in the picker, as (what a person calls it, what the
+# profile stores). Typing `full_name` meant knowing the profile's vocabulary
+# before using the screen; these are the identity facts people actually know
+# about a target, and "other" keeps any field reachable.
+FIELD_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Full name", "full_name"),
+    ("Location", "location"),
+    ("Employer", "employer"),
+    ("Email", "email"),
+    ("Website", "website"),
+    ("Other…", ""),
+)
 
 
 class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
@@ -70,11 +83,16 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
 
     BINDINGS: ClassVar = [
         Binding("escape", "close", "done"),
-        Binding("delete", "remove", "remove"),
     ]
 
-    def __init__(self, anchors: list[IdentityAnchor] | None = None) -> None:
+    def __init__(
+        self,
+        anchors: list[IdentityAnchor] | None = None,
+        *,
+        username: str | None = None,
+    ) -> None:
         super().__init__()
+        self._username = username
         # Copied, not aliased. The caller keeps its list untouched until this
         # screen is dismissed, so leaving with Escape really does leave the run
         # as it was rather than having edited it in place all along.
@@ -83,35 +101,87 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("Anchors", classes="dialog-title")
+            title = Text("Anchors")
+            if self._username:
+                title.append(f" for {self._username}")
+            yield Label(title, classes="dialog-title")
             yield Static(
                 Text(
-                    "Facts you already know about this person. Without one, "
-                    "the profile describes whoever shares the username.",
+                    "Facts you already know about this person. The profile "
+                    "keeps accounts that agree with them; without any, it "
+                    "describes whoever shares the username.",
                     style="dim",
                 ),
                 id="anchor-blurb",
             )
-            yield DataTable(id="anchor-list", cursor_type="row")
+            yield _AnchorList(id="anchor-list", cursor_type="row")
 
             with Grid(id="anchor-form"):
                 yield Static("field", classes="anchor-label")
-                yield Input(placeholder="full_name", id="anchor-field")
+                yield Select(
+                    FIELD_CHOICES,
+                    value="full_name",
+                    allow_blank=False,
+                    id="anchor-kind",
+                )
+                yield Static("", id="anchor-field-label", classes="anchor-label")
+                yield Input(placeholder="field name, e.g. alias", id="anchor-field")
                 yield Static("value", classes="anchor-label")
                 yield Input(placeholder="Avery Stone", id="anchor-value")
 
             yield Static(id="anchor-status")
-            yield Label(
-                "⏎ add    del remove    esc done",
-                classes="dim",
-            )
+            # Real buttons. The editor used to be keys only, named in a dim line
+            # -- and its `del remove` did not work from where focus opened.
+            with Horizontal(id="anchor-buttons"):
+                yield Button("Add", id="anchor-add", classes="chip")
+                yield Button("Remove selected", id="anchor-remove", classes="chip")
+                yield Button("Done", variant="primary", id="anchor-done")
 
     def on_mount(self) -> None:
         table = self.query_one("#anchor-list", DataTable)
         table.add_column("field", key="field", width=16)
         table.add_column("value", key="value")
         self._redraw()
-        self.query_one("#anchor-field", Input).focus()
+        self._show_custom_field()
+        # The list when there is something in it, so `del` acts on an anchor
+        # straight away. It opened in the text field before, where `del` is the
+        # field's own delete-forward -- the one key the dialog advertised for
+        # removing an anchor deleted a character instead.
+        if self._anchors:
+            table.focus()
+        else:
+            self.query_one("#anchor-value", Input).focus()
+
+    def _show_custom_field(self) -> None:
+        """The free-text field name, only when "Other…" is picked."""
+        custom = self._custom_field()
+        self.query_one("#anchor-field", Input).display = custom
+        self.query_one("#anchor-field-label").display = custom
+
+    @on(Select.Changed, "#anchor-kind")
+    def _kind_changed(self) -> None:
+        self._show_custom_field()
+        # Select posts Changed once while mounting, for its initial value.
+        # Moving focus then would pull it off the anchor list on open.
+        if not self.query_one("#anchor-kind", Select).has_focus_within:
+            return
+        target = "#anchor-field" if self._custom_field() else "#anchor-value"
+        self.query_one(target, Input).focus()
+
+    def _custom_field(self) -> bool:
+        return self.query_one("#anchor-kind", Select).value == ""
+
+    @on(Button.Pressed, "#anchor-add")
+    def _add_pressed(self) -> None:
+        self.action_add()
+
+    @on(Button.Pressed, "#anchor-remove")
+    def _remove_pressed(self) -> None:
+        self.action_remove()
+
+    @on(Button.Pressed, "#anchor-done")
+    def _done_pressed(self) -> None:
+        self.action_close()
 
     # -- drawing ------------------------------------------------------------
 
@@ -151,7 +221,10 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         self.action_add()
 
     def action_add(self) -> None:
-        field = self.query_one("#anchor-field", Input).value.strip()
+        if self._custom_field():
+            field = self.query_one("#anchor-field", Input).value.strip()
+        else:
+            field = str(self.query_one("#anchor-kind", Select).value)
         value = self.query_one("#anchor-value", Input).value.strip()
         try:
             anchor = IdentityAnchor(
@@ -177,7 +250,9 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         self._dirty = True
         for box in ("#anchor-field", "#anchor-value"):
             self.query_one(box, Input).value = ""
-        self.query_one("#anchor-field", Input).focus()
+        self.query_one(
+            "#anchor-field" if self._custom_field() else "#anchor-value", Input
+        ).focus()
         self._status(f"Added {anchor.field}={anchor.value}")
         self._redraw()
 
@@ -195,3 +270,20 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
 
     def action_close(self) -> None:
         self.dismiss(list(self._anchors) if self._dirty else None)
+
+
+class _AnchorList(DataTable):
+    """The anchor table, with `del` bound where it can actually be heard.
+
+    On the screen the binding lost to `Input`'s own delete-forward whenever a
+    field had focus, which was always on open. Here it belongs to the list, so
+    it fires exactly when an anchor is selected -- and the footer-less dialog
+    names it on the button beside the list instead of in a hint line.
+    """
+
+    BINDINGS: ClassVar = [Binding("delete", "remove_anchor", "remove")]
+
+    def action_remove_anchor(self) -> None:
+        screen = self.screen
+        if isinstance(screen, AnchorScreen):
+            screen.action_remove()

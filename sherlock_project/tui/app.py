@@ -78,10 +78,42 @@ class SherlockUI(App[None]):
     # `alt+*` is very nearly untouched -- `alt+backspace` is the only claim any
     # widget here makes on it -- and alt+digit for tabs is what browsers,
     # terminals and editors already do.
+    #
+    # The tab keys are not in the footer. Each tab's label carries its digit
+    # instead ("1 SCAN"), which is where someone looking for "how do I get to
+    # results" is already looking -- and the footer, which ran out of width at
+    # 120 columns and dropped them off the end anyway, keeps its room for the
+    # keys of the screen in front of you.
+    #
+    # EACH TAB HAS TWO KEY NAMES, and the second is not decoration. Most
+    # terminals send alt+digit as ESC followed by the digit -- GNOME Terminal,
+    # Konsole and xterm on Linux, iTerm2 and Terminal.app on macOS with "Option
+    # as Meta" on -- and Textual decodes ESC 1/2/3 as the characters ¡ ™ £,
+    # which is what Option+1/2/3 types on a US Mac layout. So `alt+1` alone
+    # only ever fired on terminals with a richer key protocol (kitty, WezTerm,
+    # foot), and in the rest the tab keys silently did nothing. The character
+    # names catch those terminals, and a Mac with Option left as a compose key.
+    #
+    # The character names are PRIORITY bindings, because the username field
+    # has focus from launch and would otherwise take ¡ as text before the app
+    # ever saw it. The cost is that those three characters cannot be typed into
+    # it, and no site's username rules allow them anyway.
     BINDINGS: ClassVar = [
-        Binding("alt+1", "show_tab('tab-scan')", "scan"),
-        Binding("alt+2", "show_tab('tab-results')", "results"),
-        Binding("alt+3", "show_tab('tab-settings')", "settings"),
+        Binding("alt+1", "show_tab('tab-scan')", "scan", show=False),
+        Binding("alt+2", "show_tab('tab-results')", "results", show=False),
+        Binding("alt+3", "show_tab('tab-settings')", "settings", show=False),
+        Binding(
+            "inverted_exclamation_mark", "show_tab('tab-scan')", "scan",
+            show=False, priority=True,
+        ),
+        Binding(
+            "trade_mark_sign", "show_tab('tab-results')", "results",
+            show=False, priority=True,
+        ),
+        Binding(
+            "pound_sign", "show_tab('tab-settings')", "settings",
+            show=False, priority=True,
+        ),
         Binding("alt+q", "quit", "quit"),
     ]
 
@@ -97,11 +129,13 @@ class SherlockUI(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="appbar")
         with TabbedContent(initial=SCAN_TAB):
-            with TabPane("SCAN", id=SCAN_TAB):
+            # The digit is the alt+digit that opens the tab, dim so the word
+            # still reads first.
+            with TabPane(_tab_title(1, "SCAN"), id=SCAN_TAB):
                 yield ScanPane(self._settings_values)
-            with TabPane("RESULTS", id=RESULTS_TAB):
+            with TabPane(_tab_title(2, "RESULTS"), id=RESULTS_TAB):
                 yield ResultsPane()
-            with TabPane("SETTINGS", id=SETTINGS_TAB):
+            with TabPane(_tab_title(3, "SETTINGS"), id=SETTINGS_TAB):
                 yield SettingsPane()
         yield Footer()
 
@@ -131,11 +165,19 @@ class SherlockUI(App[None]):
         Rebuilt rather than appended to, so the update note cannot be added
         twice by two paths that both thought they were the one to add it.
         """
+        # The path is cut from the MIDDLE when the bar is short of room. It
+        # used to wrap instead, onto a second line this one-row bar does not
+        # have -- so a long path showed as "db" and nothing at all, the one
+        # thing this strip exists to say. The ends are the parts that identify
+        # it: the root says whose, the file name says which.
+        room = max(16, self.size.width - 20 - (52 if self._update_installed else 0))
         line = Text.assemble(
             ("SHERLOCK", "bold cyan"),
             ("   db ", "dim"),
-            (str(default_database_path()), "dim"),
+            (_middle_truncate(str(default_database_path()), room), "dim"),
         )
+        line.no_wrap = True
+        line.overflow = "ellipsis"
         if self._update_installed:
             # Names a thing the reader can do from where they are sitting. A
             # note that said "re-run pip" would be pointing at a command line
@@ -193,6 +235,9 @@ class SherlockUI(App[None]):
             UpdateScreen(release, __version__, detect_install()), applied
         )
 
+    def on_resize(self) -> None:
+        self._redraw_appbar()
+
     def action_show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
@@ -220,6 +265,12 @@ class SherlockUI(App[None]):
         elif event.pane.id == SCAN_TAB:
             self._reload_settings()
 
+        if event.pane.id == RESULTS_TAB:
+            # The pane knows which of its widgets is visible to take focus --
+            # at narrow widths the list is a hidden picker, and the first
+            # focusable widget in walk order was that hidden list.
+            self.query_one(ResultsPane).focus_default()
+            return
         for widget in event.pane.query("*"):
             if widget.focusable:
                 widget.focus()
@@ -284,6 +335,17 @@ class SherlockUI(App[None]):
         self.action_show_tab(SCAN_TAB)
         self.query_one(ScanPane).prepare_analysis_scan(event.username)
 
+    @on(ResultsPane.Rescan)
+    def _rescan(self, event: ResultsPane.Rescan) -> None:
+        """Scan a stored username again: set it up on SCAN, start nothing.
+
+        Starting the run from a menu item on another tab would be doing more
+        than was asked; pressing SCAN there brings up the resume dialog with
+        the real counts, which is where the choice belongs.
+        """
+        self.action_show_tab(SCAN_TAB)
+        self.query_one(ScanPane).prepare_scan(event.username)
+
     @on(SettingsPane.Closed)
     def _settings_closed(self, event: SettingsPane.Closed) -> None:
         """Escape in settings leaves the tab; it does not leave the app.
@@ -299,6 +361,20 @@ class SherlockUI(App[None]):
         every route. See `_reload_settings`.
         """
         self.action_show_tab(SCAN_TAB)
+
+
+def _tab_title(number: int, name: str) -> str:
+    return f"[dim]{number}[/] {name}"
+
+
+def _middle_truncate(text: str, width: int) -> str:
+    """`/home/someone/…/sherlock/sherlock.db`: both ends kept, the middle cut."""
+    if len(text) <= width:
+        return text
+    keep = width - 1
+    head = keep // 3
+    tail = keep - head
+    return f"{text[:head]}…{text[-tail:]}"
 
 
 def _can_draw(interactive: bool | None = None) -> bool:

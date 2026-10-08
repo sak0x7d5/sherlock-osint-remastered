@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from rich.console import RenderableType
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
@@ -33,28 +34,32 @@ class ConfirmScreen(ModalScreen[bool]):
     def __init__(
         self,
         title: str,
-        detail: str,
+        detail: str | RenderableType,
         *,
         confirm_label: str = "Delete",
+        cancel_label: str = "Cancel",
+        danger: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(classes="-danger" if danger else None)
         self._title = title
-        self._detail = detail
+        # A plain string is wrapped in Text so user data in it -- a username
+        # with brackets -- is never read as markup. A renderable is the
+        # caller's own styling and is drawn as given.
+        self._detail = Text(detail) if isinstance(detail, str) else detail
         self._confirm_label = confirm_label
+        self._cancel_label = cancel_label
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self._title, classes="dialog-title")
-            yield Static(Text(self._detail), id="confirm-detail")
-            with Grid(id="confirm-buttons"):
-                # A spacer, so the two buttons sit together at the right rather
-                # than at opposite edges of the dialog -- a pair of choices has
-                # to read as a pair, and the eye should not have to travel the
-                # width of the box to find the second one.
-                yield Static()
+            yield Static(self._detail, id="confirm-detail")
+            # Right-aligned together, so a pair of choices reads as a pair, and
+            # sized to their labels -- the confirm label names what it deletes,
+            # and a fixed grid column clipped a long username off the end.
+            with Horizontal(id="confirm-buttons"):
                 # Cancel first, and focused: the destructive control should not
                 # be the one under the finger when the dialog opens.
-                yield Button("Cancel", id="confirm-no")
+                yield Button(self._cancel_label, id="confirm-no")
                 yield Button(self._confirm_label, variant="error", id="confirm-yes")
             yield Label("esc cancels", classes="dim")
 
