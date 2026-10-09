@@ -2722,7 +2722,7 @@ async def test_choosing_re_scan_passes_fresh(monkeypatch):
         await pilot.press("enter")
         await _settle(app, pilot, lambda: app.screen.query("#resume-fresh"))
 
-        await pilot.click("#resume-fresh")
+        await _click_when_drawn(app, pilot, "#resume-fresh")
         await _settle(app, pilot, lambda: captured.get("fresh") is True)
 
     assert captured.get("fresh") is True
@@ -2799,7 +2799,7 @@ async def test_stored_pages_offer_an_analysis_pass_that_fetches_nothing(
         # The cheap action holds focus, so Enter cannot start the expensive one.
         assert app.screen.focused is button
 
-        await pilot.click("#resume-analyse")
+        await _click_when_drawn(app, pilot, "#resume-analyse")
         await _settle(app, pilot, lambda: captured.get("username") == "marcus")
 
     # `fresh=False` is the whole mechanism: the plan resumes every stored row,
@@ -2935,7 +2935,7 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
         assert not app.screen.query("#resume-continue")
         assert app.screen.query_one("#resume-view", Button)
 
-        await pilot.click("#resume-view")
+        await _click_when_drawn(app, pilot, "#resume-view")
 
         from textual.widgets import TabbedContent
 
@@ -4361,6 +4361,22 @@ async def _settle(app, pilot, predicate=None, tries: int = 30) -> None:
         await pilot.pause()
         if predicate is None or predicate():
             return
+
+
+async def _click_when_drawn(app, pilot, selector: str) -> None:
+    """Click a control once it is laid out on screen, not merely composed.
+
+    A dialog's widgets are queryable as soon as it is composed, a refresh before
+    they have a region. A click in that gap lands on nothing, silently -- which
+    is how "View results" left macOS and Ubuntu CI sitting on the SCAN tab.
+    """
+    def drawn() -> bool:
+        found = app.screen.query(selector)
+        return bool(found) and found.first().region.area > 0
+
+    await _settle(app, pilot, drawn)
+    assert drawn(), f"{selector} never appeared on screen"
+    await pilot.click(selector)
 
 
 async def _open_results(app, pilot) -> None:
