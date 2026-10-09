@@ -1009,9 +1009,13 @@ ResultsPane.-narrow.-picking #result-detail { display: none; }
 #profile-build { width: auto; margin: 0 2 0 0; }
 /* The chip sits on the middle row of the raised button beside it. */
 #profile-anchors { margin: 1 0 0 0; }
-#profile-actions.-has-profile #profile-anchors { margin: 0; }
-#profile-actions.-has-profile #profile-buttons { margin: 0; }
+#profile-actions.-has-profile #profile-anchors { margin: 0 2 0 0; }
+/* A blank line between what the profile is and what can be done to it. Flush,
+   the chips read as a third line of the status sentence. */
+#profile-actions.-has-profile #profile-buttons { margin: 1 0 0 0; }
 #profile-actions.-has-profile #profile-build { margin: 0 2 0 0; }
+#profile-analyse { margin: 1 0 0 0; }
+#profile-actions.-has-profile #profile-analyse { margin: 0; }
 #profile-actions.-has-profile { padding: 0 0 1 0; border-bottom: solid $panel-lighten-2; margin: 0 0 1 0; }
 
 /* The POINTER state: no stored evidence, so the only thing on offer is a trip
@@ -1112,21 +1116,20 @@ ModalScreen { align: center middle; }
 
 #anchor-blurb { height: auto; padding: 0 0 1 0; }
 #anchor-list { height: auto; max-height: 10; margin: 0 0 1 0; }
-/* Label column then control column, so the three fields form one straight
-   edge rather than each starting wherever its own label ended. */
-#anchor-form {
-    layout: grid;
-    grid-size: 2;
-    grid-columns: 8 1fr;
-    grid-rows: 3;
-    grid-gutter: 0 1;
-    height: auto;
-}
-.anchor-label { color: $text-muted; content-align: left middle; height: 100%; }
-#anchor-trust-help { height: 2; padding: 1 0 0 0; }
-#anchor-status { height: 1; }
-#anchor-buttons { height: auto; align: right middle; margin: 1 0 0 0; }
-#anchor-buttons .chip { margin: 1 2 0 0; }
+/* field | value | Add, on one row. Every control in it is three cells tall, so
+   Add lines up with the boxes it submits rather than floating beside them. */
+#anchor-form { height: auto; }
+#anchor-field { width: 24; margin: 0 1 0 0; }
+#anchor-value { width: 1fr; margin: 0 1 0 0; }
+#anchor-form Input { border-title-color: $text-muted; }
+#anchor-form Input:focus { border-title-color: $accent; }
+#anchor-add { min-width: 8; }
+#anchor-status { height: auto; padding: 0 0 0 1; }
+/* The footer: the list's own action on the left, the dialog's on the right.
+   Both full-size buttons -- one size in one dialog -- and only Done is amber,
+   because a dialog has one way out that it recommends. */
+#anchor-buttons { height: auto; margin: 1 0 0 0; }
+#anchor-buttons .spacer { width: 1fr; height: 1; }
 
 /* ---- record actions menu --------------------------------------------- */
 

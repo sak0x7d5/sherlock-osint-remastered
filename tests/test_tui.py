@@ -1218,8 +1218,10 @@ def test_the_anchor_caveat_is_stated_once_not_twice():
     expanded = render_profile_text(profile, show_notes=True).plain
     assert expanded.count("No anchors used") == 1
     assert "No anchor was supplied" not in expanded
-    # The other note is diagnostics and still shows.
-    assert "1726" in expanded
+    # The other note is diagnostics and still shows -- as a count of pages,
+    # not the site id the stored legacy wording listed.
+    assert "1 stored page has not been analysed" in expanded
+    assert "1726" not in expanded
 
     # And the count offered beforehand matches what expanding reveals -- one,
     # not the two that are stored.
@@ -1264,7 +1266,7 @@ def test_the_caveat_leads_and_the_diagnostics_trail():
         value = rendered.index("Avery Stone")
         built = rendered.index("about how this was built") if (
             "about how this was built" in rendered
-        ) else rendered.index("1726")
+        ) else rendered.index("not been analysed")
 
         assert caveat < value, "the caveat must precede the values it qualifies"
         assert value < built, "provenance must not push the values down the panel"
@@ -4847,7 +4849,7 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
         # This fixture kept no page, so there is genuinely nothing to read and
         # a scan is the honest answer. The wording says which of the two
         # no-evidence states this is.
-        assert "No stored page can be analysed" in hint
+        assert "None of the stored pages gave any facts" in hint
         # Named for the trip it makes, not for a build it cannot do.
         assert "Scan this username with analysis" in str(
             app.query_one("#profile-build", Button).label
@@ -4885,7 +4887,7 @@ async def test_stored_pages_offer_analysis_rather_than_another_scan():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "3 pages are stored and ready to read" in hint
+        assert "3 stored pages have not been analysed" in hint
         # The promise that distinguishes this from the scan it used to offer.
         assert "re-fetches nothing" in hint
         assert "Analyse 3 stored pages" in str(
@@ -4906,7 +4908,7 @@ async def test_one_stored_page_is_not_described_in_the_plural():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "1 page is stored and ready to read" in hint
+        assert "1 stored page has not been analysed" in hint
         assert "Analyse 1 stored page" in str(
             app.query_one("#profile-build", Button).label
         )
@@ -5054,7 +5056,7 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "Evidence from 3 sites is ready" in hint
+        assert "3 sites gave facts that are ready to merge" in hint
         assert "instant" in hint and "no model needed" in hint
         assert "Build profile" in str(
             app.query_one("#profile-build", Button).label
@@ -6116,3 +6118,194 @@ async def test_a_long_username_wraps_the_title_not_the_buttons():
         no = screen.query_one("#confirm-no", Button)
         assert yes.size.width == no.size.width
         assert yes.outer_size.width <= 16
+
+
+async def _store_profile(username: str, payload: dict) -> None:
+    import json
+
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        await db.update_username_profile_summary(
+            username=username,
+            profile_summary=json.dumps({"username": username, "input_hash": "h", **payload}),
+            input_hash="h",
+        )
+    finally:
+        await db.close()
+
+
+async def test_extractions_from_an_older_contract_are_not_offered_as_evidence():
+    """The reported bug: "Rebuild" over evidence the build then ignored.
+
+    The card counted every stored extraction; synthesis uses only those under
+    the CURRENT pass-one contract. So a username analysed by an older version
+    was offered "evidence from 28 sites is ready", the build used none of it,
+    and the result was an empty profile under a list of every unread page id.
+    The offer now counts what a build would use, so this is the analyse state.
+    """
+    from textual.widgets import Button, Static
+
+    from sherlock_project.database import SherlockDB, default_database_path
+
+    await _results_with("olderrun", unanalysed=4)
+    db = await SherlockDB.create(str(default_database_path()))
+    try:
+        rows = await db.get_site_extractions("olderrun")
+        for row in rows[:2]:
+            await db.update_result_ai_extraction(
+                row.site_id, '{"full_name": ["Ryan"]}',
+                contract_hash="an-older-contract", model_key="vendor/m",
+            )
+    finally:
+        await db.close()
+    await _store_profile(
+        "olderrun",
+        {
+            "mode": "aggregate",
+            "resolution_status": "no_evidence",
+            "completeness": "partial",
+            "warnings": [
+                "Pass-one extraction is still pending for site ids: "
+                + ", ".join(str(n) for n in range(5000, 5300))
+            ],
+        },
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_profile_section(app, pilot)
+
+        hint = app.query_one("#profile-anchor-line", Static).render().plain
+        assert "Nothing to build a profile from yet" in hint
+        assert "older version of the analysis" in hint
+        assert "Analyse 4 stored pages" in str(
+            app.query_one("#profile-build", Button).label
+        )
+        # The empty profile draws nothing -- above all, not its id list.
+        body = str(app.query_one("#detail-profile", Static).render())
+        assert "5000" not in body and "No profile facts" not in body
+
+
+async def test_a_built_profile_is_described_in_words_not_field_values():
+    """`no_evidence · aggregate · partial` named fields, not facts about it."""
+    from textual.widgets import Button, Static
+
+    await _results_with("worded", extractions=2, unanalysed=3)
+    await _store_profile(
+        "worded",
+        {
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "partial",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+        },
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_profile_section(app, pilot)
+
+        hint = app.query_one("#profile-anchor-line", Static).render().plain
+        for jargon in ("aggregate", "aggregated", "partial", "no_evidence"):
+            assert jargon not in hint, jargon
+        assert "Merged from every analysed site · no anchors" in hint
+        assert "3 stored pages not analysed yet" in hint
+        # And the way to finish it is a button beside Rebuild, not advice.
+        analyse = app.query_one("#profile-analyse", Button)
+        assert analyse.display and "Analyse 3 more pages" in str(analyse.label)
+
+
+async def test_anchors_edited_after_a_build_say_they_are_not_applied_yet():
+    """The anchors are listed in the profile itself; the line above says only
+    what the profile cannot: that the edits are not in it yet."""
+    from textual.widgets import Static
+
+    from sherlock_project.profile_synthesis import IdentityAnchor
+
+    await _results_with("edited", extractions=2)
+    await _store_profile(
+        "edited",
+        {
+            "mode": "aggregate",
+            "resolution_status": "aggregated",
+            "completeness": "complete",
+            "strong_profile": {"full_name": ["Avery Stone"]},
+        },
+    )
+
+    app = SherlockUI()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_profile_section(app, pilot)
+        pane = app.query_one(ResultsPane)
+        hint = app.query_one("#profile-anchor-line", Static)
+        assert "Anchors changed" not in hint.render().plain
+
+        pane._build_anchors = [IdentityAnchor(field="role", value="hacker")]
+        pane._redraw_profile_actions(pane._record)
+        assert "Anchors changed — rebuild to apply them." in hint.render().plain
+
+
+async def test_the_anchor_field_is_free_text_and_obvious_values_fill_it():
+    """No picker: every consumer canonicalises the field, so any name works.
+
+    An email or a URL says what it is; the field box is not demanded for one.
+    And a duplicate is caught the way synthesis would see it, not by spelling.
+    """
+    from textual.widgets import Input, Static
+
+    from sherlock_project.tui.anchor_screen import AnchorScreen
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        app.push_screen(AnchorScreen([]))
+        await pilot.pause()
+        screen = app.screen
+
+        screen.query_one("#anchor-value", Input).value = "ryan@example.com"
+        screen.action_add()
+        screen.query_one("#anchor-field", Input).value = "Full  Name"
+        screen.query_one("#anchor-value", Input).value = "Ryan Hale"
+        screen.action_add()
+        screen.query_one("#anchor-field", Input).value = "full_name"
+        screen.query_one("#anchor-value", Input).value = "ryan hale"
+        screen.action_add()
+        await pilot.pause()
+
+        assert [(a.field, a.value) for a in screen._anchors] == [
+            ("email", "ryan@example.com"),
+            ("full name", "Ryan Hale"),
+        ]
+        assert "already listed" in str(
+            screen.query_one("#anchor-status", Static).render()
+        )
+        # A bare word could be anything, so it is not guessed.
+        screen.query_one("#anchor-field", Input).value = ""
+        screen.query_one("#anchor-value", Input).value = "hacker"
+        screen.action_add()
+        await pilot.pause()
+        assert len(screen._anchors) == 2
+        assert "field box" in str(screen.query_one("#anchor-status", Static).render())
+
+
+async def test_adding_an_anchor_selects_it_instead_of_announcing_it():
+    """"Added role=hacker" was a sentence about something the list shows."""
+    from textual.widgets import DataTable, Input, Static
+
+    from sherlock_project.tui.anchor_screen import AnchorScreen
+
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        app.push_screen(AnchorScreen([]))
+        await pilot.pause()
+        screen = app.screen
+        for field, value in (("full name", "Ryan"), ("role", "hacker")):
+            screen.query_one("#anchor-field", Input).value = field
+            screen.query_one("#anchor-value", Input).value = value
+            screen.action_add()
+        await pilot.pause()
+
+        status = screen.query_one("#anchor-status", Static)
+        assert status.display is False
+        assert screen.query_one("#anchor-list", DataTable).cursor_row == 1

@@ -150,7 +150,7 @@ from sherlock_project.database import (
 )
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryStatus
-from sherlock_project.tui.anchor_screen import AnchorScreen
+from sherlock_project.tui.anchor_screen import AnchorScreen, anchor_label
 from sherlock_project.tui.confirm_screen import ConfirmScreen
 from sherlock_project.tui.extraction_view import (
     current_contract_hash,
@@ -204,6 +204,39 @@ KEY_MIN_DETAIL_WIDTH = 46
 # picker over the detail (ctrl+l). At 80 columns the 37-cell list took almost
 # half the screen and left the record a link column three characters wide.
 NARROW_WIDTH = 100
+
+# Hover text for every control that sends someone to read stored pages. One
+# string, because there are two such buttons and they do the same thing.
+ANALYSE_TOOLTIP = (
+    "Analyse stored pages — no refetch\n\n"
+    "Loads this username on the SCAN tab with analysis on, where the stored "
+    "pages can be read without fetching them again. Nothing starts until you "
+    "press SCAN there."
+)
+
+
+def profile_has_facts(profile: Any) -> bool:
+    """Whether a stored profile says anything about anyone."""
+    return any(
+        values
+        for section in (
+            getattr(profile, "strong_profile", None) or {},
+            getattr(profile, "unsure_profile", None) or {},
+        )
+        for values in section.values()
+    )
+
+
+def built_label(timestamp: Any) -> str:
+    """`2026-10-09 14:14:26` as `2026-10-09 14:14`: to the minute is enough."""
+    text = str(timestamp or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return text
+
 
 def _going_away(widget) -> bool:
     """Whether this widget, or the app around it, is being taken down.
@@ -447,6 +480,12 @@ class ResultsPane(Vertical):
                                 )
                                 yield Button(
                                     "Anchors…", id="profile-anchors", classes="chip"
+                                )
+                                # Beside a built profile that left pages out:
+                                # reading them is the next step, so it sits
+                                # with the others rather than in a sentence.
+                                yield Button(
+                                    "Analyse…", id="profile-analyse", classes="chip"
                                 )
                         yield Static(id="detail-profile")
 
@@ -1029,6 +1068,7 @@ class ResultsPane(Vertical):
                 record is not None
                 and self._section == SEC_PROFILE
                 and record.get("profile") is not None
+                and profile_has_facts(record["profile"])
             )
         if action in ("build_profile", "edit_anchors"):
             return (
@@ -1538,11 +1578,13 @@ class ResultsPane(Vertical):
         extractions -- it does not read pages -- so a username scanned WITHOUT
         analysis has nothing to synthesise, and offering a Build button there
         would produce an empty profile and look broken rather than say why.
+
+        Counts what a build would USE -- current contract, at least one fact --
+        not every extraction stored. Counting the latter offered "evidence from
+        28 sites is ready" over extractions synthesis treats as unread, and the
+        build that followed produced nothing at all.
         """
-        return sum(
-            int(entry.get("count") or 0)
-            for entry in (record.get("extraction_models") or [])
-        )
+        return int(record.get("usable_evidence") or 0)
 
     def _redraw_profile_actions(self, record: dict[str, Any]) -> None:
         """Offer the action that fits what this username actually has.
@@ -1559,11 +1601,18 @@ class ResultsPane(Vertical):
         build = self.query_one("#profile-build", Button)
         anchors = self.query_one("#profile-anchors", Button)
 
+        analyse = self.query_one("#profile-analyse", Button)
+
         profile = record.get("profile")
-        has_profile = profile is not None
+        # A profile with no facts in it is not a profile to show. It is what a
+        # build over unusable evidence leaves behind, and treating it as one
+        # put "Rebuild" over an empty page with nothing to say why.
+        has_profile = profile is not None and profile_has_facts(profile)
         actions.display = bool(record.get("known"))
         if not actions.display:
             return
+        pending = int(record.get("pending_analysis") or 0)
+        analyse.display = False
 
         # Rebuilding pass 2 belongs HERE, beside the profile it replaces --
         # not on the scan tab, which scans nothing to do it, and not on a tab of
@@ -1582,24 +1631,35 @@ class ResultsPane(Vertical):
             # weight tracks what a control commits, which is why the scan
             # pane's toggles are flat. The class carries that rule here.
             actions.add_class(NO_EVIDENCE)
+            actions.remove_class("-has-profile")
             # Two different problems wearing one label until now. Pages are
             # stored for every result whether or not analysis was on, so a
             # username scanned without it is not missing evidence -- it is
             # holding unread evidence, and reading it costs no network at all.
             # Saying "scan again" there sent people to a 680-site refetch for
             # work the stored pages already support.
-            pending = int(record.get("pending_analysis") or 0)
             if pending:
+                # Pages read under an older pass-one contract are pending too:
+                # synthesis will not use them. Said, because the EXTRACTIONS
+                # tab still lists them and "not analysed" would contradict it.
+                stale = sum(
+                    int(entry.get("count") or 0)
+                    for entry in (record.get("extraction_models") or [])
+                )
+                why = (
+                    "were read by an older version of the analysis, or not "
+                    "read at all"
+                    if stale
+                    else f"{'has' if pending == 1 else 'have'} not been analysed"
+                )
                 hint.update(
                     Text.assemble(
-                        ("No AI evidence stored\n", "bold"),
+                        ("Nothing to build a profile from yet\n", "bold"),
                         (
                             (
-                                f"This username was scanned without analysis, "
-                                f"but {count_of(pending, 'page')} "
-                                f"{'is' if pending == 1 else 'are'} stored and "
-                                f"ready to read. Analysing them re-fetches "
-                                f"nothing."
+                                f"{count_of(pending, 'stored page')} {why}, so "
+                                f"there are no facts to merge. Analysing them "
+                                f"re-fetches nothing."
                             ),
                             "dim",
                         ),
@@ -1609,23 +1669,18 @@ class ResultsPane(Vertical):
                 # The stored-pages arm gets its own hover text, not the scan
                 # one: this button re-fetches nothing, and a tooltip promising a
                 # scan would describe the opposite of what pressing it does.
-                build.tooltip = (
-                    "Analyse stored pages — no refetch\n\n"
-                    "Loads this username on the SCAN tab with analysis on, "
-                    "where the stored pages can be read without fetching them "
-                    "again. Nothing starts until you press SCAN there."
-                )
+                build.tooltip = ANALYSE_TOOLTIP
             else:
                 # Genuinely nothing to work from: no confirmed accounts, or
                 # their pages came back empty. Here a scan really is the fix.
                 hint.update(
                     Text.assemble(
-                        ("No AI evidence stored\n", "bold"),
+                        ("Nothing to build a profile from yet\n", "bold"),
                         (
                             (
-                                "No stored page can be analysed, so the second "
-                                "pass has nothing to merge. Scanning again with "
-                                "analysis on collects it."
+                                "None of the stored pages gave any facts about "
+                                "this person. Scanning again with analysis on "
+                                "collects fresh ones."
                             ),
                             "dim",
                         ),
@@ -1667,82 +1722,153 @@ class ResultsPane(Vertical):
             "extracted into one profile. Reads stored evidence only — no site "
             "is contacted and no page is fetched again."
         )
+        # Pages left unread are the commonest reason a profile is thin, and
+        # reading them is a button away -- so it is a button, not advice.
+        if pending:
+            analyse.display = True
+            analyse.label = f"Analyse {count_of(pending, 'more page')}…"
+            analyse.tooltip = ANALYSE_TOOLTIP
+
+        # Labels changed above, and an auto-width button does not re-measure on
+        # its own: "+ Add anchor…" becoming "Edit anchors (2)…" kept the old
+        # width and lost its count off the end.
+        self.query_one("#profile-buttons").refresh(layout=True)
+        for button in (build, anchors, analyse):
+            button.refresh(layout=True)
+
+        if has_profile:
+            hint.update(self._profile_summary(record, profile, pending))
+            return
 
         card = Text()
-        if has_profile:
-            # A status line over the profile, not a paragraph under it.
-            card.append(str(record["username"]), style="bold")
-            for part in (
-                getattr(profile, "resolution_status", ""),
-                getattr(profile, "mode", ""),
-                getattr(profile, "completeness", ""),
-            ):
-                if part:
-                    card.append(f" · {part}", style="dim")
-            card.append(f" · built {record.get('profile_updated_at')}", style="dim")
-            card.append("\n")
+        card.append("No profile yet. ", style="bold")
+        card.append(
+            f"{count_of(evidence, 'site')} gave facts that are ready to merge.\n\n"
+        )
+        sources = [
+            entry.site_name
+            for entry in self._extraction_order
+            if entry.fact_count
+        ]
+        card.append(f"{'EVIDENCE':<10}", style="dim")
+        if sources:
+            shown = ", ".join(sources[:4])
+            more = f" and {len(sources) - 4} more" if len(sources) > 4 else ""
+            card.append(f"{shown}{more}\n")
         else:
-            card.append("No profile yet. ", style="bold")
-            card.append(
-                f"Evidence from {count_of(evidence, 'site')} is ready to merge.\n\n"
-            )
-            sources = [
-                entry.site_name
-                for entry in self._extraction_order
-                if entry.fact_count
-            ]
-            card.append("EVIDENCE  ", style="dim")
-            if sources:
-                shown = " · ".join(sources[:4])
-                more = f" +{len(sources) - 4}" if len(sources) > 4 else ""
-                card.append(f"{shown}{more}\n")
-            else:
-                card.append(f"{count_of(evidence, 'site')} analysed\n")
+            card.append(f"{count_of(evidence, 'site')} analysed\n")
 
-        card.append("ANCHORS   " if not has_profile else "Anchored to ", style="dim")
+        # One anchor per line, field then value -- the shape the profile's own
+        # ANCHORS table uses. A run of `a = b · c = d` reused the separator the
+        # status words use and stopped being readable at the third.
+        card.append(f"{'ANCHORS':<10}", style="dim")
         if self._build_anchors:
-            card.append(
-                " · ".join(
-                    f"{a.field} = {a.value}" for a in self._build_anchors[:3]
-                )
-            )
-            if count > 3:
-                card.append(f" +{count - 3}", style="dim")
-            card.append("\n")
+            for index, anchor in enumerate(self._build_anchors):
+                if index:
+                    card.append(" " * 10)
+                card.append(f"{anchor_label(anchor.field):<12}", style="dim")
+                card.append(f"{anchor.value}\n")
         else:
             card.append("none\n", style="dim")
 
+        card.append(f"{'RESULT':<10}", style="dim")
         if self._build_anchors:
-            result = (
-                "anchored resolution · uses the model · slow on a cold start"
+            card.append("matched to your anchors · uses the model, slow on a cold start")
+        else:
+            # The unanchored path needs no model at all: aggregate synthesis
+            # merges stored extractions and never calls one. Worth saying,
+            # because "build a profile" otherwise reads as a slow operation --
+            # and so is the cost of skipping anchors, in the same breath.
+            card.append("every site merged · instant, no model needed\n")
+            card.append(
+                " " * 10 + "Without anchors it describes anyone using this name.",
+                style="yellow",
             )
-            if not has_profile:
-                card.append("RESULT    ", style="dim")
-                card.append(result)
-        elif has_profile and getattr(profile, "mode", "") == "anchored":
+        if pending:
+            card.append(
+                f"\n{' ' * 10}{count_of(pending, 'stored page')} not analysed "
+                f"yet — {'it' if pending == 1 else 'they'} will be left out.",
+                style="dim",
+            )
+        card.rstrip()
+        hint.update(card)
+
+    def _profile_summary(
+        self, record: dict[str, Any], profile: Any, pending: int
+    ) -> Text:
+        """What the profile on screen IS, in words -- above it, not in it.
+
+        It printed the model's own enum values before: `no_evidence ·
+        aggregate · partial`. Those are field names, not information; the
+        questions a reader has are how it was made, how far to trust it, and
+        whether it is finished, and each gets a plain answer here.
+        """
+        decisions = list(getattr(profile, "source_decisions", []) or [])
+        used = [
+            d for d in decisions if d.disposition in ("aggregated", "included")
+        ]
+        line = Text()
+        if getattr(profile, "mode", "") == "anchored":
+            if getattr(profile, "resolution_status", "") == "resolved":
+                line.append("Matched to your anchors")
+                if decisions:
+                    line.append(
+                        f" · {len(used)} of {count_of(len(decisions), 'site')} kept"
+                    )
+            else:
+                line.append(
+                    "No site matched your anchors closely enough",
+                    style="yellow",
+                )
+        else:
+            line.append(
+                f"Merged from {count_of(len(used), 'site')}"
+                if used
+                else "Merged from every analysed site"
+            )
+            line.append(" · no anchors", style="yellow")
+        built = built_label(record.get("profile_updated_at"))
+        if built:
+            line.append(f" · built {built}", style="dim")
+
+        # What still stands between this and a finished profile, if anything.
+        if pending:
+            line.append(
+                f"\n{count_of(pending, 'stored page')} not analysed yet, so "
+                "this profile leaves them out.",
+                style="dim",
+            )
+        elif getattr(profile, "completeness", "") == "partial":
+            line.append(
+                "\nSome sources could not be used — press v to see why.",
+                style="dim",
+            )
+
+        built_with = {
+            (a.field, a.value) for a in getattr(profile, "anchors", []) or []
+        }
+        wanted = {(a.field, a.value) for a in self._build_anchors}
+        if (
+            not self._build_anchors
+            and getattr(profile, "mode", "") == "anchored"
+        ):
             # The downgrade this pane exists to prevent. Rebuilding an anchored
             # profile with no anchors does not recompute the identity -- it
             # ABANDONS it, and the result looks bigger while being worse: a
             # resolved identity replaced by a merge of every name every site
             # showed. Measured at 4 fields/7 values becoming 11 fields/73.
-            card.append(
-                "This profile is anchored, but no anchors are set — rebuilding "
+            line.append(
+                "\nThis profile is anchored, but no anchors are set — rebuilding "
                 "now would replace it with an unresolved merge.",
                 style="yellow",
             )
-        elif not has_profile:
-            # The unanchored path needs no model at all: aggregate synthesis
-            # merges stored extractions and never calls one. Worth saying,
-            # because "build a profile" otherwise reads as a slow operation --
-            # and so is the cost of skipping anchors, in the same breath.
-            card.append("RESULT    ", style="dim")
-            card.append("unanchored merge · instant · no model needed\n")
-            card.append(
-                "          Without anchors it describes anyone using this name.",
-                style="yellow",
+        elif wanted != built_with:
+            # Anchors are listed in the profile body; here only the fact that
+            # the edits have not been applied, which the body cannot show.
+            line.append(
+                "\nAnchors changed — rebuild to apply them.", style="yellow"
             )
-        card.rstrip()
-        hint.update(card)
+        return line
 
     @on(Button.Pressed, "#profile-anchors")
     def _edit_build_anchors(self) -> None:
@@ -1772,6 +1898,12 @@ class ResultsPane(Vertical):
     def action_build_profile(self) -> None:
         """`b` on PROFILE: the build button, as a key."""
         self._build_profile()
+
+    @on(Button.Pressed, "#profile-analyse")
+    def _analyse_more(self) -> None:
+        record = self._record
+        if record is not None and record.get("known"):
+            self.post_message(self.ScanWithAnalysis(str(record["username"])))
 
     @on(Button.Pressed, "#profile-build")
     def _build_profile(self) -> None:
@@ -1879,7 +2011,10 @@ class ResultsPane(Vertical):
                 style="yellow",
             )
         profile = record.get("profile")
-        if profile is None:
+        if profile is None or not profile_has_facts(profile):
+            # An empty profile is described by the card above, which can say
+            # WHY it is empty and offer the fix. Rendered here, it was "No
+            # profile facts were available" over every diagnostic note in full.
             return Text("")
         return render_profile_text(
             profile,

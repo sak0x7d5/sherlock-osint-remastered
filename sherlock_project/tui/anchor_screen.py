@@ -40,6 +40,7 @@ question with no consequence.
 
 from __future__ import annotations
 
+import re
 from typing import ClassVar
 
 from pydantic import ValidationError
@@ -47,11 +48,16 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Grid, Horizontal, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Input, Label, Select, Static
+from textual.suggester import SuggestFromList
+from textual.widgets import Button, DataTable, Input, Label, Static
 
-from sherlock_project.profile_synthesis import IdentityAnchor
+from sherlock_project.profile_synthesis import (
+    IdentityAnchor,
+    canonical_field,
+    normalize_value,
+)
 
 # Where an anchor came from, recorded on every one this screen makes. The CLI
 # writes "command_line"; keeping them distinct means a profile can still say
@@ -59,18 +65,53 @@ from sherlock_project.profile_synthesis import IdentityAnchor
 # profile panel -- see INTERNAL_ANCHOR_SOURCES.
 ANCHOR_SOURCE = "user_interface"
 
-# The fields offered in the picker, as (what a person calls it, what the
-# profile stores). Typing `full_name` meant knowing the profile's vocabulary
-# before using the screen; these are the identity facts people actually know
-# about a target, and "other" keeps any field reachable.
-FIELD_CHOICES: tuple[tuple[str, str], ...] = (
-    ("Full name", "full_name"),
-    ("Location", "location"),
-    ("Employer", "employer"),
-    ("Email", "email"),
-    ("Website", "website"),
-    ("Other…", ""),
+# What the field box completes to, as a person would type it.
+#
+# The field is free text, not a picker. A picker of five was there so nobody
+# had to know the profile's vocabulary -- but every consumer of an anchor runs
+# the field through `canonical_field` first, so "employer", "Employer" and
+# "organizations" already reach synthesis as the same thing. The picker was
+# guarding a door that was not locked, at the cost of an "Other…" detour to a
+# second box for anything it did not list.
+#
+# A blank box has the opposite fault -- nothing says what works, and a typo
+# becomes a field nothing else uses -- so the box completes from this list as
+# you type, greyed in, accepted with → or Tab. Ordered by how often a person
+# knows each about a target.
+FIELD_SUGGESTIONS: tuple[str, ...] = (
+    "full name",
+    "email",
+    "location",
+    "employer",
+    "role",
+    "website",
+    "phone",
+    "alias",
+    "username",
+    "language",
 )
+
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_URL = re.compile(r"^(https?://|www\.)\S+$", re.IGNORECASE)
+
+
+def anchor_label(field: str) -> str:
+    """A stored field name as a person would say it: `full_name` -> `full name`."""
+    return " ".join(field.replace("_", " ").split())
+
+
+def infer_field(value: str) -> str | None:
+    """The field a value plainly is, when it plainly is one.
+
+    Only the two shapes that cannot be anything else. A bare word could be a
+    name, a city or an employer, and guessing there would file a fact under
+    the wrong heading without saying so.
+    """
+    if _EMAIL.match(value):
+        return "email"
+    if _URL.match(value):
+        return "website"
+    return None
 
 
 class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
@@ -98,6 +139,7 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         # as it was rather than having edited it in place all along.
         self._anchors: list[IdentityAnchor] = list(anchors or [])
         self._dirty = False
+        self._error_for: tuple[str, str] | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
@@ -116,25 +158,33 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
             )
             yield _AnchorList(id="anchor-list", cursor_type="row")
 
-            with Grid(id="anchor-form"):
-                yield Static("field", classes="anchor-label")
-                yield Select(
-                    FIELD_CHOICES,
-                    value="full_name",
-                    allow_blank=False,
-                    id="anchor-kind",
+            # One row: what it is, what it says, and the button that adds it.
+            # Add sits WITH the boxes it submits, the same height as them --
+            # as a chip in the footer it read as a lesser Done, and it acted on
+            # something three rows away.
+            with Horizontal(id="anchor-form"):
+                field = Input(
+                    placeholder="full name, email…",
+                    suggester=SuggestFromList(
+                        FIELD_SUGGESTIONS, case_sensitive=False
+                    ),
+                    id="anchor-field",
                 )
-                yield Static("", id="anchor-field-label", classes="anchor-label")
-                yield Input(placeholder="field name, e.g. alias", id="anchor-field")
-                yield Static("value", classes="anchor-label")
-                yield Input(placeholder="Avery Stone", id="anchor-value")
+                # Labels in the border, so they stay readable after typing --
+                # a placeholder alone vanishes with the first keystroke.
+                field.border_title = "field"
+                yield field
+                value = Input(placeholder="e.g. Avery Stone", id="anchor-value")
+                value.border_title = "value"
+                yield value
+                yield Button("Add", id="anchor-add")
 
+            # Errors only. Success needs no sentence: the new row appears in
+            # the list, highlighted, which says more than "Added x=y" did.
             yield Static(id="anchor-status")
-            # Real buttons. The editor used to be keys only, named in a dim line
-            # -- and its `del remove` did not work from where focus opened.
             with Horizontal(id="anchor-buttons"):
-                yield Button("Add", id="anchor-add", classes="chip")
-                yield Button("Remove selected", id="anchor-remove", classes="chip")
+                yield Button("Remove selected", id="anchor-remove")
+                yield Static(classes="spacer")
                 yield Button("Done", variant="primary", id="anchor-done")
 
     def on_mount(self) -> None:
@@ -142,7 +192,7 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         table.add_column("field", key="field", width=16)
         table.add_column("value", key="value")
         self._redraw()
-        self._show_custom_field()
+        self._status("")
         # The list when there is something in it, so `del` acts on an anchor
         # straight away. It opened in the text field before, where `del` is the
         # field's own delete-forward -- the one key the dialog advertised for
@@ -150,26 +200,7 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         if self._anchors:
             table.focus()
         else:
-            self.query_one("#anchor-value", Input).focus()
-
-    def _show_custom_field(self) -> None:
-        """The free-text field name, only when "Other…" is picked."""
-        custom = self._custom_field()
-        self.query_one("#anchor-field", Input).display = custom
-        self.query_one("#anchor-field-label").display = custom
-
-    @on(Select.Changed, "#anchor-kind")
-    def _kind_changed(self) -> None:
-        self._show_custom_field()
-        # Select posts Changed once while mounting, for its initial value.
-        # Moving focus then would pull it off the anchor list on open.
-        if not self.query_one("#anchor-kind", Select).has_focus_within:
-            return
-        target = "#anchor-field" if self._custom_field() else "#anchor-value"
-        self.query_one(target, Input).focus()
-
-    def _custom_field(self) -> bool:
-        return self.query_one("#anchor-kind", Select).value == ""
+            self.query_one("#anchor-field", Input).focus()
 
     @on(Button.Pressed, "#anchor-add")
     def _add_pressed(self) -> None:
@@ -185,7 +216,7 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
 
     # -- drawing ------------------------------------------------------------
 
-    def _redraw(self) -> None:
+    def _redraw(self, *, select: int | None = None) -> None:
         table = self.query_one("#anchor-list", DataTable)
         table.clear()
         if not self._anchors:
@@ -197,15 +228,32 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         else:
             for index, anchor in enumerate(self._anchors):
                 table.add_row(
-                    Text(anchor.field, overflow="ellipsis", no_wrap=True),
+                    Text(anchor_label(anchor.field), overflow="ellipsis",
+                         no_wrap=True),
                     Text(anchor.value, overflow="ellipsis", no_wrap=True),
                     key=str(index),
                 )
+            if select is not None:
+                table.move_cursor(row=min(select, len(self._anchors) - 1))
+        # Nothing to remove is a disabled button, not a button that does
+        # nothing when pressed.
+        self.query_one("#anchor-remove", Button).disabled = not self._anchors
 
-    def _status(self, message: str, *, error: bool = False) -> None:
-        self.query_one("#anchor-status", Static).update(
-            Text(message, style="red" if error else "dim")
+    def _boxes(self) -> tuple[str, str]:
+        return (
+            self.query_one("#anchor-field", Input).value,
+            self.query_one("#anchor-value", Input).value,
         )
+
+    def _status(self, message: str) -> None:
+        # Remembered with what the boxes held, so only an EDIT clears it -- not
+        # a Changed event still queued from before the error was raised.
+        self._error_for = self._boxes() if message else None
+        status = self.query_one("#anchor-status", Static)
+        status.update(Text(message, style="red"))
+        # No line at all when there is nothing wrong, rather than a blank one
+        # holding the footer a row lower than it needs to be.
+        status.display = bool(message)
 
     # -- editing ------------------------------------------------------------
 
@@ -220,41 +268,52 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
     def _value_submitted(self) -> None:
         self.action_add()
 
+    @on(Input.Changed)
+    def _typing(self) -> None:
+        # An error is about what WAS in the boxes; once they change it is stale.
+        if self._error_for is not None and self._error_for != self._boxes():
+            self._status("")
+
     def action_add(self) -> None:
-        if self._custom_field():
-            field = self.query_one("#anchor-field", Input).value.strip()
-        else:
-            field = str(self.query_one("#anchor-kind", Select).value)
-        value = self.query_one("#anchor-value", Input).value.strip()
+        field_box = self.query_one("#anchor-field", Input)
+        value_box = self.query_one("#anchor-value", Input)
+        value = value_box.value.strip()
+        field = " ".join(field_box.value.split()).casefold()
+        if not value:
+            self._status("Type what you know in the value box.")
+            value_box.focus()
+            return
+        if not field:
+            field = infer_field(value) or ""
+        if not field:
+            self._status("Say what this is in the field box, e.g. full name.")
+            field_box.focus()
+            return
         try:
-            anchor = IdentityAnchor(
-                field=field,
-                value=value,
-                source=ANCHOR_SOURCE,
-            )
+            anchor = IdentityAnchor(field=field, value=value, source=ANCHOR_SOURCE)
         except ValidationError:
-            # The model already refuses empty text; saying which box is empty
-            # is more use than repeating pydantic at someone.
-            missing = "field" if not field else "value"
-            self._status(f"Fill in {missing} first.", error=True)
+            self._status("That anchor could not be read; check both boxes.")
             return
 
-        if any(
-            existing.field == anchor.field and existing.value == anchor.value
-            for existing in self._anchors
-        ):
-            self._status(f"{anchor.field}={anchor.value} is already listed.")
+        # Duplicates compared the way synthesis will see them, so "Full name"
+        # and "full_name" with the same value are one anchor, not two.
+        def key(item: IdentityAnchor) -> tuple[str, str]:
+            return (
+                canonical_field(item.field),
+                normalize_value(item.field, item.value),
+            )
+
+        if any(key(existing) == key(anchor) for existing in self._anchors):
+            self._status(f"{anchor_label(field)} {value} is already listed.")
             return
 
         self._anchors.append(anchor)
         self._dirty = True
-        for box in ("#anchor-field", "#anchor-value"):
-            self.query_one(box, Input).value = ""
-        self.query_one(
-            "#anchor-field" if self._custom_field() else "#anchor-value", Input
-        ).focus()
-        self._status(f"Added {anchor.field}={anchor.value}")
-        self._redraw()
+        field_box.value = ""
+        value_box.value = ""
+        self._status("")
+        self._redraw(select=len(self._anchors) - 1)
+        field_box.focus()
 
     def action_remove(self) -> None:
         if not self._anchors:
@@ -263,10 +322,11 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         row = table.cursor_row
         if row is None or not (0 <= row < len(self._anchors)):
             return
-        removed = self._anchors.pop(row)
+        self._anchors.pop(row)
         self._dirty = True
-        self._status(f"Removed {removed.field}={removed.value}")
-        self._redraw()
+        self._redraw(select=row)
+        if not self._anchors:
+            self.query_one("#anchor-field", Input).focus()
 
     def action_close(self) -> None:
         self.dismiss(list(self._anchors) if self._dirty else None)
