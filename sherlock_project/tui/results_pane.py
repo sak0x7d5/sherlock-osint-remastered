@@ -761,7 +761,11 @@ class ResultsPane(Vertical):
             ConfirmScreen(
                 f"Delete {username}?",
                 detail,
-                confirm_label=f"Delete {username}",
+                # The verb alone. The username is the title's job: in the
+                # button it made the button as wide as the name, and a long
+                # name turned the dialog's most dangerous control into its
+                # widest. The title wraps; a button cannot.
+                confirm_label="Delete",
                 cancel_label="Keep it",
                 danger=True,
             ),

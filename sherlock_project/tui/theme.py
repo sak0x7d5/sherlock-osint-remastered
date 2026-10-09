@@ -1169,7 +1169,10 @@ RecordActionsScreen { align: right top; background: $background 40%; }
     height: auto;
     align: right middle;
 }
-#confirm-buttons Button { width: auto; margin: 0 0 0 2; }
+/* A matched pair at one fixed width, whatever the labels say. Sized to the
+   label, a long name in "Delete <name>" made the destructive button the
+   widest thing in the dialog; the name now lives in the title, which wraps. */
+#confirm-buttons Button { width: 14; min-width: 14; margin: 0 0 0 2; }
 /* Danger: the frame and the title go red, so a dialog that destroys something
    does not wear the same amber as one that asks which sites to check. */
 ConfirmScreen.-danger #dialog { border: round $error; }

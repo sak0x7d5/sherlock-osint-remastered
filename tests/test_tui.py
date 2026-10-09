@@ -4443,12 +4443,17 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
 
         # Cancel holds focus, not the destructive control.
         assert app.focused is screen.query_one("#confirm-no", Button)
-        # It names what will go -- in the title and on the button that does
-        # it, rather than asking the title's question again in the body -- and
-        # counts it.
+        # It names what will go -- in the title, rather than asking the
+        # title's question again in the body -- and counts it.
         title = str(screen.query_one(".dialog-title").render())
         assert "marcus" in title
-        assert "marcus" in str(screen.query_one("#confirm-yes", Button).label)
+        # The button is the verb alone, and the pair is one fixed size: a
+        # username in the label made the destructive button as wide as the
+        # name.
+        yes = screen.query_one("#confirm-yes", Button)
+        no = screen.query_one("#confirm-no", Button)
+        assert str(yes.label) == "Delete"
+        assert yes.size.width == no.size.width
         detail = screen.query_one("#confirm-detail").render().plain
         assert "1 found account" in detail
         assert "cannot be undone" in detail
@@ -5997,3 +6002,34 @@ async def test_no_button_loses_its_label_when_focused():
         await pilot.press("alt+left", "alt+left")
         await _settle(app, pilot)
         assert await check_visible_buttons("SITES") >= 1
+
+
+async def test_a_long_username_wraps_the_title_not_the_buttons():
+    """The name used to be in the Delete button, so the button grew with it.
+
+    It is the title's job now: the title wraps inside the dialog and the two
+    buttons stay one matched, fixed size whatever is being deleted.
+    """
+    from textual.widgets import Button
+
+    from sherlock_project.tui.confirm_screen import ConfirmScreen
+
+    name = "an_unreasonably_long_username_" * 4
+    app = SherlockUI()
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.push_screen(
+            ConfirmScreen(
+                f"Delete {name}?", "detail", confirm_label="Delete",
+                cancel_label="Keep it", danger=True,
+            )
+        )
+        await pilot.pause()
+        screen = app.screen
+        title = screen.query_one(".dialog-title")
+        dialog = screen.query_one("#dialog")
+        assert title.size.height > 1, "the title did not wrap"
+        assert title.region.right <= dialog.region.right
+        yes = screen.query_one("#confirm-yes", Button)
+        no = screen.query_one("#confirm-no", Button)
+        assert yes.size.width == no.size.width
+        assert yes.outer_size.width <= 16

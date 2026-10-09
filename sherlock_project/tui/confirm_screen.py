@@ -51,7 +51,11 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(self._title, classes="dialog-title")
+            # Text, so a username with brackets in it is not read as markup;
+            # a Static, so a long one wraps inside the dialog instead of
+            # running off its edge. The title carries the name now that the
+            # button does not.
+            yield Static(Text(self._title), classes="dialog-title")
             yield Static(self._detail, id="confirm-detail")
             # Right-aligned together, so a pair of choices reads as a pair, and
             # sized to their labels -- the confirm label names what it deletes,
