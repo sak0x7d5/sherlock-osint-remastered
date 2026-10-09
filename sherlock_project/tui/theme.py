@@ -632,7 +632,14 @@ Button:focus {
     border-bottom: tall $accent;
 }
 Button.-primary:focus { background: $accent-lighten-1; border-top: tall $accent-lighten-3; border-bottom: tall $accent-darken-3; }
-.chip:focus, .toggle:focus {
+/* `Button.` on the front is load-bearing. A pseudo-class weighs the same as a
+   class, so `Button:focus` above (type + pseudo) outranked a bare `.chip:focus`
+   and gave these ONE-ROW controls a tall top and bottom border on focus. The
+   two borders took the only row there is: clicking `verbose` or `found only`
+   left an empty amber bar with no label until focus moved elsewhere. Chips are
+   flat; their focus is a tint and a bold label, never a border. */
+Button.chip:focus, Button.toggle:focus {
+    border: none;
     text-style: bold;
     background-tint: $accent 25%;
 }

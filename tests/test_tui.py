@@ -5950,3 +5950,50 @@ async def test_late_callbacks_after_the_app_closes_do_nothing():
     pane._focus_section()
     pane.focus_default()
     pane._rehighlight_tabs()
+
+
+async def test_no_button_loses_its_label_when_focused():
+    """Clicking `verbose` or `found only` left an empty bar until focus moved.
+
+    The app-wide focus rule draws a tall border above and below a raised
+    button. It outranked the chip styling, so a ONE-ROW chip got both borders
+    on focus -- and two borders on one row leave no row for the label. Every
+    button on every screen state is focused here and must keep a row to draw
+    its label in.
+    """
+    from textual.widgets import Button
+
+    await _seed_built_profile("focused")
+    await _results_with("pointer")
+    app = SherlockUI()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await pilot.pause()
+        await pilot.click("#toggle-ai")  # reveals the anchors "+" button
+        await pilot.pause()
+
+        async def check_visible_buttons(where: str) -> int:
+            checked = 0
+            for button in app.screen.query(Button):
+                if not button.region.area or not button.focusable:
+                    continue
+                button.focus()
+                await pilot.pause()
+                assert button.content_region.height >= 1, (
+                    f"{where}: #{button.id} has no row for its label when focused"
+                )
+                checked += 1
+            return checked
+
+        assert await check_visible_buttons("SCAN") >= 4
+
+        await _open_profile_section(app, pilot)
+        pane = app.query_one(ResultsPane)
+        for username in ("focused", "pointer"):
+            pane.select_username(username)
+            await _settle(app, pilot, lambda u=username: pane._selected == u)
+            await _settle(app, pilot)
+            await check_visible_buttons(f"PROFILE {username}")
+
+        await pilot.press("alt+left", "alt+left")
+        await _settle(app, pilot)
+        assert await check_visible_buttons("SITES") >= 1
