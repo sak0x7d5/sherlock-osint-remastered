@@ -4953,8 +4953,18 @@ async def test_the_pointer_button_draws_its_whole_label(size):
     app = SherlockUI()
     async with app.run_test(size=size) as pilot:
         await _open_profile_section(app, pilot)
-
+        # The pointer state is drawn when the RECORD arrives, after the list.
+        # Read before that, the button has no region and "draws" nothing --
+        # which looked like a clipped label and was only a slow read.
+        pane = app.query_one(ResultsPane)
         button = app.query_one("#profile-build", Button)
+        await _settle(
+            app,
+            pilot,
+            lambda: pane._record is not None and button.region.area > 0,
+        )
+        await _settle(app, pilot)
+
         drawn = " ".join(
             strip.text
             for strip in button.render_lines(
