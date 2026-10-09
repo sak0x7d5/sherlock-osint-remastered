@@ -205,6 +205,29 @@ KEY_MIN_DETAIL_WIDTH = 46
 # half the screen and left the record a link column three characters wide.
 NARROW_WIDTH = 100
 
+def _going_away(widget) -> bool:
+    """Whether this widget, or the app around it, is being taken down.
+
+    Checked broadly on purpose. Shutdown removes widgets in stages, so a pane
+    can still be attached and still have SOME children while the one a late
+    callback wants is already gone -- which is how a check on "has no
+    children" let a `#detail-header` NoMatches through on its way out.
+    """
+    try:
+        app = widget.app
+    except Exception:
+        # No active app at all: as gone as it gets.
+        return True
+    return bool(
+        widget._closing
+        or widget._closed
+        or getattr(widget, "_pruning", False)
+        or not widget.is_attached
+        or app._closing
+        or app._closed
+    )
+
+
 def _unless_torn_down(method):
     """Skip a late callback whose widgets are already gone.
 
@@ -220,8 +243,8 @@ def _unless_torn_down(method):
         try:
             return method(self, *args, **kwargs)
         except NoMatches:
-            if self.is_attached and self.children:
-                # Still mounted: a missing widget is a real bug, not teardown.
+            if not _going_away(self):
+                # Still live: a missing widget is a real bug, not teardown.
                 raise
             return None
 
@@ -276,6 +299,10 @@ class ResultsPane(Vertical):
         # A username to open once the list has loaded, when something sent us
         # here to look at one in particular.
         self._pending_selection: str | None = None
+        # Whether a list load is in flight, and whether another was asked for
+        # meanwhile. See `_request_load`.
+        self._loading = False
+        self._load_again = False
         # The username at the top of the list when it was last loaded, so a
         # reload can tell a freshly scanned name from a list that only shuffled.
         self._last_top: str | None = None
@@ -503,11 +530,33 @@ class ResultsPane(Vertical):
         # One timer for the pane; it costs an attribute check per tick when
         # nothing is building.
         self.set_interval(REDRAW_INTERVAL, self._tick_build_status)
-        self._load()
+        self._request_load()
 
     # -- loading ------------------------------------------------------------
 
     def action_reload(self) -> None:
+        self._request_load()
+
+    def _request_load(self) -> None:
+        """Load the list -- after the load already running, never instead of it.
+
+        `_load` used to be an exclusive worker, so every request CANCELLED the
+        one in flight. On a database that does not exist yet that one is
+        usually inside `connect()`, holding the write transaction that creates
+        the tables, and a cancellation there races its own cleanup against the
+        replacement's commit: "database is locked", measured at 6 in 60 runs of
+        a test that only opens the app and then the RESULTS tab -- which is
+        what every first launch does. The tab reloads on arrival and the pane
+        loads on mount, so the two always overlap at startup.
+
+        So requests that arrive mid-load coalesce into one follow-up load,
+        started when the current one finishes. Nothing is lost: the follow-up
+        reads the database as it is then, which is what the request wanted.
+        """
+        if self._loading:
+            self._load_again = True
+            return
+        self._loading = True
         self._load()
 
     def select_username(self, username: str) -> None:
@@ -518,16 +567,22 @@ class ResultsPane(Vertical):
         loader rather than looked up now and missed.
         """
         self._pending_selection = username
-        self._load()
+        self._request_load()
 
-    @work(exclusive=True, group="results-list")
+    @work(group="results-list")
     async def _load(self) -> None:
-        db = await SherlockDB.create(str(default_database_path()))
         try:
-            self._listings = await db.list_usernames()
+            db = await SherlockDB.create(str(default_database_path()))
+            try:
+                self._listings = await db.list_usernames()
+            finally:
+                await db.close()
+            self._fill_list()
         finally:
-            await db.close()
-        self._fill_list()
+            self._loading = False
+            if self._load_again:
+                self._load_again = False
+                self._request_load()
 
     @_unless_torn_down
     def _fill_list(self) -> None:

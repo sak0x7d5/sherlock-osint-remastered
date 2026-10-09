@@ -125,6 +125,13 @@ class SherlockUI(App[None]):
         # session, because the running process is still the old build and that
         # stays true until someone restarts it.
         self._update_installed = False
+        # True once the tab bar's own first activation has been applied. Until
+        # then a tab switch can be undone: the inner Tabs queue "SCAN is
+        # active" when they mount, and TabbedContent applies it a few frames
+        # later, over whatever was chosen in between. A key pressed in those
+        # frames -- which only a test is fast enough to do -- ran its action
+        # and then lost the tab anyway. Tests wait on this before pressing.
+        self.tabs_ready = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="appbar")
@@ -260,6 +267,7 @@ class SherlockUI(App[None]):
         `_reload_settings`: arriving at that tab is the moment its answer has to
         be current, whichever route was taken to get there.
         """
+        self.tabs_ready = True
         try:
             self._arrive_at(event)
         except NoMatches:

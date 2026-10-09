@@ -3223,11 +3223,14 @@ async def test_the_app_opens_on_scan_with_three_tabs():
         # showed -- the session-scoped browser fixture from the Playwright tests
         # is still alive on the same session-scoped event loop, so the pump has
         # company.
+        # Not before the tab bar has applied its own first activation, which
+        # lands a few frames after mount and would undo an earlier switch.
+        await _settle(app, pilot, lambda: app.tabs_ready)
         await pilot.press("alt+2")
-        await pilot.pause()
+        await _settle(app, pilot, lambda: tabs.active == "tab-results")
         assert tabs.active == "tab-results"
         await pilot.press("alt+3")
-        await pilot.pause()
+        await _settle(app, pilot, lambda: tabs.active == "tab-settings")
         assert tabs.active == "tab-settings"
 
 
@@ -4375,8 +4378,20 @@ async def _open_results(app, pilot) -> None:
     seven sites that open the PROFILE section; these are the rest, found when
     two of them failed on Windows for the same reason.
     """
-    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
-    await pilot.press("alt+2")
+    from textual.widgets import TabbedContent
+
+    await _settle(app, pilot, lambda: bool(app.query(ResultsPane)) and app.tabs_ready)
+    tabs = app.query_one(TabbedContent)
+    # Pressed until it ARRIVES. Even with the pane mounted, a key sent in the
+    # app's first ticks can be dropped, and every later assertion then ran
+    # against the SCAN tab -- focus in the username field, the results pane
+    # zero-sized, clicks landing on nothing.
+    for _ in range(5):
+        if tabs.active == "tab-results":
+            break
+        await pilot.press("alt+2")
+        await _settle(app, pilot, lambda: tabs.active == "tab-results", tries=10)
+    assert tabs.active == "tab-results", "RESULTS never opened"
     await _settle(app, pilot)
 
 
@@ -4485,8 +4500,7 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
 
     app = SherlockUI()
     async with app.run_test() as pilot:
-        await pilot.press("alt+2")
-        await _settle(app, pilot)
+        await _open_results(app, pilot)
 
         table = app.query_one("#username-list", DataTable)
         await _settle(app, pilot, lambda: table.row_count == 2)
@@ -4494,7 +4508,7 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
         selected = app.query_one(ResultsPane)._selected
 
         await pilot.press("delete")
-        await pilot.pause()
+        await _settle(app, pilot, lambda: isinstance(app.screen, ConfirmScreen))
         assert isinstance(app.screen, ConfirmScreen)
         await pilot.click("#confirm-yes")
         await _settle(app, pilot, lambda: table.row_count == 1)
@@ -4524,7 +4538,10 @@ async def _list_with(**rows):
     await _seed(**rows)
     app = SherlockUI()
     async with app.run_test(size=(110, 34)) as pilot:
-        await pilot.press("alt+2")
+        # Through `_open_results`, not a bare first-tick `alt+2`, which was
+        # sometimes dropped: the list still loaded behind the SCAN tab, so the
+        # wait below passed and every test using this ran on the wrong tab.
+        await _open_results(app, pilot)
         table = app.query_one("#username-list", DataTable)
         await _settle(app, pilot, lambda: table.row_count == len(rows))
         assert table.row_count == len(rows)
@@ -4534,8 +4551,19 @@ async def _list_with(**rows):
 async def _open_actions(app, pilot):
     from sherlock_project.tui.record_actions import RecordActionsScreen
 
+    # The chip appears with the RECORD, a second read after the list. Clicking
+    # before it arrives clicks nothing.
+    pane = app.query_one(ResultsPane)
+    await _settle(
+        app,
+        pilot,
+        lambda: pane._record is not None
+        and app.query_one("#record-actions").display
+        and app.query_one("#record-actions").region.area > 0,
+    )
+    await _settle(app, pilot)
     await pilot.click("#record-actions")
-    await pilot.pause()
+    await _settle(app, pilot, lambda: isinstance(app.screen, RecordActionsScreen))
     assert isinstance(app.screen, RecordActionsScreen)
     return app.screen
 
@@ -4543,10 +4571,18 @@ async def _open_actions(app, pilot):
 async def _choose(app, pilot, option_id: str) -> None:
     from textual.widgets import OptionList
 
-    menu = app.screen.query_one(OptionList)
+    menu_screen = app.screen
+    menu = menu_screen.query_one(OptionList)
     menu.highlighted = menu.get_option_index(option_id)
     await pilot.press("enter")
-    await pilot.pause()
+    if option_id == "delete":
+        # Dismissing the menu and pushing the confirmation are two steps; wait
+        # for the second, not just the first.
+        from sherlock_project.tui.confirm_screen import ConfirmScreen
+
+        await _settle(app, pilot, lambda: isinstance(app.screen, ConfirmScreen))
+    else:
+        await _settle(app, pilot, lambda: app.screen is not menu_screen)
 
 
 async def test_the_actions_menu_appears_with_a_record_and_not_before():
@@ -4565,7 +4601,12 @@ async def test_the_actions_menu_appears_with_a_record_and_not_before():
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
-    ) as (app, _table, _pilot):
+    ) as (app, _table, pilot):
+        # The menu arrives with the RECORD, which is a second read after the
+        # list -- waiting on the list alone raced it on a slow runner.
+        pane = app.query_one(ResultsPane)
+        await _settle(app, pilot, lambda: pane._record is not None)
+        await _settle(app, pilot)
         assert app.query_one("#record-actions", Button).display is True
 
 
@@ -4943,6 +4984,10 @@ async def test_the_pointer_button_stays_operable_by_mouse_and_keyboard():
     app = SherlockUI()
     async with app.run_test(size=(110, 34)) as pilot:
         await _open_profile_section(app, pilot)
+        pane = app.query_one(ResultsPane)
+        # The pointer state is drawn when the RECORD arrives, after the list.
+        await _settle(app, pilot, lambda: pane._record is not None)
+        await _settle(app, pilot)
 
         button = app.query_one("#profile-build", Button)
         assert button in app.screen.focus_chain
@@ -5667,14 +5712,20 @@ async def test_coming_back_to_results_keeps_your_place():
         table = app.query_one("#username-list", DataTable)
         await _settle(app, pilot, lambda: table.row_count == 3)
         table.focus()
-        await pilot.press("down", "down")
+        from textual.widgets import TabbedContent
+
+        tabs = app.query_one(TabbedContent)
         pane = app.query_one(ResultsPane)
-        chosen = pane._selected
+        await pilot.press("down", "down")
+        chosen = str(table.coordinate_to_cell_key((2, 0)).row_key.value)
         await _settle(app, pilot, lambda: pane._selected == chosen)
+        assert pane._selected == chosen
 
         await pilot.press("alt+1")
-        await _settle(app, pilot)
+        await _settle(app, pilot, lambda: tabs.active == "tab-scan")
         await pilot.press("alt+2")
+        await _settle(app, pilot, lambda: tabs.active == "tab-results")
+        await _settle(app, pilot, lambda: not pane._loading)
         await _settle(app, pilot)
         assert pane._selected == chosen
         assert table.cursor_row == 2
@@ -5693,9 +5744,14 @@ async def test_a_new_scan_at_the_top_is_opened_on_arrival():
         pane = app.query_one(ResultsPane)
         await _settle(app, pilot, lambda: pane._selected == "older")
 
+        from textual.widgets import TabbedContent
+
+        tabs = app.query_one(TabbedContent)
         await pilot.press("alt+1")
+        await _settle(app, pilot, lambda: tabs.active == "tab-scan")
         await _seed(newest=[("GitHub", QueryStatus.CLAIMED)])
         await pilot.press("alt+2")
+        await _settle(app, pilot, lambda: tabs.active == "tab-results")
         table = app.query_one("#username-list", DataTable)
         await _settle(app, pilot, lambda: table.row_count == 2)
         await _settle(app, pilot, lambda: pane._selected == "newest")
@@ -5891,6 +5947,7 @@ async def test_tab_keys_work_as_terminals_send_them(terminal, sequence, tab):
     app = SherlockUI()
     async with app.run_test() as pilot:
         await pilot.pause()
+        await _settle(app, pilot, lambda: app.tabs_ready)
         # The username field has focus on launch, which is the hard case: the
         # character must switch tabs rather than be typed into the field.
         assert isinstance(app.focused, Input)
