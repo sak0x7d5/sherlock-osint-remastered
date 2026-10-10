@@ -533,12 +533,7 @@ class ResultsPane(Vertical):
         # suppressed -- so the next key seemed to go nowhere.
         self.query_one("#detail-tabs", Tabs).can_focus = False
 
-        # Drawn once. The key is the app's vocabulary, not this record's, so
-        # nothing that happens to the data can change it. One line, beside the
-        # filter, on the one section whose table draws these symbols.
-        self.query_one("#sites-key", Static).update(
-            status_key(KEY_STATUSES, columns=len(KEY_STATUSES))
-        )
+        self._redraw_key()
         self._redraw_found_only()
         self._fit_keys()
 
@@ -574,6 +569,20 @@ class ResultsPane(Vertical):
 
     # -- loading ------------------------------------------------------------
 
+    def _redraw_key(self) -> None:
+        """The status key, beside the filter on the one section whose table
+        draws these symbols.
+
+        The app's vocabulary, not this record's, so no change to the DATA
+        redraws it -- which is exactly why a theme change must. Drawn only at
+        mount, it kept the first palette's colours while the rows under it took
+        the new one, and a key that disagrees with the column it explains is
+        the one thing `status_key` exists to prevent.
+        """
+        self.query_one("#sites-key", Static).update(
+            status_key(KEY_STATUSES, columns=len(KEY_STATUSES))
+        )
+
     def repaint(self) -> None:
         """Redraw the list and the open record in the current theme.
 
@@ -581,8 +590,10 @@ class ResultsPane(Vertical):
         spread across the list, the header, the sites table, the extractions
         and the profile card, and the reload already rebuilds every one of
         them -- this tab runs it on every visit, so it is the well-trodden
-        path rather than a second one written for a colour change.
+        path rather than a second one written for a colour change. The key is
+        not part of a record, so it is redrawn here on its own.
         """
+        self._redraw_key()
         self.action_reload()
 
     def action_reload(self) -> None:

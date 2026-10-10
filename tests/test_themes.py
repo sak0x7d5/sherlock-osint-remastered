@@ -36,6 +36,7 @@ from sherlock_project.tui.theme import (
 )
 from sherlock_project.tui.themes import (
     SHERLOCK_THEMES,
+    oklch,
     register_themes,
     resolve_theme,
 )
@@ -112,6 +113,64 @@ def test_amoled_themes_are_black():
         assert theme.background == theme.surface == "#000000", theme.name
 
 
+# -- colour harmony ---------------------------------------------------------------
+#
+# The rules the AMOLED palettes were derived from, in OKLCH. See the module
+# docstring of tui/themes.py for what broke before they existed.
+
+_AMOLED = [theme for theme in SHERLOCK_THEMES if theme.name.startswith("amoled")]
+
+
+def _hue_gap(first: float, second: float) -> float:
+    gap = abs(first - second) % 360
+    return min(gap, 360 - gap)
+
+
+def test_oklch_matches_known_values():
+    """Pure white and the sRGB primaries, against the published OKLCH values."""
+    lightness, chroma, _ = oklch("#FFFFFF")
+    assert round(lightness, 3) == 1.0 and chroma < 1e-3
+    lightness, chroma, hue = oklch("#FF0000")
+    assert (round(lightness, 2), round(chroma, 2), round(hue)) == (0.63, 0.26, 29)
+
+
+def test_the_three_statuses_carry_the_same_weight():
+    """Hue says which status; lightness must not make one shout over the rest.
+    Error was 0.22 darker than success before, and read as a different set."""
+    for theme in _AMOLED:
+        lightness = [oklch(colour)[0] for colour in (theme.success, theme.warning, theme.error)]
+        assert max(lightness) - min(lightness) <= 0.15, theme.name
+        assert all(0.70 <= value <= 0.90 for value in lightness), theme.name
+
+
+def test_the_accents_keep_clear_of_every_status_hue():
+    """An active control must never be mistaken for a finding. The first cut put
+    the violet theme's lime spinner 35 degrees from success green, so "still
+    working" read as "found"."""
+    for theme in _AMOLED:
+        for role in (theme.accent, theme.secondary):
+            _, chroma, hue = oklch(role)
+            if chroma < 0.03:
+                continue  # A grey has no hue to collide with.
+            for status in (theme.success, theme.warning, theme.error):
+                gap = _hue_gap(hue, oklch(status)[2])
+                assert gap >= 45, (theme.name, role, status, round(gap))
+
+
+def test_the_secondary_is_never_louder_than_the_accent():
+    for theme in _AMOLED:
+        assert oklch(theme.secondary)[0] <= oklch(theme.accent)[0], theme.name
+
+
+def test_the_selected_row_is_a_tint_not_the_accent():
+    """A solid accent bar put the green count of the selected row at a contrast
+    ratio near 1 -- the number vanished on the row being read."""
+    for theme in _AMOLED:
+        cursor = theme.variables["block-cursor-background"]
+        assert cursor.upper() != theme.accent.upper(), theme.name
+        assert oklch(cursor)[0] < 0.45, theme.name
+
+
 def test_reading_settings_does_not_import_textual():
     """Every CLI run loads the config. The theme names are in it, so they must
     not drag the UI toolkit in with them."""
@@ -153,8 +212,8 @@ async def test_tone_resolves_against_a_chosen_theme(tmp_path: Path):
         assert app.theme == "amoled"
         assert tone("bold accent") == "bold #00E5FF"
         assert tone("bold cyan") == "bold #00E5FF"
-        assert tone("secondary") == "#FF2BD6"
-        assert tone("success") == "#00FF9C"
+        assert tone("secondary") == "#FF76D8"
+        assert tone("success") == "#5CE483"
 
 
 async def test_the_default_theme_keeps_its_ansi_colours(tmp_path: Path):
@@ -191,7 +250,7 @@ async def test_a_theme_changes_colours_but_never_the_glyphs_or_words(
 
     assert before == after
     assert found_before == "bold green"
-    assert found_after == "bold #69F0AE"
+    assert found_after == "bold #5CE483"
 
 
 # -- the settings row -----------------------------------------------------------
@@ -308,3 +367,31 @@ async def test_the_command_palette_has_no_second_theme_picker(
 
     assert "Theme" not in titles
     assert "Quit" in titles
+
+
+async def test_switching_theme_repaints_the_status_key(tmp_path: Path, monkeypatch):
+    """The key above the sites table was drawn once, at mount, and kept that
+    theme's colours while the rows under it took the new one -- a key that
+    disagreed with the column it explains."""
+    from textual.widgets import Static
+
+    path = tmp_path / "config.toml"
+    _seed(path)
+    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
+    app = SherlockUI()
+
+    def key_found_colour() -> str:
+        rendered = app.query_one("#sites-key", Static).render()
+        return str(rendered.spans[0].style)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        before = key_found_colour()
+        app.theme = "amoled"
+        for _ in range(5):
+            await pilot.pause()
+        after = key_found_colour()
+
+    assert before != after
+    # #5CE483, the amoled success green, as Textual's Content reports it.
+    assert "rgb(92,228,131)" in after

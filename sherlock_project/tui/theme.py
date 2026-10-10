@@ -107,14 +107,31 @@ def _palette() -> dict[str, str] | None:
         return None
     if theme.name == DEFAULT_THEME:
         return None
-    # `theme_variables` rather than the Theme's own fields: the fields may be
-    # None, and the variables are what Textual derived for them -- the same
-    # colours the stylesheet's `$accent` and `$success` are painting.
-    variables = app.theme_variables
-    return {
-        role: variables.get(role) or getattr(theme, role, None) or ""
-        for role in _ROLE_FALLBACK
-    }
+    return _theme_palette(theme)
+
+
+# Keyed by the Theme object itself, which is frozen in practice: a theme is
+# registered once and never edited, and deriving its colour system is too much
+# work to repeat for every cell of every redraw.
+_PALETTES: dict[int, tuple[Any, dict[str, str]]] = {}
+
+
+def _theme_palette(theme: Any) -> dict[str, str]:
+    """The role colours Textual derives for one theme.
+
+    Derived from the THEME, not read off `app.theme_variables`. Those are the
+    stylesheet's copy and lag a switch by a refresh -- anything drawn in that
+    gap, the sites key on mount among them, picked up the previous theme's
+    colours and kept them. The theme's own fields can be None, which is why
+    this goes through the generated colour system rather than reading them.
+    """
+    cached = _PALETTES.get(id(theme))
+    if cached is not None and cached[0] is theme:
+        return cached[1]
+    generated = theme.to_color_system().generate()
+    palette = {role: generated.get(role, "") for role in _ROLE_FALLBACK}
+    _PALETTES[id(theme)] = (theme, palette)
+    return palette
 
 # Column widths, shared so the scan counters and the results summary agree.
 # A label column wide enough for the longest thing it must hold -- a checkbox and
