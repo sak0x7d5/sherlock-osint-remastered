@@ -532,7 +532,17 @@ def apply_values(
     if settings.ai is not None:
         if ai_changes:
             updates["ai"] = settings.ai.model_copy(update=ai_changes)
-    elif ai_changes:
+    elif any(
+        field_default(field) is NO_DEFAULT
+        or ai_changes[field.name] != field_default(field)
+        for field in SETTING_FIELDS
+        if field.section == "ai" and field.name in ai_changes
+    ):
+        # Only an AI value the user moved off its default counts as an edit.
+        # field_values() pre-fills the [ai] rows with their defaults, so
+        # without this check every save from an install with no [ai] section
+        # -- scan concurrency, NSFW, anything -- was refused for want of a
+        # model the user never asked to touch.
         # No [ai] section yet, which is every install that has not run
         # `setup ai`. These edits used to be dropped here in silence while the
         # save still reported success -- the worst possible outcome, because
