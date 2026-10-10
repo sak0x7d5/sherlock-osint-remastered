@@ -88,6 +88,7 @@ and shown above the button, so the safe default is also the visible one.
 
 from __future__ import annotations
 
+import asyncio
 import webbrowser
 from datetime import datetime
 from io import StringIO
@@ -161,6 +162,7 @@ from sherlock_project.tui.extraction_view import (
 )
 from sherlock_project.tui.reporter import TuiReporter
 from sherlock_project.tui.theme import (
+    PHASE_LABEL_WIDTH,
     REDRAW_INTERVAL,
     count_of,
     elapsed_label,
@@ -204,16 +206,6 @@ KEY_MIN_DETAIL_WIDTH = 46
 # picker over the detail (ctrl+l). At 80 columns the 37-cell list took almost
 # half the screen and left the record a link column three characters wide.
 NARROW_WIDTH = 100
-
-# Hover text for every control that sends someone to read stored pages. One
-# string, because there are two such buttons and they do the same thing.
-ANALYSE_TOOLTIP = (
-    "Analyse stored pages — no refetch\n\n"
-    "Loads this username on the SCAN tab with analysis on, where the stored "
-    "pages can be read without fetching them again. Nothing starts until you "
-    "press SCAN there."
-)
-
 
 def profile_has_facts(profile: Any) -> bool:
     """Whether a stored profile says anything about anyone."""
@@ -305,6 +297,7 @@ class ResultsPane(Vertical):
     BINDINGS: ClassVar = [
         Binding("f", "toggle_found_only", "found only"),
         Binding("b", "build_profile", "build"),
+        Binding("escape", "stop_build", "stop"),
         Binding("a", "edit_anchors", "anchors"),
         Binding("s", "toggle_sources", "sources"),
         Binding("v", "toggle_notes", "notes"),
@@ -481,11 +474,11 @@ class ResultsPane(Vertical):
                                 yield Button(
                                     "Anchors…", id="profile-anchors", classes="chip"
                                 )
-                                # Beside a built profile that left pages out:
-                                # reading them is the next step, so it sits
-                                # with the others rather than in a sentence.
+                                # The only control while a build runs, in the
+                                # row the others leave -- so the layout does not
+                                # jump, and the way out is where the way in was.
                                 yield Button(
-                                    "Analyse…", id="profile-analyse", classes="chip"
+                                    "■ Stop", id="profile-stop", classes="chip"
                                 )
                         yield Static(id="detail-profile")
 
@@ -1074,9 +1067,14 @@ class ResultsPane(Vertical):
             return (
                 record is not None
                 and self._section == SEC_PROFILE
-                and bool(self._extraction_count(record))
+                and bool(
+                    self._extraction_count(record)
+                    or record.get("pending_analysis")
+                )
                 and not self._building
             )
+        if action == "stop_build":
+            return self._building
         if action in ("record_actions", "export", "delete_username"):
             return self._selected is not None
         if action in ("next_section", "prev_section"):
@@ -1500,13 +1498,21 @@ class ResultsPane(Vertical):
         twice.
         """
         self._building = building
-        # `b` and `a` leave the footer while the work runs, with the buttons.
+        # `b` and `a` leave the footer while the work runs, and `esc stop`
+        # arrives in it.
         self.refresh_bindings()
-        self.query_one("#profile-buttons").display = not building
+        # The row stays; what is in it changes. Hiding the whole row left its
+        # height as a blank band under the status lines.
+        for selector in ("#profile-build", "#profile-anchors"):
+            self.query_one(selector).display = not building
+        self.query_one("#profile-stop").display = building
         status = self.query_one("#profile-status", Static)
         status.display = building
         if building:
             status.update(Text("Starting…", style="dim"))
+            self.query_one("#profile-stop").focus()
+        elif self.query_one("#profile-stop").has_focus:
+            self.query_one(f"#{SEC_PROFILE}").focus()
 
     def _tick_build_status(self) -> None:
         """Draw what the rebuild is doing, ten times a second.
@@ -1520,28 +1526,54 @@ class ResultsPane(Vertical):
             return
         self._build_tick += 1
 
-        text = Text()
-        for phase in reporter.phases:
-            text.append_text(
+        lines: list[Text] = [
+            phase_line(
+                phase.label, phase.state, elapsed=phase.elapsed,
+                tick=self._build_tick,
+            )
+            for phase in reporter.phases
+        ]
+        progress = reporter.analysis_progress
+        if progress is not None:
+            # Pass one over the leftover pages, before the merge.
+            done, total, failed = progress
+            reading = done < total
+            line = Text()
+            line.append(f"{'pages':<{PHASE_LABEL_WIDTH}}", style="dim")
+            line.append(
+                f"{spinner(self._build_tick) if reading else '●'} ",
+                style="bold cyan" if reading else "bold green",
+            )
+            line.append(f"{'reading' if reading else 'read'} {done}/{total}")
+            current = reporter.extraction
+            if reading and current is not None:
+                line.append(f" · {current.site_name}", style="dim")
+            if failed:
+                line.append(f" · {failed} failed", style="yellow")
+            lines.append(line)
+        synthesis = reporter.synthesis
+        if synthesis is not None:
+            lines.append(
                 phase_line(
-                    phase.label, phase.state, elapsed=phase.elapsed,
-                    tick=self._build_tick,
+                    synthesis.label, synthesis.state,
+                    elapsed=synthesis.elapsed, tick=self._build_tick,
                 )
             )
-            text.append("\n")
-        if not text.plain:
-            # No model needed -- an unanchored rebuild is a merge and never
-            # reaches a phase. Say something anyway; a blank line while working
-            # is the silence this replaced.
+        if not lines:
+            # No model needed -- an unanchored rebuild is a merge and may land
+            # before any phase reports. Say something anyway; a blank line
+            # while working is the silence this replaced.
             elapsed = perf_counter() - self._build_started
-            text.append(
-                f"{spinner(self._build_tick)} merging evidence  "
-                f"{elapsed_label(elapsed)}",
-                style="cyan",
+            lines.append(
+                Text(
+                    f"{spinner(self._build_tick)} merging evidence  "
+                    f"{elapsed_label(elapsed)}",
+                    style="cyan",
+                )
             )
-        notes = reporter.snapshot_log()
-        if notes:
-            text.append(notes[-1].plain.strip(), style="dim")
+        # Joined, not each followed by a newline: a trailing one drew an empty
+        # row between the last line and the Stop button.
+        text = Text("\n").join(lines)
         self.query_one("#profile-status", Static).update(text)
 
     def _seed_build_anchors(self, record: dict[str, Any]) -> None:
@@ -1566,6 +1598,10 @@ class ResultsPane(Vertical):
         if username == self._anchors_for:
             return
         self._anchors_for = username
+        # A "Stopped" or "Could not build" line belongs to the username it was
+        # about, not to the next one opened.
+        if not self._building:
+            self.query_one("#profile-status", Static).display = False
         profile = record.get("profile")
         stored = list(getattr(profile, "anchors", []) or [])
         self._build_anchors = stored
@@ -1601,8 +1637,6 @@ class ResultsPane(Vertical):
         build = self.query_one("#profile-build", Button)
         anchors = self.query_one("#profile-anchors", Button)
 
-        analyse = self.query_one("#profile-analyse", Button)
-
         profile = record.get("profile")
         # A profile with no facts in it is not a profile to show. It is what a
         # build over unusable evidence leaves behind, and treating it as one
@@ -1612,90 +1646,51 @@ class ResultsPane(Vertical):
         if not actions.display:
             return
         pending = int(record.get("pending_analysis") or 0)
-        analyse.display = False
 
         # Rebuilding pass 2 belongs HERE, beside the profile it replaces --
         # not on the scan tab, which scans nothing to do it, and not on a tab of
         # its own. The moment you want different anchors is the moment you are
         # looking at a profile that mixed two people together.
         evidence = self._extraction_count(record)
-        if not evidence:
-            # Nothing to merge. Say what is missing and what fixes it, rather
-            # than offering a button that would build an empty profile.
+        if not evidence and not pending:
+            # Nothing to merge and nothing left to read. Say so, and point at
+            # the one thing that can help, rather than offering a button that
+            # would build an empty profile.
             #
             # This control is a POINTER, not a commit: pressing it scans
             # nothing, it switches tabs and sets the scan up. Dressed as a
             # primary block it was indistinguishable from SCAN, which starts a
-            # 680-site run, and from `Build profile`, which can block for
-            # minutes on a cold model -- the app's own rule is that chrome
-            # weight tracks what a control commits, which is why the scan
-            # pane's toggles are flat. The class carries that rule here.
+            # 680-site run -- the app's own rule is that chrome weight tracks
+            # what a control commits. The class carries that rule here.
+            #
+            # Stored pages that have not been read are NOT this state any more:
+            # Build reads them first, here, so there is no trip to the scan tab
+            # for work that needs no network.
             actions.add_class(NO_EVIDENCE)
             actions.remove_class("-has-profile")
-            # Two different problems wearing one label until now. Pages are
-            # stored for every result whether or not analysis was on, so a
-            # username scanned without it is not missing evidence -- it is
-            # holding unread evidence, and reading it costs no network at all.
-            # Saying "scan again" there sent people to a 680-site refetch for
-            # work the stored pages already support.
-            if pending:
-                # Pages read under an older pass-one contract are pending too:
-                # synthesis will not use them. Said, because the EXTRACTIONS
-                # tab still lists them and "not analysed" would contradict it.
-                stale = sum(
-                    int(entry.get("count") or 0)
-                    for entry in (record.get("extraction_models") or [])
-                )
-                why = (
-                    "were read by an older version of the analysis, or not "
-                    "read at all"
-                    if stale
-                    else f"{'has' if pending == 1 else 'have'} not been analysed"
-                )
-                hint.update(
-                    Text.assemble(
-                        ("Nothing to build a profile from yet\n", "bold"),
+            hint.update(
+                Text.assemble(
+                    ("Nothing to build a profile from yet\n", "bold"),
+                    (
                         (
-                            (
-                                f"{count_of(pending, 'stored page')} {why}, so "
-                                f"there are no facts to merge. Analysing them "
-                                f"re-fetches nothing."
-                            ),
-                            "dim",
+                            "None of the stored pages gave any facts about "
+                            "this person. Scanning again with analysis on "
+                            "collects fresh ones."
                         ),
-                    )
+                        "dim",
+                    ),
                 )
-                build.label = f"▸ Analyse {count_of(pending, 'stored page')}"
-                # The stored-pages arm gets its own hover text, not the scan
-                # one: this button re-fetches nothing, and a tooltip promising a
-                # scan would describe the opposite of what pressing it does.
-                build.tooltip = ANALYSE_TOOLTIP
-            else:
-                # Genuinely nothing to work from: no confirmed accounts, or
-                # their pages came back empty. Here a scan really is the fix.
-                hint.update(
-                    Text.assemble(
-                        ("Nothing to build a profile from yet\n", "bold"),
-                        (
-                            (
-                                "None of the stored pages gave any facts about "
-                                "this person. Scanning again with analysis on "
-                                "collects fresh ones."
-                            ),
-                            "dim",
-                        ),
-                    )
-                )
-                # Named for where it goes and what it carries: pressing it opens
-                # the scan tab with this username and analysis already set, so
-                # the label promises the trip rather than a build that cannot
-                # happen.
-                build.label = "▸ Scan this username with analysis"
-                build.tooltip = (
-                    "Scan with analysis — no evidence stored\n\n"
-                    "Loads this username on the SCAN tab with analysis on. "
-                    "Nothing starts until you press SCAN there."
-                )
+            )
+            # Named for where it goes and what it carries: pressing it opens
+            # the scan tab with this username and analysis already set, so
+            # the label promises the trip rather than a build that cannot
+            # happen.
+            build.label = "▸ Scan this username with analysis"
+            build.tooltip = (
+                "Scan with analysis — no evidence stored\n\n"
+                "Loads this username on the SCAN tab with analysis on. "
+                "Nothing starts until you press SCAN there."
+            )
             anchors.display = False
             return
 
@@ -1718,22 +1713,16 @@ class ResultsPane(Vertical):
         # mechanism never changes, the state changes on every redraw.
         build.tooltip = (
             f"{'Rebuild' if has_profile else 'Build'} profile  (b)\n\n"
-            "Runs the second AI pass, merging the facts Pass 1 already "
-            "extracted into one profile. Reads stored evidence only — no site "
-            "is contacted and no page is fetched again."
+            "Reads any stored page not analysed yet, then merges every "
+            "extracted fact into one profile. Uses stored pages only — no site "
+            "is contacted and nothing is fetched again. Esc stops it."
         )
-        # Pages left unread are the commonest reason a profile is thin, and
-        # reading them is a button away -- so it is a button, not advice.
-        if pending:
-            analyse.display = True
-            analyse.label = f"Analyse {count_of(pending, 'more page')}…"
-            analyse.tooltip = ANALYSE_TOOLTIP
 
         # Labels changed above, and an auto-width button does not re-measure on
         # its own: "+ Add anchor…" becoming "Edit anchors (2)…" kept the old
         # width and lost its count off the end.
         self.query_one("#profile-buttons").refresh(layout=True)
-        for button in (build, anchors, analyse):
+        for button in (build, anchors):
             button.refresh(layout=True)
 
         if has_profile:
@@ -1742,21 +1731,47 @@ class ResultsPane(Vertical):
 
         card = Text()
         card.append("No profile yet. ", style="bold")
-        card.append(
-            f"{count_of(evidence, 'site')} gave facts that are ready to merge.\n\n"
-        )
+        if evidence:
+            card.append(
+                f"{count_of(evidence, 'site')} gave facts that are ready to "
+                "merge.\n\n"
+            )
+        else:
+            # Pages read under an older pass-one contract count as unread:
+            # synthesis will not use them. Said, because the EXTRACTIONS tab
+            # still lists them and "never analysed" would contradict it.
+            stale = sum(
+                int(entry.get("count") or 0)
+                for entry in (record.get("extraction_models") or [])
+            )
+            card.append(
+                "Its pages were read by an older version of the analysis, "
+                "so they need reading again.\n\n"
+                if stale
+                else "None of its stored pages has been analysed yet.\n\n"
+            )
         sources = [
             entry.site_name
             for entry in self._extraction_order
             if entry.fact_count
         ]
         card.append(f"{'EVIDENCE':<10}", style="dim")
-        if sources:
+        # Listed only when some of it is usable: with none, the sites on the
+        # EXTRACTIONS tab were read under an older contract and naming them
+        # here would offer them as evidence the merge will not use.
+        if sources and evidence:
             shown = ", ".join(sources[:4])
             more = f" and {len(sources) - 4} more" if len(sources) > 4 else ""
             card.append(f"{shown}{more}\n")
-        else:
+        elif evidence:
             card.append(f"{count_of(evidence, 'site')} analysed\n")
+        else:
+            card.append("none yet\n", style="dim")
+        if pending:
+            card.append(" " * 10)
+            card.append(
+                f"+ {count_of(pending, 'stored page')} to read first\n"
+            )
 
         # One anchor per line, field then value -- the shape the profile's own
         # ANCHORS table uses. A run of `a = b · c = d` reused the separator the
@@ -1772,23 +1787,27 @@ class ResultsPane(Vertical):
             card.append("none\n", style="dim")
 
         card.append(f"{'RESULT':<10}", style="dim")
+        # Pass one runs before pass two, as it does in a scan: the unread
+        # pages are read first, then everything is merged. That needs the
+        # model, so the cost is stated up front.
+        steps = "reads them, then " if pending else ""
         if self._build_anchors:
-            card.append("matched to your anchors · uses the model, slow on a cold start")
+            card.append(
+                f"{steps}matches to your anchors · uses the model, slow on a "
+                "cold start"
+            )
         else:
-            # The unanchored path needs no model at all: aggregate synthesis
-            # merges stored extractions and never calls one. Worth saying,
+            # The unanchored merge itself needs no model at all. Worth saying,
             # because "build a profile" otherwise reads as a slow operation --
             # and so is the cost of skipping anchors, in the same breath.
-            card.append("every site merged · instant, no model needed\n")
+            card.append(
+                f"{steps}merges every site · uses the model\n"
+                if pending
+                else "every site merged · instant, no model needed\n"
+            )
             card.append(
                 " " * 10 + "Without anchors it describes anyone using this name.",
                 style="yellow",
-            )
-        if pending:
-            card.append(
-                f"\n{' ' * 10}{count_of(pending, 'stored page')} not analysed "
-                f"yet — {'it' if pending == 1 else 'they'} will be left out.",
-                style="dim",
             )
         card.rstrip()
         hint.update(card)
@@ -1834,8 +1853,8 @@ class ResultsPane(Vertical):
         # What still stands between this and a finished profile, if anything.
         if pending:
             line.append(
-                f"\n{count_of(pending, 'stored page')} not analysed yet, so "
-                "this profile leaves them out.",
+                f"\n{count_of(pending, 'stored page')} not analysed yet — "
+                f"Rebuild reads {'it' if pending == 1 else 'them'} first.",
                 style="dim",
             )
         elif getattr(profile, "completeness", "") == "partial":
@@ -1899,11 +1918,19 @@ class ResultsPane(Vertical):
         """`b` on PROFILE: the build button, as a key."""
         self._build_profile()
 
-    @on(Button.Pressed, "#profile-analyse")
-    def _analyse_more(self) -> None:
-        record = self._record
-        if record is not None and record.get("known"):
-            self.post_message(self.ScanWithAnalysis(str(record["username"])))
+    @on(Button.Pressed, "#profile-stop")
+    def action_stop_build(self) -> None:
+        """Stop a build part way. The stored profile is left as it was.
+
+        Cancelling is safe at any point: a rebuild only clears the cache key
+        before it starts, never the profile, and the model this build started
+        is stopped by `run_synthesis_only`'s own cleanup on the way out.
+        """
+        if self._building:
+            self.workers.cancel_group(self, "results-build")
+            self.query_one("#profile-status", Static).update(
+                Text("Stopping…", style="dim")
+            )
 
     @on(Button.Pressed, "#profile-build")
     def _build_profile(self) -> None:
@@ -1912,7 +1939,9 @@ class ResultsPane(Vertical):
             return
         username = str(record["username"])
 
-        if not self._extraction_count(record):
+        if not self._extraction_count(record) and not record.get(
+            "pending_analysis"
+        ):
             # The button is the pointer, not the action: this pane cannot scan.
             self.post_message(self.ScanWithAnalysis(username))
             return
@@ -1960,7 +1989,21 @@ class ResultsPane(Vertical):
                 force=rebuild,
                 inline_anchors=list(self._build_anchors),
                 reporter=reporter,
+                # Pass one first, over any page not read yet -- the order a
+                # scan keeps. Merging without them built a profile that left
+                # pages out while saying "rebuilt".
+                analyse_pending=True,
             )
+        except asyncio.CancelledError:
+            # Stopped. Pages read before the stop keep their extractions, the
+            # profile is untouched, and the model was shut down on the way out.
+            self._set_building(False)
+            self.query_one("#profile-status", Static).update(
+                Text("Stopped. The stored profile was left as it was.", style="dim")
+            )
+            self.query_one("#profile-status", Static).display = True
+            self._reload_after_stop(username)
+            raise
         except Exception as error:
             # Broad on purpose, as everywhere else here: a failed synthesis
             # must not take the pane down with it.
@@ -1982,6 +2025,11 @@ class ResultsPane(Vertical):
         self._set_building(False)
         self.notify(f"Profile built for {username}.")
         self._select(username)
+
+    def _reload_after_stop(self, username: str) -> None:
+        """Re-read the record so pages read before the stop are counted."""
+        if not _going_away(self):
+            self.call_after_refresh(self._select, username)
 
     def _build_failed(self, error: BaseException) -> None:
         """Put the reason on screen and give the controls back to retry with.

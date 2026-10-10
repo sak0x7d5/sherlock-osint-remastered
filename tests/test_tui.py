@@ -4869,14 +4869,12 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
         assert "No profile stored" not in drawn
 
 
-async def test_stored_pages_offer_analysis_rather_than_another_scan():
-    """The other no-evidence state, and the one that used to be mislabelled.
+async def test_stored_pages_are_read_by_the_build_itself():
+    """Unread stored pages are not a reason to leave the pane any more.
 
-    Pages are stored for every result whether or not analysis was on, so a
-    username scanned without it is not missing evidence -- it is holding unread
-    evidence. Saying "scan again" there sent someone to a full re-fetch to
-    reach a pass that needs no network at all, and `View results` on the dialog
-    they landed on returned them right back to this pane.
+    It used to point at the SCAN tab to analyse them -- a trip for work that
+    needs no network. Build now reads them first, then merges, which is the
+    order a scan with analysis keeps; the card says so before you press it.
     """
     from textual.widgets import Button, Static
 
@@ -4887,19 +4885,17 @@ async def test_stored_pages_offer_analysis_rather_than_another_scan():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "3 stored pages have not been analysed" in hint
-        # The promise that distinguishes this from the scan it used to offer.
-        assert "re-fetches nothing" in hint
-        assert "Analyse 3 stored pages" in str(
-            app.query_one("#profile-build", Button).label
-        )
-        # Still a build that cannot happen yet, so still no anchors.
-        assert app.query_one("#profile-anchors", Button).display is False
-
+        assert "None of its stored pages has been analysed yet" in hint
+        assert "+ 3 stored pages to read first" in hint
+        assert "reads them, then merges" in hint
+        build = app.query_one("#profile-build", Button)
+        assert str(build.label) == "Build profile"
+        # A real build now, so anchors are worth offering.
+        assert app.query_one("#profile-anchors", Button).display is True
 
 async def test_one_stored_page_is_not_described_in_the_plural():
-    """"1 pages are stored" is how a careful tool looks careless."""
-    from textual.widgets import Button, Static
+    """"1 pages" is how a careful tool looks careless."""
+    from textual.widgets import Static
 
     await _results_with("single", unanalysed=1)
 
@@ -4908,11 +4904,7 @@ async def test_one_stored_page_is_not_described_in_the_plural():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "1 stored page has not been analysed" in hint
-        assert "Analyse 1 stored page" in str(
-            app.query_one("#profile-build", Button).label
-        )
-
+        assert "+ 1 stored page to read first" in hint
 
 async def test_the_pointer_state_does_not_stick_to_the_next_username():
     """The flat treatment is a state, not a setting.
@@ -5188,7 +5180,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_synthesis(*, usernames, force, inline_anchors, reporter=None):
+    async def slow_synthesis(*, usernames, force, inline_anchors, reporter=None, **_):
         started.set()
         if reporter is not None:
             reporter.ai_model_starting()
@@ -5214,9 +5206,10 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
         status = app.query_one("#profile-status", Static)
         assert status.display is True
         assert "model" in status.render().plain
-        # The buttons are gone, so a second press cannot start a competing
-        # synthesis over the same rows.
-        assert app.query_one("#profile-buttons").display is False
+        # Build is gone, so a second press cannot start a competing synthesis
+        # over the same rows -- and Stop has taken its place in the row.
+        assert app.query_one("#profile-build").display is False
+        assert app.query_one("#profile-stop").display is True
 
         release.set()
         for _ in range(20):
@@ -5231,7 +5224,7 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
 
     await _results_with("badbuild", extractions=1)
 
-    async def failing(*, usernames, force, inline_anchors, reporter=None):
+    async def failing(*, usernames, force, inline_anchors, reporter=None, **_):
         raise RuntimeError("LM Studio is not running")
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", failing)
@@ -5267,7 +5260,7 @@ async def test_a_synthesis_that_failed_is_not_announced_as_a_built_profile(
 
     await _results_with("quietfail", extractions=1)
 
-    async def failed_but_returned(*, usernames, force, inline_anchors, reporter=None):
+    async def failed_but_returned(*, usernames, force, inline_anchors, reporter=None, **_):
         return {usernames[0]: RuntimeError("the model returned nothing usable")}
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", failed_but_returned)
@@ -6178,11 +6171,13 @@ async def test_extractions_from_an_older_contract_are_not_offered_as_evidence():
         await _open_profile_section(app, pilot)
 
         hint = app.query_one("#profile-anchor-line", Static).render().plain
-        assert "Nothing to build a profile from yet" in hint
+        assert "No profile yet" in hint
         assert "older version of the analysis" in hint
-        assert "Analyse 4 stored pages" in str(
-            app.query_one("#profile-build", Button).label
-        )
+        # The stale sites are not offered as evidence...
+        assert "Site00" not in hint and "EVIDENCE  none yet" in hint
+        # ...and the build reads every page again before merging.
+        assert "+ 4 stored pages to read first" in hint
+        assert str(app.query_one("#profile-build", Button).label) == "Build profile"
         # The empty profile draws nothing -- above all, not its id list.
         body = str(app.query_one("#detail-profile", Static).render())
         assert "5000" not in body and "No profile facts" not in body
@@ -6211,10 +6206,8 @@ async def test_a_built_profile_is_described_in_words_not_field_values():
         for jargon in ("aggregate", "aggregated", "partial", "no_evidence"):
             assert jargon not in hint, jargon
         assert "Merged from every analysed site · no anchors" in hint
-        assert "3 stored pages not analysed yet" in hint
-        # And the way to finish it is a button beside Rebuild, not advice.
-        analyse = app.query_one("#profile-analyse", Button)
-        assert analyse.display and "Analyse 3 more pages" in str(analyse.label)
+        assert "3 stored pages not analysed yet — Rebuild reads them first." in hint
+        assert str(app.query_one("#profile-build", Button).label) == "Rebuild profile"
 
 
 async def test_anchors_edited_after_a_build_say_they_are_not_applied_yet():
@@ -6309,3 +6302,84 @@ async def test_adding_an_anchor_selects_it_instead_of_announcing_it():
         status = screen.query_one("#anchor-status", Static)
         assert status.display is False
         assert screen.query_one("#anchor-list", DataTable).cursor_row == 1
+
+
+async def test_a_running_build_can_be_stopped(monkeypatch):
+    """There was no way out of a build once started -- a cold model load has
+    been measured at 187s. Stop sits where Build was, and Esc does the same."""
+    import asyncio
+
+    from textual.widgets import Button, Static
+
+    from sherlock_project import sherlock as sherlock_module
+
+    await _results_with("stoppable", extractions=2)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def endless(**kwargs):
+        started.set()
+        kwargs["reporter"].ai_model_starting()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(sherlock_module, "run_synthesis_only", endless)
+
+    app = SherlockUI()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_profile_section(app, pilot)
+        await pilot.click("#profile-build")
+        # Not `_settle`: it waits for workers to finish, and this one never
+        # does until it is stopped.
+        for _ in range(50):
+            await pilot.pause(0.02)
+            if started.is_set():
+                break
+        assert started.is_set()
+
+        stop = app.query_one("#profile-stop", Button)
+        assert stop.display is True
+        assert app.query_one("#profile-build", Button).display is False
+
+        await pilot.press("escape")
+        for _ in range(50):
+            await pilot.pause(0.02)
+            if cancelled.is_set() and not app.query_one(ResultsPane)._building:
+                break
+        assert cancelled.is_set()
+
+        assert stop.display is False
+        assert app.query_one("#profile-build", Button).display is True
+        assert "Stopped" in str(app.query_one("#profile-status", Static).render())
+
+
+async def test_the_build_status_leaves_no_blank_band():
+    """Each phase line used to end in a newline, and the status carried a
+    padding row below it, so a blank band sat between the progress and the
+    rule. The lines are joined; the Stop row brings its own gap."""
+    from textual.widgets import Static
+
+    from sherlock_project.tui.reporter import TuiReporter
+
+    await _results_with("tidy", extractions=2)
+    app = SherlockUI()
+    async with app.run_test(size=(120, 36)) as pilot:
+        await _open_profile_section(app, pilot)
+        pane = app.query_one(ResultsPane)
+        reporter = TuiReporter()
+        reporter.ai_model_starting()
+        pane._build_reporter = reporter
+        pane._set_building(True)
+        pane._tick_build_status()
+        await pilot.pause()
+
+        status = app.query_one("#profile-status", Static)
+        text = str(status.render())
+        assert not text.endswith("\n")
+        # One blank row above (separating it from the card), none below.
+        assert status.styles.padding.bottom == 0
+        pane._build_reporter = None
+        pane._set_building(False)

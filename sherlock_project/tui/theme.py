@@ -999,7 +999,10 @@ ResultsPane.-narrow.-picking #result-detail { display: none; }
    viewer the rest of the time. */
 #profile-actions { height: auto; padding: 0; }
 #profile-anchor-line { height: auto; padding: 0; }
-#profile-status { height: auto; padding: 0 0 1 0; }
+/* Shown only while a build runs (or just after one stopped or failed). A blank
+   line above, setting it off from the card; none below, where the button row
+   brings its own. */
+#profile-status { height: auto; padding: 1 0 0 0; }
 #profile-buttons {
     height: auto;
     width: 100%;
@@ -1014,8 +1017,8 @@ ResultsPane.-narrow.-picking #result-detail { display: none; }
    the chips read as a third line of the status sentence. */
 #profile-actions.-has-profile #profile-buttons { margin: 1 0 0 0; }
 #profile-actions.-has-profile #profile-build { margin: 0 2 0 0; }
-#profile-analyse { margin: 1 0 0 0; }
-#profile-actions.-has-profile #profile-analyse { margin: 0; }
+/* Alone in the button row while a build runs. */
+#profile-stop { margin: 0; display: none; }
 #profile-actions.-has-profile { padding: 0 0 1 0; border-bottom: solid $panel-lighten-2; margin: 0 0 1 0; }
 
 /* The POINTER state: no stored evidence, so the only thing on offer is a trip
