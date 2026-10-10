@@ -47,6 +47,7 @@ from sherlock_project.ai_config import (
     AISettings,
 )
 from sherlock_project.ai_rate_limit import RequestRateLimiter, backoff_delay
+from sherlock_project.ai_secrets import resolve_api_key
 
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 600.0
@@ -793,9 +794,13 @@ class OpenAICompatibleProvider:
     ) -> None:
         self.settings = settings
         self.preset = cloud_preset(settings)
-        environment = os.environ if environ is None else environ
         self.api_key_env = settings.api_key_env or self.preset.api_key_env
-        key = api_key if api_key is not None else environment.get(self.api_key_env)
+        if api_key is not None:
+            key: str | None = api_key
+        else:
+            key, _ = resolve_api_key(
+                self.preset.name, self.api_key_env, environ
+            )
         self._api_key = key.strip() if key else None
         headers = (
             {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
@@ -829,9 +834,9 @@ class OpenAICompatibleProvider:
     def _require_key(self) -> None:
         if not self._api_key:
             raise AIProviderAuthenticationError(
-                f"No API key for {self.preset.label}. Set the "
-                f"{self.api_key_env} environment variable "
-                f"(get one at {self.preset.key_url})."
+                f"No API key for {self.preset.label}. Paste one on the "
+                f"SETTINGS tab, or set the {self.api_key_env} environment "
+                f"variable (get one at {self.preset.key_url})."
             )
 
     async def _send(
@@ -1116,6 +1121,23 @@ class OpenAICompatibleProvider:
         self._closed = True
         if self._owns_client:
             await self._client.aclose()
+
+
+# Substrings of model ids that cannot answer a chat request: embedding, image,
+# video and speech models share the same listing.
+_NON_CHAT_MODEL_MARKERS = ("embedding", "imagen", "veo", "tts", "aqa", "image")
+
+
+def chat_models(models: list[AIModelInfo]) -> list[AIModelInfo]:
+    """The models in a hosted listing that can run Pass 1 and Pass 2."""
+    return sorted(
+        (
+            model
+            for model in models
+            if not any(marker in model.key for marker in _NON_CHAT_MODEL_MARKERS)
+        ),
+        key=lambda model: model.key,
+    )
 
 
 def create_provider(settings: AISettings) -> AIProvider:

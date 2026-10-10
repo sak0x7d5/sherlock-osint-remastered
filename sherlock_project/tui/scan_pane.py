@@ -41,8 +41,10 @@ from textual.message import Message
 from textual.widgets import Button, DataTable, Input, RichLog, Static
 from textual.worker import Worker, WorkerState
 
+from sherlock_project.ai_config import CLOUD_PROVIDERS
 from sherlock_project.profile_synthesis import IdentityAnchor
 from sherlock_project.result import QueryStatus
+from sherlock_project.settings import PROVIDER_LABELS
 from sherlock_project.tui.anchor_screen import AnchorScreen
 from sherlock_project.tui.reporter import (
     Finding,
@@ -1026,8 +1028,21 @@ class ScanPane(Vertical):
         # the same grammar the live counters use, so two settings that cannot
         # change during a run looked exactly like numbers that were moving.
         detail: list[str] = []
+        provider = values.get("ai.provider") or "llamacpp"
+        hosted = provider in CLOUD_PROVIDERS
+        if hosted:
+            # Said where the run is watched, not only where it was configured:
+            # this is the one setting that decides whether the pages being read
+            # leave the machine.
+            text.append("\n")
+            text.append(
+                f"{PROVIDER_LABELS.get(provider, provider)} (cloud) · pages sent",
+                style="yellow",
+            )
         context = values.get("ai.context_length")
-        if context:
+        # The context window is llama-server's launch setting; a hosted
+        # model's is its own and far larger, so the number would mislead.
+        if context and not hosted:
             detail.append(f"{context} ctx")
         temperature = values.get("ai.temperature")
         if temperature is not None:

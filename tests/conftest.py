@@ -2,6 +2,9 @@ import json
 import os
 import urllib
 
+import keyring
+import keyring.backend
+import keyring.errors
 import pytest
 import pytest_asyncio
 import requests
@@ -92,6 +95,42 @@ def no_real_llama_server(monkeypatch):
     # for the TUI picker.
     for module in (sherlock_module, ai_setup_module, settings_pane_module):
         monkeypatch.setattr(module, "ManagedLlamaServer", _StubServer)
+
+
+class MemoryKeyring(keyring.backend.KeyringBackend):
+    """A credential store that lives and dies with one test."""
+
+    priority = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.passwords: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, username):
+        return self.passwords.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.passwords[(service, username)] = password
+
+    def delete_password(self, service, username):
+        if self.passwords.pop((service, username), None) is None:
+            raise keyring.errors.PasswordDeleteError(username)
+
+
+@pytest.fixture(autouse=True)
+def memory_keychain():
+    """Every test gets an empty, private keychain -- never the developer's.
+
+    Same reasoning as `isolated_user_state`. A real keychain would make a
+    missing-key test pass or fail by what the developer happened to store, and
+    a test that stores a key would write it into their Credential Manager for
+    good. Tests that need "no keychain at all" swap in the fail backend.
+    """
+    previous = keyring.get_keyring()
+    store = MemoryKeyring()
+    keyring.set_keyring(store)
+    yield store
+    keyring.set_keyring(previous)
 
 
 # DEFAULTS TO FALSE, AND THE DEFAULT IS THE POINT. `honor_exclusions=True`

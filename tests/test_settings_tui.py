@@ -145,7 +145,9 @@ async def test_the_help_line_describes_whatever_row_the_cursor_is_on(
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
-        assert "llama-server runs whatever GGUF" in _help_text(app)
+        # The provider row leads the list, because it decides what every AI
+        # row under it means.
+        assert "Nothing leaves the machine" in _help_text(app)
 
         for _ in range(_index_of("scan.timeout")):
             await pilot.press("down")

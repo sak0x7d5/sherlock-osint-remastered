@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from sherlock_project.ai_config import (
+    CLOUD_PROVIDERS,
     DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     OutputSettings,
@@ -172,7 +173,10 @@ def resolve_runtime_settings(
 # "folder" is "text" that knows it is a path: same stored value, but the TUI
 # opens a browser on it instead of a blank input, because nobody should have
 # to type an absolute path from memory to use an optional feature.
-FieldKind = Literal["spin", "toggle", "text", "folder", "model"]
+# "secret" is a value that is never stored in the config file or shown: the
+# row reports only WHERE it comes from, and the screen hands it to the OS
+# keychain the moment it is entered (see ai_secrets.py).
+FieldKind = Literal["spin", "toggle", "text", "folder", "model", "secret"]
 
 # A field this build ships no value for. Distinct from None, which IS the
 # shipped value of `scan.proxy` -- "no proxy" is an answer, while "no model"
@@ -228,19 +232,55 @@ class SettingField:
     # "unload after 0 min" reads as "immediately" and means the exact opposite,
     # so the sentinel is spelled out rather than shown as a number.
     zero_label: str = ""
+    # Words for a spinner's values, when the stored value is an identifier
+    # nobody should have to read: `llamacpp` is a config token, "local" is
+    # what it means.
+    value_labels: tuple[tuple[Any, str], ...] = ()
+    # The AI providers this row means anything for. None is every provider.
+    # A row outside its providers is still drawn -- rows appearing and
+    # vanishing would make the cursor jump -- but dimmed, and it refuses edits.
+    providers: frozenset[str] | None = None
+    # False for a row whose value never reaches the config file. Only the API
+    # key: `field_values` and `apply_values` skip it, so it cannot leak into
+    # `AISettings` however the screen is driven.
+    persisted: bool = True
 
     @property
     def key(self) -> str:
         return f"{self.section}.{self.name}"
 
 
+LOCAL_PROVIDERS = frozenset({"llamacpp"})
+HOSTED_PROVIDERS = frozenset(CLOUD_PROVIDERS)
+PROVIDER_LABELS: dict[str, str] = {"llamacpp": "local", "gemini": "Gemini"}
+
 SETTING_FIELDS: tuple[SettingField, ...] = (
+    # First, because it decides what every row under it means.
+    SettingField(
+        "ai", "provider", "provider", "spin",
+        ("llamacpp", "gemini"),
+        value_labels=tuple(PROVIDER_LABELS.items()),
+    ),
     SettingField("ai", "model", "model", "model"),
+    SettingField(
+        "ai", "api_key", "API key", "secret",
+        default=None,
+        providers=HOSTED_PROVIDERS,
+        persisted=False,
+    ),
     SettingField(
         "ai", "base_url", "endpoint", "text",
         default=DEFAULT_LLAMACPP_BASE_URL,
     ),
-    SettingField("ai", "models_dir", "models folder", "folder"),
+    SettingField(
+        "ai", "models_dir", "models folder", "folder",
+        providers=LOCAL_PROVIDERS,
+    ),
+    SettingField(
+        "ai", "requests_per_minute", "requests/min", "spin",
+        (5, 10, 15, 30, 60, 120, 300, 1000),
+        providers=HOSTED_PROVIDERS,
+    ),
     SettingField(
         "ai", "temperature", "temperature", "spin",
         tuple(round(step / 10, 1) for step in range(11)),
@@ -248,6 +288,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField(
         "ai", "context_length", "context length", "spin",
         (2048, 4096, 8192, 16384, 32768, 65536, 131072),
+        providers=LOCAL_PROVIDERS,
     ),
     # `ai.unload_after_minutes` used to sit here. It is gone with LM Studio:
     # llama-server neither loads nor unloads, so the row would have offered a
@@ -293,6 +334,9 @@ def field_values(settings: SherlockSettings) -> dict[str, Any]:
     """
     values: dict[str, Any] = {}
     for field in SETTING_FIELDS:
+        if not field.persisted:
+            values[field.key] = None
+            continue
         section = getattr(settings, field.section, None)
         if section is not None:
             values[field.key] = getattr(section, field.name, None)
@@ -362,7 +406,30 @@ def field_note(field: SettingField, value: Any) -> FieldFlag:
         if value:
             return FieldFlag("slower; accurate")
         return FieldFlag("faster; inaccurate", warning=True)
+    # The other genuine trade on this screen, labelled on both sides for the
+    # same reason: "stays on this machine" is what says local was a choice.
+    if field.key == "ai.provider":
+        if value in HOSTED_PROVIDERS:
+            return FieldFlag("sends pages to Google", warning=True)
+        return FieldFlag("stays on this machine")
     return FieldFlag()
+
+
+def current_provider(values: Mapping[str, Any]) -> str:
+    return values.get("ai.provider") or "llamacpp"
+
+
+def field_applies(field: SettingField, values: Mapping[str, Any]) -> bool:
+    """Whether a row means anything for the provider currently chosen."""
+    return field.providers is None or current_provider(values) in field.providers
+
+
+def inapplicable_note(field: SettingField, values: Mapping[str, Any]) -> FieldFlag:
+    """The dim label on a row the chosen provider does not use."""
+    if field_applies(field, values):
+        return FieldFlag()
+    provider = current_provider(values)
+    return FieldFlag(f"not used by {PROVIDER_LABELS.get(provider, provider)}")
 
 
 def field_description(field: SettingField, value: Any) -> str:
@@ -401,6 +468,18 @@ def field_description(field: SettingField, value: Any) -> str:
             "rendering) arrive as an empty shell, and some refuse a plain "
             "request outright -- so a real account can be reported as absent."
         )
+    if field.key == "ai.provider":
+        if value in HOSTED_PROVIDERS:
+            return (
+                "Google Gemini reads the pages. The text of every profile page "
+                "found -- other people's profiles -- is sent to Google, and on "
+                "the free tier Google may use it to improve its products. "
+                "Requests are paced under the free tier's limit."
+            )
+        return (
+            "A model on this machine reads the pages, through llama-server. "
+            "Nothing leaves the machine but the requests to the sites checked."
+        )
     return _STATIC_DESCRIPTIONS.get(field.key, "")
 
 
@@ -409,13 +488,24 @@ def field_description(field: SettingField, value: Any) -> str:
 # than growing a paragraph per row.
 _STATIC_DESCRIPTIONS: dict[str, str] = {
     "ai.model": (
-        "Which local model produced a result, recorded against extractions. "
-        "llama-server runs whatever GGUF it was started with, so this reports "
-        "rather than chooses -- to change model, restart the server."
+        "Which model reads the pages, recorded against every extraction so a "
+        "result always names what produced it. Enter lists the models the "
+        "chosen provider offers."
+    ),
+    "ai.api_key": (
+        "Your Gemini API key (https://aistudio.google.com/apikey). Stored in "
+        "this computer's own keychain the moment you enter it -- never in the "
+        "config file, never shown again. A GEMINI_API_KEY environment variable "
+        "takes precedence. Submit an empty value to remove a stored key."
+    ),
+    "ai.requests_per_minute": (
+        "A ceiling the requests are paced under, so a free tier answers "
+        "instead of refusing. Raise it only if your plan allows more."
     ),
     "ai.base_url": (
-        "Where llama-server is listening. The LLAMA_SERVER_BASE_URL "
-        "environment variable overrides this for a single run."
+        "Where the model is reached: llama-server's address for local, the "
+        "provider's API for a hosted one. LLAMA_SERVER_BASE_URL overrides the "
+        "local endpoint for a single run."
     ),
     "ai.models_dir": (
         "Folder holding your models, one directory per model. Sherlock starts "
@@ -470,6 +560,9 @@ def value_label(field: SettingField, value: Any) -> str:
     Returns `str(value)` untouched for every field that declares neither, which
     is all of them but one.
     """
+    for candidate, label in field.value_labels:
+        if value == candidate:
+            return label
     if field.zero_label and value == 0 and not isinstance(value, bool):
         return field.zero_label
     if field.unit and value is not None and value != "":
@@ -526,10 +619,21 @@ def apply_values(
         field.name: values[field.key]
         for field in SETTING_FIELDS
         if field.section == "ai"
+        and field.persisted
         and field.key in values
         and values[field.key] is not None
     }
     if settings.ai is not None:
+        # A model name belongs to its provider. Switching provider without
+        # picking a model would otherwise save the local GGUF's name against
+        # Gemini, and the first scan would fail on it.
+        if (
+            ai_changes.get("provider", settings.ai.provider) != settings.ai.provider
+            and values.get("ai.model") is None
+        ):
+            raise IncompleteSettingsError(
+                "AI needs a model for the new provider before it can be saved"
+            )
         if ai_changes:
             updates["ai"] = settings.ai.model_copy(update=ai_changes)
     elif ai_changes:

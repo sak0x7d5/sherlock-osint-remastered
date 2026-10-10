@@ -234,12 +234,14 @@ longer trust is identifiable rather than silently mixed in.
 ### Hosted models (Gemini)
 
 No GPU, or want a larger model than yours can hold? Gemini can do both passes
-instead of `llama-server`:
+instead of `llama-server`. Get a key at <https://aistudio.google.com/apikey>,
+then either:
 
-```bash
-export GEMINI_API_KEY=...        # from https://aistudio.google.com/apikey
-sherlock-rm setup ai --provider gemini
-```
+- **In the UI:** `sherlock-rm ui` → **SETTINGS** → set **provider** to Gemini
+  (it asks you to confirm what that sends), paste the key into **API key**, and
+  pick a model — the picker doubles as a check that the key works. ^S saves.
+- **From the command line:** `sherlock-rm setup ai --provider gemini`, which
+  asks for the key if it cannot find one.
 
 What that trades away, plainly:
 
@@ -251,8 +253,12 @@ What that trades away, plainly:
   (`--requests-per-minute` changes it). When the day's quota runs out, the run
   stops asking, says so, and leaves the remaining sites pending; the next run
   picks them up from the database.
-- **The key is never stored.** The config file records only the *name* of the
-  environment variable to read it from (`--api-key-env`).
+- **The key never touches the config file.** A key you paste goes to your
+  operating system's own credential store — Windows Credential Manager, the
+  macOS Keychain, or the Secret Service on a Linux desktop — and is never shown
+  again. A `GEMINI_API_KEY` environment variable takes precedence over a stored
+  key; on machines with no credential store (Docker, headless servers) the
+  variable is the only way. Paste an empty key to remove a stored one.
 
 **Anchored Pass 2 runs differently on a hosted model.** Locally it asks about
 one site at a time, because a small model cannot hold many at once. On Gemini

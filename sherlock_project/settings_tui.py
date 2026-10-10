@@ -26,11 +26,16 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer
 
 from sherlock_project.ai_config import ai_config_path, try_load_settings
+from sherlock_project.ai_provider import CLOUD_PRESETS
+from sherlock_project.ai_secrets import describe_key_source
 from sherlock_project.settings import (
     SETTING_FIELDS,
+    current_provider,
+    field_applies,
     field_description,
     field_note,
     field_values,
+    inapplicable_note,
 )
 from sherlock_project.tui.settings_pane import (
     LABEL_WIDTH,
@@ -126,9 +131,19 @@ def _print_settings(
             section = field.section
             console.print(f"[bold]{SECTION_TITLES[section]}[/bold]")
         value = values[field.key]
-        shown = plain_value(field, value)
+        if not field_applies(field, values):
+            shown = "—"
+            note = inapplicable_note(field, values)
+        elif field.kind == "secret":
+            # The source, never the key. `plain_value` would say "not set" for
+            # a key that is sitting in the keychain or the environment.
+            preset = CLOUD_PRESETS[current_provider(values)]
+            shown = describe_key_source(preset.name, preset.api_key_env)
+            note = field_note(field, value)
+        else:
+            shown = plain_value(field, value)
+            note = field_note(field, value)
         line = Text(f"  {field.label:>15}: ", style="dim").append(Text(shown))
-        note = field_note(field, value)
         if note:
             line.append(
                 Text(f"  {note.text}", style="yellow" if note.warning else "dim")

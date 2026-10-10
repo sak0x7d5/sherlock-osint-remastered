@@ -75,6 +75,10 @@ pydantic = "^2.13.4"
 tomli-w = "^1.2.0"
 trafilatura = "^2.1.0"
 textual = "^8.2.8"
+# A hosted provider's API key, typed into the UI, goes to the OS credential
+# store (Windows Credential Manager, macOS Keychain, Secret Service) -- never
+# to config.toml. See sherlock_project/ai_secrets.py.
+keyring = "^25.0.0"
 
 [tool.poetry.group.dev.dependencies]
 jsonschema = "^4.0.0"

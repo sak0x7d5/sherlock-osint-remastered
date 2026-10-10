@@ -44,15 +44,30 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Static
 
 from sherlock_project.ai_config import (
+    DEFAULT_LLAMACPP_BASE_URL,
     AIConfigError,
+    AISettings,
     ai_config_path,
     save_settings,
     try_load_settings,
 )
 from sherlock_project.ai_provider import (
+    CLOUD_PRESETS,
     AIModelInfo,
+    AIProviderAuthenticationError,
     AIProviderError,
     LlamaCppProvider,
+    OpenAICompatibleProvider,
+    chat_models,
+)
+from sherlock_project.ai_secrets import (
+    delete_api_key,
+    describe_key_source,
+    keychain_available,
+    keychain_label,
+    no_keychain_message,
+    resolve_api_key,
+    store_api_key,
 )
 from sherlock_project.database import default_database_path
 from sherlock_project.llama_server import (
@@ -62,17 +77,22 @@ from sherlock_project.llama_server import (
 )
 from sherlock_project.settings import (
     NO_DEFAULT,
+    PROVIDER_LABELS,
     SETTING_FIELDS,
     IncompleteSettingsError,
     SettingField,
     apply_values,
     field_default,
+    current_provider,
+    field_applies,
     field_description,
     field_note,
     field_values,
+    inapplicable_note,
     step_value,
     value_label,
 )
+from sherlock_project.tui.confirm_screen import ConfirmScreen
 
 SECTION_TITLES = {
     "ai": "AI",
@@ -145,15 +165,18 @@ class TextEditScreen(ModalScreen[str | None]):
 
     BINDINGS: ClassVar = [Binding("escape", "cancel", "cancel")]
 
-    def __init__(self, label: str, value: str) -> None:
+    def __init__(self, label: str, value: str, *, password: bool = False) -> None:
         super().__init__()
         self._label = label
         self._value = value
+        # Masked as typed, for a secret. Pasting a key into a visible box puts
+        # it on screen for anyone behind you and in any screen recording.
+        self._password = password
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(f"Set {self._label}")
-            yield Input(value=self._value, id="edit")
+            yield Input(value=self._value, id="edit", password=self._password)
             yield Label("⏎ accept    esc cancel", classes="dim")
 
     def on_mount(self) -> None:
@@ -471,6 +494,83 @@ class ModelPickerScreen(ModalScreen[ModelChoice]):
         self.dismiss(ModelChoice(model=None, models_dir=self._models_dir))
 
 
+class CloudModelPickerScreen(ModalScreen[ModelChoice]):
+    """Enter on `model` with a hosted provider: what the key can use.
+
+    The local picker's job -- start a server, read a folder -- does not exist
+    here. What does is the one question a hosted setup has to answer before a
+    scan wastes a run on it: does this key work? Listing models is that check,
+    so the status line says "key rejected" or "no key" in the place someone
+    is already looking, rather than on the first site of the next scan.
+    """
+
+    BINDINGS: ClassVar = [
+        Binding("escape", "cancel", "cancel"),
+        Binding("ctrl+r", "reload", "refresh"),
+    ]
+
+    def __init__(self, settings: AISettings, current: str | None = None) -> None:
+        super().__init__()
+        self._settings = settings
+        self._current = current
+
+    def compose(self) -> ComposeResult:
+        label = CLOUD_PRESETS[self._settings.provider].label
+        with Vertical(id="dialog"):
+            yield Label(f"Choose a {label} model", classes="dialog-title")
+            yield Static("Checking the key...", id="picker-status")
+            yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
+            yield Label("▸ will be used", classes="dim")
+            yield Label("up/down move   enter select   ^R refresh   esc cancel",
+                        classes="dim")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#models", DataTable)
+        table.add_column("", key="mark", width=2)
+        table.add_column("model", key="model")
+        self.run_worker(self._load(), exclusive=True)
+
+    async def _load(self) -> None:
+        status = self.query_one("#picker-status", Static)
+        table = self.query_one("#models", DataTable)
+        table.clear()
+        provider = OpenAICompatibleProvider(self._settings)
+        try:
+            models = chat_models(await provider.list_models())
+        except AIProviderAuthenticationError as error:
+            status.update(f"Key problem: {error}")
+            return
+        except AIProviderError as error:
+            status.update(str(error))
+            return
+        finally:
+            await provider.close()
+
+        for model in models:
+            table.add_row(
+                Text("▸" if model.key == self._current else " ", style="bold cyan"),
+                model.key,
+                key=model.key,
+            )
+        for index, model in enumerate(models):
+            if model.key == self._current:
+                table.move_cursor(row=index)
+                break
+        status.update(f"Key works. {len(models)} models available.")
+        table.focus()
+
+    def action_reload(self) -> None:
+        self.query_one("#picker-status", Static).update("Checking the key...")
+        self.run_worker(self._load(), exclusive=True)
+
+    @on(DataTable.RowSelected)
+    def choose(self, event: DataTable.RowSelected) -> None:
+        self.dismiss(ModelChoice(model=event.row_key.value))
+
+    def action_cancel(self) -> None:
+        self.dismiss(ModelChoice(model=None))
+
+
 class SettingsPane(Vertical):
     """The settings rows, the help line, and the paths block.
 
@@ -516,6 +616,7 @@ class SettingsPane(Vertical):
         self._saved = dict(self._values)
         self._cursor = 0
         self._status = ""
+        self._key_status_cache: dict[tuple[str, str], str] = {}
 
     @property
     def dirty(self) -> bool:
@@ -579,14 +680,33 @@ class SettingsPane(Vertical):
                 f"{field.label:<{LABEL_WIDTH}}",
                 style="none" if selected else "dim",
             )
-            line.append_text(styled_value(field, self._values[field.key]))
-            if field.kind in {"text", "model"}:
+            applies = field_applies(field, self._values)
+            if field.kind == "secret":
+                shown = Text(
+                    self._key_status() if applies else "—",
+                    style="bold" if applies else "dim",
+                )
+                shown.pad_right(max(0, VALUE_WIDTH - shown.cell_len))
+                line.append_text(shown)
+            elif applies:
+                line.append_text(styled_value(field, self._values[field.key]))
+            else:
+                # Drawn, so the layout does not jump when the provider
+                # changes, but plainly not in play.
+                shown = Text(render_value(field, self._values[field.key]), style="dim")
+                shown.pad_right(max(0, VALUE_WIDTH - shown.cell_len))
+                line.append_text(shown)
+            if applies and field.kind in {"text", "model", "secret"}:
                 line.append("⏎ change", style="dim")
             # The trade, kept terse. It has to survive the cursor being
             # elsewhere, which is exactly when a warning gets missed -- the
             # prose lives on the help line below. Both sides of the choice are
             # labelled, but only the risky one is coloured like a warning.
-            note = field_note(field, self._values[field.key])
+            note = (
+                field_note(field, self._values[field.key])
+                if applies
+                else inapplicable_note(field, self._values)
+            )
             if note:
                 if note.warning:
                     tone = "yellow" if selected else "dim yellow"
@@ -621,9 +741,23 @@ class SettingsPane(Vertical):
         self._status = ""
         self._redraw()
 
+    def _refuse_inapplicable(self, field: SettingField) -> bool:
+        if field_applies(field, self._values):
+            return False
+        self._status = (
+            f"{field.label} is {inapplicable_note(field, self._values).text}."
+        )
+        self._redraw()
+        return True
+
     def action_step(self, delta: int) -> None:
         field = SETTING_FIELDS[self._cursor]
+        if self._refuse_inapplicable(field):
+            return
         current = self._values[field.key]
+        if field.key == "ai.provider":
+            self._change_provider(step_value(field, current or "llamacpp", delta))
+            return
         if current is None:
             self._status = f"{field.label} is unset — press ⏎ to set it"
         else:
@@ -633,17 +767,21 @@ class SettingsPane(Vertical):
 
     def action_edit(self) -> None:
         field = SETTING_FIELDS[self._cursor]
-        if field.kind == "model":
-            # The picker drives a local llama-server. Pointed at a hosted
-            # provider it would try to start one against Google's URL.
-            stored_ai = self._stored.ai
-            if stored_ai is not None and stored_ai.is_cloud:
-                self._status = (
-                    f"Configured for {stored_ai.provider} -- change its model "
-                    f"with `sherlock-rm setup ai --provider {stored_ai.provider}`."
-                )
-                self._redraw()
+        if self._refuse_inapplicable(field):
+            return
+        if field.kind == "secret":
+            self._edit_api_key()
+            return
+        if field.kind == "model" and current_provider(self._values) in CLOUD_PRESETS:
+            settings = self._provisional_cloud_settings()
+            if settings is None:
                 return
+            self.app.push_screen(
+                CloudModelPickerScreen(settings, current=self._values.get("ai.model")),
+                self._accept_model_choice,
+            )
+            return
+        if field.kind == "model":
             endpoint = self._values.get("ai.base_url")
             if not endpoint:
                 self._status = "Set the endpoint first."
@@ -673,6 +811,182 @@ class SettingsPane(Vertical):
             )
             return
         self.action_step(1)
+
+    # -- hosted providers ------------------------------------------------
+
+    def _preset(self):
+        return CLOUD_PRESETS.get(current_provider(self._values))
+
+    def _key_env_name(self) -> str:
+        preset = self._preset()
+        stored = self._stored.ai
+        if stored is not None and stored.provider == current_provider(self._values):
+            if stored.api_key_env:
+                return stored.api_key_env
+        return preset.api_key_env if preset is not None else ""
+
+    def _key_status(self) -> str:
+        """Where the key comes from, cached per provider.
+
+        Cached because the row redraws on every keypress, and a Secret Service
+        lookup is a D-Bus round trip. Invalidated wherever the answer can
+        change: a key stored, a key removed.
+        """
+        preset = self._preset()
+        if preset is None:
+            return "—"
+        env_name = self._key_env_name()
+        cache_key = (preset.name, env_name)
+        if cache_key not in self._key_status_cache:
+            self._key_status_cache[cache_key] = describe_key_source(
+                preset.name, env_name
+            )
+        return self._key_status_cache[cache_key]
+
+    def _provisional_cloud_settings(self) -> AISettings | None:
+        """Settings from the rows as they stand, saved or not, for the picker."""
+        preset = self._preset()
+        try:
+            return AISettings(
+                provider=preset.name,
+                base_url=self._values.get("ai.base_url") or preset.base_url,
+                model=self._values.get("ai.model") or "listing",
+                api_key_env=self._key_env_name(),
+                requests_per_minute=self._values.get("ai.requests_per_minute"),
+            )
+        except ValueError as error:
+            self._status = f"Endpoint is not usable: {error}"
+            self._redraw()
+            return None
+
+    def _change_provider(self, provider: str) -> None:
+        """Switch provider, asking first when the switch sends pages away.
+
+        The confirmation is the point at which "nothing leaves your machine"
+        stops being true, so it is a dialog someone has to answer, not a note
+        they might not read.
+        """
+        previous = current_provider(self._values)
+        if provider == previous:
+            return
+        preset = CLOUD_PRESETS.get(provider)
+        if preset is None:
+            self._apply_provider(provider)
+            return
+
+        def answered(confirmed: bool | None) -> None:
+            if confirmed:
+                self._apply_provider(provider)
+            else:
+                self._status = (
+                    f"Still {PROVIDER_LABELS.get(previous, previous)}; "
+                    "nothing changed."
+                )
+                self._redraw()
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Use {preset.label}?",
+                preset.privacy_note
+                + "\n\nThe local model stays configured; switch back here "
+                "at any time.",
+                confirm_label=f"Use {preset.label}",
+            ),
+            answered,
+        )
+
+    def _apply_provider(self, provider: str) -> None:
+        previous = current_provider(self._values)
+        old_preset = CLOUD_PRESETS.get(previous)
+        new_preset = CLOUD_PRESETS.get(provider)
+        old_default = old_preset.base_url if old_preset else DEFAULT_LLAMACPP_BASE_URL
+        new_default = new_preset.base_url if new_preset else DEFAULT_LLAMACPP_BASE_URL
+        self._values["ai.provider"] = provider
+        # The endpoint follows the provider only while it is still the old
+        # provider's default. One the user typed is theirs, and stays.
+        if self._values.get("ai.base_url") in (None, "", old_default):
+            self._values["ai.base_url"] = new_default
+        # A model name means nothing to the other provider.
+        stored = self._stored.ai
+        self._values["ai.model"] = (
+            stored.model if stored is not None and stored.provider == provider else None
+        )
+        if new_preset is not None and self._values.get("ai.requests_per_minute") is None:
+            self._values["ai.requests_per_minute"] = new_preset.requests_per_minute
+        self._status = (
+            f"{new_preset.label}: set an API key and pick a model, then ^S."
+            if new_preset is not None
+            else "Local model: pick a model, then ^S."
+        )
+        self._redraw()
+
+    def _edit_api_key(self) -> None:
+        """Take a key and hand it to the OS keychain immediately.
+
+        Immediately, not on ^S: the key is not part of the config file, and
+        holding it as unsaved pane state would keep a secret in memory for no
+        reason, and lose it on Esc. The status line says where it went.
+        """
+        preset = self._preset()
+        env_name = self._key_env_name()
+        if not keychain_available():
+            self._status = no_keychain_message(env_name)
+            self._redraw()
+            return
+
+        def entered(key: str | None) -> None:
+            if key is None:
+                self._redraw()
+                return
+            if not key:
+                self._confirm_key_removal()
+                return
+            self._key_status_cache.clear()
+            try:
+                store_api_key(preset.name, key, env_name=env_name)
+            except AIConfigError as error:
+                self._status = str(error)
+            else:
+                _, source = resolve_api_key(preset.name, env_name)
+                self._status = f"Key saved to {keychain_label()}." + (
+                    f" ${env_name} is also set and takes precedence."
+                    if source == "env"
+                    else ""
+                )
+            self._redraw()
+
+        self.app.push_screen(
+            TextEditScreen(f"{preset.label} API key", "", password=True),
+            entered,
+        )
+
+    def _confirm_key_removal(self) -> None:
+        preset = self._preset()
+
+        def answered(confirmed: bool | None) -> None:
+            if confirmed:
+                self._key_status_cache.clear()
+                try:
+                    removed = delete_api_key(preset.name)
+                except AIConfigError as error:
+                    self._status = str(error)
+                else:
+                    self._status = (
+                        f"Key removed from {keychain_label()}."
+                        if removed
+                        else "No key was stored."
+                    )
+            self._redraw()
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Remove the stored {preset.label} key?",
+                f"It is deleted from {keychain_label()}. A "
+                f"${self._key_env_name()} environment variable is not affected.",
+                confirm_label="Remove",
+            ),
+            answered,
+        )
 
     def _accept(self, field: SettingField, value: Any) -> None:
         if value is not None or field.kind == "text":

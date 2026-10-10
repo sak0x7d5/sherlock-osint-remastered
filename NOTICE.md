@@ -72,7 +72,9 @@ None of the following exists upstream:
   `synthesis_pipeline.py`, `investigation_context.py`).
 - A local AI provider integration and its setup flow (`ai_provider.py`,
   `ai_config.py`, `ai_setup.py`), plus an opt-in hosted provider (Gemini) and
-  its client-side pacing (`ai_rate_limit.py`).
+  its client-side pacing (`ai_rate_limit.py`). A hosted provider's API key is
+  kept in the OS credential store through the third-party `keyring` package
+  (MIT), never in the config file (`ai_secrets.py`).
 - The `rich`-based terminal reporter (`notify.py`).
 
 ## Services still consumed from upstream

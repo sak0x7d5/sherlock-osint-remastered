@@ -893,6 +893,30 @@ async def test_the_model_is_named_before_a_scan_rather_than_after():
         assert "unsloth" not in rendered
 
 
+async def test_a_hosted_model_says_on_the_scan_tab_that_pages_leave():
+    """Configured in SETTINGS, but the scan tab is where the run is watched,
+    and whether pages leave the machine belongs in front of the investigator."""
+    app = SherlockUI()
+    async with app.run_test() as pilot:
+        pane = app.query_one(ScanPane)
+        pane._settings_values.update(
+            {
+                "ai.provider": "gemini",
+                "ai.model": "gemini-2.5-flash",
+                "ai.context_length": 8192,
+                "ai.temperature": 0.1,
+            }
+        )
+        await pilot.click("#toggle-ai")
+        await pilot.pause()
+        rendered = _model_block(app)
+        assert "gemini-2.5-flash" in rendered
+        assert "Gemini (cloud)" in rendered
+        assert "pages sent" in rendered
+        # llama-server's launch window means nothing for a hosted model.
+        assert "ctx" not in rendered
+
+
 async def test_analysis_without_a_model_says_where_to_set_one():
     """The empty state teaches, exactly like the empty anchors list. This is
     precisely the moment someone needs telling: analysis is on and cannot run."""

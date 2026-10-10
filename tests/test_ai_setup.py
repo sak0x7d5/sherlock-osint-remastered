@@ -571,3 +571,43 @@ async def test_gemini_setup_failure_leaves_existing_config(
     assert result == 2
     assert load_ai_settings(path=path, environ={}).provider == "llamacpp"
     assert "no key" in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_gemini_setup_stores_a_pasted_key_in_the_keychain(
+    tmp_path: Path, cloud_provider, monkeypatch, memory_keychain
+):
+    monkeypatch.setattr(ai_setup.getpass, "getpass", lambda prompt: " AIza-pasted ")
+    path = tmp_path / "config.toml"
+    console, output = _console()
+    result = await ai_setup.run_ai_setup(
+        ["--provider", "gemini", "--model", "gemini-2.5-flash", "--no-color"],
+        environ={},
+        config_path=path,
+        console=console,
+        stdin_isatty=True,
+    )
+    assert result == 0
+    assert memory_keychain.passwords[("sherlock-rm", "gemini")] == "AIza-pasted"
+    assert "AIza-pasted" not in path.read_text(encoding="utf-8")
+    assert "AIza-pasted" not in output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_gemini_setup_never_prompts_when_a_variable_holds_the_key(
+    tmp_path: Path, cloud_provider, monkeypatch
+):
+    def forbidden(prompt):  # pragma: no cover
+        raise AssertionError("must not prompt for a key already set")
+
+    monkeypatch.setattr(ai_setup.getpass, "getpass", forbidden)
+    console, output = _console()
+    result = await ai_setup.run_ai_setup(
+        ["--provider", "gemini", "--model", "gemini-2.5-flash", "--no-color"],
+        environ={"GEMINI_API_KEY": "from-env"},
+        config_path=tmp_path / "config.toml",
+        console=console,
+        stdin_isatty=True,
+    )
+    assert result == 0
+    assert "$GEMINI_API_KEY" in output.getvalue()

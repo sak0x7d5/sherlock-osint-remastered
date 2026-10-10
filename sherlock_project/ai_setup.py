@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import os
 import sys
 from argparse import ArgumentParser
@@ -29,6 +30,15 @@ from sherlock_project.ai_provider import (
     AIProviderError,
     LlamaCppProvider,
     OpenAICompatibleProvider,
+    chat_models,
+)
+from sherlock_project.ai_secrets import (
+    describe_key_source,
+    keychain_available,
+    keychain_label,
+    no_keychain_message,
+    resolve_api_key,
+    store_api_key,
 )
 from sherlock_project.llama_server import LlamaServerError, ManagedLlamaServer
 
@@ -336,10 +346,12 @@ def _report_settings(
         *(
             (
                 (
-                    "api key from",
-                    "$" + (
+                    "api key",
+                    describe_key_source(
+                        settings.provider,
                         settings.api_key_env
-                        or CLOUD_PRESETS[settings.provider].api_key_env
+                        or CLOUD_PRESETS[settings.provider].api_key_env,
+                        environ,
                     ),
                 ),
                 (
@@ -619,6 +631,23 @@ async def _run_cloud_setup(
     # point where the README's "nothing leaves your machine" stops being true.
     output.print(f"[yellow]\\[!] {preset.privacy_note}[/yellow]")
 
+    env_name = provisional.api_key_env or preset.api_key_env
+    _, key_source = resolve_api_key(preset.name, env_name, environ)
+    if key_source is None and not interactive:
+        output.print(
+            f"[yellow]\\[!] No API key found. Set {env_name}, or paste one on "
+            "the SETTINGS tab of `sherlock-rm ui`.[/yellow]"
+        )
+    elif key_source is None:
+        if not _offer_to_store_key(
+            preset_name=preset.name,
+            label=preset.label,
+            key_url=preset.key_url,
+            env_name=env_name,
+            console=output,
+        ):
+            return 2
+
     provider = OpenAICompatibleProvider(provisional, environ=environ)
     try:
         models = await provider.list_models()
@@ -630,19 +659,11 @@ async def _run_cloud_setup(
 
     # The listing includes embedding, image and speech models that cannot
     # answer a chat request; offering them would only produce a failed scan.
-    models = [
-        model
-        for model in models
-        if not any(
-            marker in model.key
-            for marker in ("embedding", "imagen", "veo", "tts", "aqa", "image")
-        )
-    ]
+    models = chat_models(models)
     if not models:
         output.print(f"[red]\\[x] {preset.label} offered no chat models to this key.[/red]")
         return 2
 
-    models.sort(key=lambda model: model.key)
     selected = _select_model(
         parser=parser,
         models=models,
@@ -664,8 +685,9 @@ async def _run_cloud_setup(
     )
     output.print(
         Text(
-            f"Key read from ${settings.api_key_env or preset.api_key_env} at run "
-            f"time; pacing at {settings.requests_per_minute or preset.requests_per_minute} "
+            "API key "
+            + describe_key_source(preset.name, env_name, environ)
+            + f"; pacing at {settings.requests_per_minute or preset.requests_per_minute} "
             "requests a minute.",
             style="dim",
         ),
@@ -673,3 +695,38 @@ async def _run_cloud_setup(
     )
     output.print(Text(str(saved_to), style="dim"), soft_wrap=True)
     return 0
+
+
+def _offer_to_store_key(
+    *,
+    preset_name: str,
+    label: str,
+    key_url: str,
+    env_name: str,
+    console: Console,
+) -> bool:
+    """Ask for a key once and put it in the OS keychain. False to give up.
+
+    `getpass`, so the key is not echoed to the terminal or its scrollback.
+    Only reached interactively: a script has the environment variable.
+    """
+    if not keychain_available():
+        console.print(f"[yellow]\\[!] {no_keychain_message(env_name)}[/yellow]")
+        console.print(f"Get a key at {key_url}, export it, and run this again.")
+        return False
+    console.print(f"No {label} API key found. Get one at {key_url}")
+    try:
+        key = getpass.getpass(
+            f"Paste API key (stored in {keychain_label()}, blank to give up): "
+        ).strip()
+    except EOFError:
+        return False
+    if not key:
+        return False
+    try:
+        store_api_key(preset_name, key, env_name=env_name)
+    except AIConfigError as error:
+        console.print(f"[red]\\[x] {error}[/red]")
+        return False
+    console.print(f"[green][+] Key stored in {keychain_label()}.[/green]")
+    return True
