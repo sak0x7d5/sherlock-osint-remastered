@@ -29,6 +29,10 @@ The settings screen already learned this -- see LABEL_WIDTH there.
 terminal's own light/dark theme; `#00ff00` does not, and turns unreadable on a
 light background. Textual resolves these per theme, which is why the settings
 screen uses them and this does too.
+
+The Rich styles built in Python -- every `Text` on these screens -- cannot
+name a `$token`, so they name a ROLE instead and `tone()` resolves it against
+whichever theme is active. See `tone` for why the default theme is exempt.
 """
 
 from __future__ import annotations
@@ -38,8 +42,79 @@ from dataclasses import dataclass
 from typing import Any
 
 from rich.text import Text
+from textual import active_app
 
 from sherlock_project.result import QueryStatus
+from sherlock_project.tui.themes import DEFAULT_THEME
+
+# Role -> the ANSI colour the default theme has always drawn it in. Doubles as
+# the fallback wherever there is no app to ask, so a style string means the
+# same thing in a unit test as it did before themes existed.
+_ROLE_FALLBACK: dict[str, str] = {
+    "accent": "cyan",
+    "secondary": "cyan",
+    "success": "green",
+    "warning": "yellow",
+    "error": "red",
+}
+
+# The ANSI names older call sites still pass -- `stat_row(..., "green")` -- read
+# as the role they have always stood for.
+_ANSI_ROLE: dict[str, str] = {
+    "cyan": "accent",
+    "green": "success",
+    "yellow": "warning",
+    "red": "error",
+}
+
+
+def tone(style: str) -> str:
+    """A Rich style with its colour resolved against the active theme.
+
+    `tone("bold accent")` is `"bold #00E5FF"` under `amoled` and `"bold cyan"`
+    under the default. Words that are neither a role nor one of the four ANSI
+    names above -- `bold`, `dim`, `italic`, a hex -- pass through untouched.
+
+    THE DEFAULT THEME IS EXEMPT, deliberately. Mapped through its palette,
+    `cyan` would become amber and the wordmark, the progress bar and every
+    spinner would change colour for people who never touched the setting. The
+    default resolves to exactly the ANSI colours it always drew, so choosing a
+    theme is the only thing that changes how the screen looks.
+
+    Outside a running app -- a unit test building a row -- there is no theme
+    to ask, and the fallback is the same as the default's. A palette missing a
+    role falls back the same way: a display problem must never raise.
+    """
+    palette = _palette()
+    words = []
+    for word in style.split():
+        role = word if word in _ROLE_FALLBACK else _ANSI_ROLE.get(word)
+        if role is None:
+            words.append(word)
+        elif palette is None:
+            words.append(_ROLE_FALLBACK[role])
+        else:
+            words.append(palette.get(role) or _ROLE_FALLBACK[role])
+    return " ".join(words)
+
+
+def _palette() -> dict[str, str] | None:
+    """The active theme's role colours, or None to draw the classic ANSI ones."""
+    try:
+        app = active_app.get()
+        theme = app.current_theme
+    except Exception:
+        return None
+    if theme.name == DEFAULT_THEME:
+        return None
+    # `theme_variables` rather than the Theme's own fields: the fields may be
+    # None, and the variables are what Textual derived for them -- the same
+    # colours the stylesheet's `$accent` and `$success` are painting.
+    variables = app.theme_variables
+    return {
+        role: variables.get(role) or getattr(theme, role, None) or ""
+        for role in _ROLE_FALLBACK
+    }
 
 # Column widths, shared so the scan counters and the results summary agree.
 # A label column wide enough for the longest thing it must hold -- a checkbox and
@@ -67,7 +142,9 @@ class StatusStyle:
     """
 
     glyph: str
-    style: str
+    # A role, not a colour -- read through `style`, which resolves it against
+    # the active theme at the moment the cell is drawn.
+    role_style: str
     label: str
     # Whether the feed shows this kind of result before anyone touches the
     # filter. Only hits do. Everything else is kept -- every result is retained
@@ -76,14 +153,22 @@ class StatusStyle:
     # 680-site scan starting, which is what the default is protecting.
     default_visible: bool
 
+    @property
+    def style(self) -> str:
+        return tone(self.role_style)
+
 
 STATUS_STYLES: dict[QueryStatus, StatusStyle] = {
-    QueryStatus.CLAIMED: StatusStyle("●", "bold green", "found", default_visible=True),
+    QueryStatus.CLAIMED: StatusStyle(
+        "●", "bold success", "found", default_visible=True
+    ),
     QueryStatus.AVAILABLE: StatusStyle("·", "dim", "absent", default_visible=False),
     QueryStatus.UNKNOWN: StatusStyle(
-        "?", "yellow", "inconclusive", default_visible=False
+        "?", "warning", "inconclusive", default_visible=False
     ),
-    QueryStatus.WAF: StatusStyle("▲", "bold yellow", "blocked", default_visible=False),
+    QueryStatus.WAF: StatusStyle(
+        "▲", "bold warning", "blocked", default_visible=False
+    ),
     QueryStatus.ILLEGAL: StatusStyle(
         "✕", "dim italic", "rejected", default_visible=False
     ),
@@ -251,6 +336,7 @@ def stat_row(
     # otherwise make the width negative and `format` would stop padding.
     indent = max(0, min(indent, STAT_LABEL_WIDTH - 1))
     line = Text()
+    style = tone(style)
     base = "dim" if muted else ""
     number = "dim" if muted else style
     room = STAT_LABEL_WIDTH - indent
@@ -287,7 +373,7 @@ def value_row(
     room = max(0, STAT_LABEL_WIDTH + STAT_VALUE_WIDTH - len(value) - 1)
     line = Text()
     line.append(f"{_elide(label, room):<{room}} ", style="dim" if muted else "")
-    line.append(value, style="dim" if muted else style)
+    line.append(value, style="dim" if muted else tone(style))
     return line
 
 
@@ -368,17 +454,17 @@ def phase_line(
     # Keyed on the word that is actually printed, so the state a caller passes
     # and the state a reader sees cannot drift apart.
     glyph, glyph_style, word_style = {
-        "loading": (spinner(tick), "bold cyan", "none"),
+        "loading": (spinner(tick), tone("bold secondary"), "none"),
         # Same animation as loading, because it is the same answer to the same
         # question -- "is this still moving" -- for a step that is fetching
         # rather than starting. It is a separate word only because the two take
         # very different amounts of time and saying which one you are waiting
         # on is the difference between patience and a killed process.
-        "installing": (spinner(tick), "bold cyan", "none"),
-        "building": (spinner(tick), "bold cyan", "none"),
-        "ready": ("●", "bold green", "green"),
-        "cached": ("●", "green", "dim"),
-        "failed": ("✕", "bold red", "red"),
+        "installing": (spinner(tick), tone("bold secondary"), "none"),
+        "building": (spinner(tick), tone("bold secondary"), "none"),
+        "ready": ("●", tone("bold success"), tone("success")),
+        "cached": ("●", tone("success"), "dim"),
+        "failed": ("✕", tone("bold error"), tone("error")),
         "waiting": ("·", "dim", "dim"),
     }.get(state, ("·", "dim", "dim"))
 
@@ -477,7 +563,7 @@ def progress_bar(completed: int, total: int, width: int) -> Text:
     width = max(0, width)
     filled = 0 if total <= 0 else min(width, round(width * completed / total))
     bar = Text()
-    bar.append("━" * filled, style="bold cyan")
+    bar.append("━" * filled, style=tone("bold accent"))
     bar.append("─" * (width - filled), style="dim")
     return bar
 

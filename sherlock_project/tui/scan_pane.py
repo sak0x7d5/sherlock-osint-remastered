@@ -67,6 +67,7 @@ from sherlock_project.tui.theme import (
     status_cell,
     status_style,
     throughput_label,
+    tone,
     value_row,
 )
 
@@ -470,6 +471,23 @@ class ScanPane(Vertical):
         self._settings_values = values
         self._redraw_options()
 
+    def repaint(self) -> None:
+        """Redraw everything on the pane that carries a colour.
+
+        For a theme change. Most of the pane repaints itself on the next tick
+        anyway, but not all of it: the feed's rows are drawn once, as they
+        arrive, and a finished scan stops redrawing at all (see `_flush`) -- so
+        without this the table and the final counters would keep the old
+        palette under the new one until the next scan.
+        """
+        self._rebuild_feed()
+        self._redraw_options()
+        reporter = self._reporter
+        if reporter is not None:
+            self._redraw_startup(reporter)
+            self._redraw_progress(reporter.completed, reporter.total)
+        self._redraw_synthesis(reporter)
+
     def _redraw_options(self) -> None:
         """Draw the two per-run toggles and the stored-settings line.
 
@@ -774,7 +792,7 @@ class ScanPane(Vertical):
             # thing a live-looking label must not do is outlive the activity it
             # describes.
             title.append("  scanning " if self._scan_running else "  ", style="dim")
-            title.append(self._scan_username, style="cyan")
+            title.append(self._scan_username, style=tone("accent"))
         if set(self._visible) != set(STATUS_ORDER):
             title.append(f"   showing {', '.join(shown)}", style="dim")
         self.query_one("#feed-title", Static).update(title)
@@ -974,10 +992,10 @@ class ScanPane(Vertical):
             return
 
         lines = Text()
-        lines.append_text(stat_row("extracted", stats.completed, "cyan"))
+        lines.append_text(stat_row("extracted", stats.completed, "accent"))
         lines.append("\n")
         lines.append_text(
-            stat_row("with facts", stats.with_facts, "green", indent=2)
+            stat_row("with facts", stats.with_facts, "success", indent=2)
         )
         lines.append("\n")
         # Dimmed, like `absent` above it and for the same reason: a page that
@@ -999,7 +1017,7 @@ class ScanPane(Vertical):
             stat_row(
                 "failed",
                 stats.pending,
-                "yellow" if stats.pending else "dim",
+                "warning" if stats.pending else "dim",
                 muted=not stats.pending,
                 indent=2,
             )
@@ -1025,7 +1043,7 @@ class ScanPane(Vertical):
         speed = throughput_label(reporter.throughput)
         if speed:
             lines.append("\n")
-            lines.append_text(value_row("speed", speed, style="cyan"))
+            lines.append_text(value_row("speed", speed, style="accent"))
 
         activity = reporter.extraction
         if activity is not None:
@@ -1034,7 +1052,7 @@ class ScanPane(Vertical):
                 value_row(
                     f"{spinner(self._tick)} {activity.site_name}",
                     elapsed_label(activity.elapsed),
-                    style="cyan",
+                    style="accent",
                 )
             )
         elif self._scan_running and reporter.synthesis is None:
@@ -1132,7 +1150,7 @@ class ScanPane(Vertical):
         # Text(), never markup. A model key is whatever is in the config file;
         # Rich would read brackets in it as a style tag.
         text = Text()
-        text.append(model_name(str(configured), MODEL_LINE_WIDTH), style="cyan")
+        text.append(model_name(str(configured), MODEL_LINE_WIDTH), style=tone("accent"))
 
         # One line, not one row each. As a pair of label/value rows they sat in
         # the same grammar the live counters use, so two settings that cannot

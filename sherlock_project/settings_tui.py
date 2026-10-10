@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import sys
 from argparse import ArgumentParser
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 from rich.text import Text
 from textual import on
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
+from textual.screen import Screen
 from textual.widgets import Footer
 
 from sherlock_project.ai_config import ai_config_path, try_load_settings
@@ -46,6 +47,11 @@ from sherlock_project.tui.settings_pane import (
     thinking_label,
 )
 from sherlock_project.tui.theme import SHERLOCK_CSS
+from sherlock_project.tui.themes import (
+    apply_theme,
+    register_themes,
+    without_theme_command,
+)
 
 __all__ = [
     "LABEL_WIDTH",
@@ -79,10 +85,15 @@ class SettingsApp(App[bool]):
     def __init__(self, config_path: Path | None = None) -> None:
         super().__init__()
         self._pane = SettingsPane(config_path=config_path or ai_config_path())
+        register_themes(self)
+        apply_theme(self, self._pane._saved.get("output.theme"))
 
     def compose(self) -> ComposeResult:
         yield self._pane
         yield Footer()
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        return without_theme_command(super().get_system_commands(screen))
 
     def on_mount(self) -> None:
         # The pane no longer focuses itself -- see the note on its `on_mount`.

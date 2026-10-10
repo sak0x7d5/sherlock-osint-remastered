@@ -27,15 +27,16 @@ written to without anyone noticing.
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
 from rich.console import Console
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.css.query import NoMatches
+from textual.screen import Screen
 from textual.widgets import Footer, Input, Static, TabbedContent, TabPane
 
 from sherlock_project.ai_config import ai_config_path, try_load_settings
@@ -44,7 +45,12 @@ from sherlock_project.settings import field_values
 from sherlock_project.tui.results_pane import ResultsPane
 from sherlock_project.tui.scan_pane import ScanPane
 from sherlock_project.tui.settings_pane import SettingsPane
-from sherlock_project.tui.theme import SHERLOCK_CSS
+from sherlock_project.tui.theme import SHERLOCK_CSS, tone
+from sherlock_project.tui.themes import (
+    apply_theme,
+    register_themes,
+    without_theme_command,
+)
 
 SCAN_TAB = "tab-scan"
 RESULTS_TAB = "tab-results"
@@ -120,6 +126,10 @@ class SherlockUI(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self._settings_values = field_values(try_load_settings())
+        # Before the first frame, so a stored theme is the one the app opens
+        # in rather than one it switches to after drawing the default.
+        register_themes(self)
+        apply_theme(self, self._settings_values.get("output.theme"))
         # Set once an update has actually been written to disk, and never
         # cleared: the appbar has to keep saying so for the rest of the
         # session, because the running process is still the old build and that
@@ -148,6 +158,7 @@ class SherlockUI(App[None]):
 
     def on_mount(self) -> None:
         self._redraw_appbar()
+        self.theme_changed_signal.subscribe(self, self._theme_changed)
         # Focus the username field, so the app opens ready to be typed into.
         # It is the only control anyone needs on a first run, and a screen that
         # opens with focus somewhere unhelpful makes the first keystroke a
@@ -179,7 +190,7 @@ class SherlockUI(App[None]):
         # it: the root says whose, the file name says which.
         room = max(16, self.size.width - 20 - (52 if self._update_installed else 0))
         line = Text.assemble(
-            ("SHERLOCK", "bold cyan"),
+            ("SHERLOCK", tone("bold accent")),
             ("   db ", "dim"),
             (_middle_truncate(str(default_database_path()), room), "dim"),
         )
@@ -192,7 +203,7 @@ class SherlockUI(App[None]):
             # notes_hint already exists to avoid.
             line.append(
                 "   · updated — quit with alt+q and reopen to apply",
-                style="bold yellow",
+                style=tone("bold warning"),
             )
         self.query_one("#appbar", Static).update(line)
 
@@ -242,6 +253,28 @@ class SherlockUI(App[None]):
             UpdateScreen(release, __version__, detect_install()), applied
         )
 
+    def _theme_changed(self, _theme: object) -> None:
+        """Repaint what the stylesheet cannot reach.
+
+        Borders, tabs, buttons and dialogs follow a theme change on their own
+        -- they are `$accent` and `$panel` in the stylesheet. The text built in
+        Python is not: each `Text` resolved its colours through `tone()` when
+        it was drawn, so anything drawn once and left alone keeps the old
+        palette until it is drawn again. These are the places that would.
+        """
+        self._redraw_appbar()
+        for pane_type in (ScanPane, ResultsPane, SettingsPane):
+            try:
+                pane = self.query_one(pane_type)
+            except NoMatches:
+                # A theme change queued as the app closes arrives after the
+                # panes are gone -- the same race `_tab_activated` guards.
+                continue
+            pane.repaint()
+
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        return without_theme_command(super().get_system_commands(screen))
+
     def on_resize(self) -> None:
         self._redraw_appbar()
 
@@ -285,6 +318,15 @@ class SherlockUI(App[None]):
         return bool(stack) and bool(stack[0].query(ResultsPane))
 
     def _arrive_at(self, event: TabbedContent.TabActivated) -> None:
+        # The settings row previews a theme live, before it is saved. Leaving
+        # the tab puts the SAVED theme back, and returning re-applies the
+        # preview -- so a look nobody kept cannot outlive the screen it was
+        # being tried on, and an unsaved edit is still there to save.
+        if event.pane.id == SETTINGS_TAB:
+            self.query_one(SettingsPane).preview_theme()
+        else:
+            apply_theme(self, field_values(try_load_settings()).get("output.theme"))
+
         if event.pane.id == RESULTS_TAB:
             self.query_one(ResultsPane).action_reload()
         elif event.pane.id == SCAN_TAB:
@@ -431,7 +473,7 @@ async def run_ui(
         output.print(
             Text(
                 f"sherlock-rm ui takes no arguments (got {' '.join(argv)}).",
-                style="yellow",
+                style=tone("warning"),
             )
         )
         return 2

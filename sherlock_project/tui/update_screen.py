@@ -30,7 +30,7 @@ from textual.containers import Grid, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
-from sherlock_project.tui.theme import REDRAW_INTERVAL, phase_line
+from sherlock_project.tui.theme import REDRAW_INTERVAL, phase_line, tone
 from sherlock_project.updater import (
     InstallMode,
     Release,
@@ -115,7 +115,7 @@ class UpdateScreen(ModalScreen[bool]):
         if self._command is None:
             detail.append("\n")
             detail.append(
-                manual_instruction(self._mode, self._release.tag), style="yellow"
+                manual_instruction(self._mode, self._release.tag), style=tone("warning")
             )
         elif not updater_available(self._mode):
             detail.append("\n")
@@ -123,7 +123,7 @@ class UpdateScreen(ModalScreen[bool]):
                 f"{self._mode} is not on PATH, so this cannot install itself. "
                 f"Run it yourself:\n"
                 f"{manual_instruction('pipx', self._release.tag)}",
-                style="yellow",
+                style=tone("warning"),
             )
         return detail
 
@@ -179,7 +179,7 @@ class UpdateScreen(ModalScreen[bool]):
                 elapsed=perf_counter() - self._started, tick=self._tick,
             )
         )
-        failed.append(f"\nexit {code}: {last}\n", style="red")
+        failed.append(f"\nexit {code}: {last}\n", style=tone("error"))
         failed.append("Run it yourself:\n", style="dim")
         failed.append(manual_instruction(self._mode, self._release.tag))
         status.update(failed)

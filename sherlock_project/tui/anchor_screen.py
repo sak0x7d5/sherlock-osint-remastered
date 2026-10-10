@@ -58,6 +58,7 @@ from sherlock_project.profile_synthesis import (
     canonical_field,
     normalize_value,
 )
+from sherlock_project.tui.theme import tone
 
 # Where an anchor came from, recorded on every one this screen makes. The CLI
 # writes "command_line"; keeping them distinct means a profile can still say
@@ -250,7 +251,7 @@ class AnchorScreen(ModalScreen[list[IdentityAnchor] | None]):
         # a Changed event still queued from before the error was raised.
         self._error_for = self._boxes() if message else None
         status = self.query_one("#anchor-status", Static)
-        status.update(Text(message, style="red"))
+        status.update(Text(message, style=tone("error")))
         # No line at all when there is nothing wrong, rather than a blank one
         # holding the footer a row lower than it needs to be.
         status.display = bool(message)

@@ -28,7 +28,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
 
-from sherlock_project.tui.theme import count_of
+from sherlock_project.tui.theme import count_of, tone
 
 # Width of the label column, so the keys line up down the right edge.
 LABEL_WIDTH = 26
@@ -71,7 +71,7 @@ class RecordActionsScreen(ModalScreen[str | None]):
                 Option(_row("Show the AI profile"), id="profile"),
                 None,
                 Option(
-                    _row(f"Delete {self._username}…", "del", style="bold red"),
+                    _row(f"Delete {self._username}…", "del", style=tone("bold error")),
                     id="delete",
                 ),
                 id="actions-list",

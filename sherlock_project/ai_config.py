@@ -60,6 +60,25 @@ DEFAULT_SCAN_CONCURRENCY = 30
 DEFAULT_SCAN_TIMEOUT = 60
 DEFAULT_SCAN_WEBBROWSER = True
 
+# The TUI's colour themes, by name. Only the NAMES live here: the palettes are
+# Textual objects in `tui/themes.py`, and this module is imported by every CLI
+# run, which must not pay for importing Textual to read a config file.
+# "sherlock" is the original look. The rest are this app's own AMOLED set,
+# then a curated few of Textual's built-ins.
+DEFAULT_THEME = "sherlock"
+THEME_CHOICES: tuple[str, ...] = (
+    DEFAULT_THEME,
+    "amoled",
+    "amoled-violet",
+    "amoled-mono",
+    "nord",
+    "tokyo-night",
+    "dracula",
+    "catppuccin-mocha",
+    "gruvbox",
+    "solarized-light",
+)
+
 
 class AIConfigError(RuntimeError):
     """Raised when Sherlock's AI configuration is missing or invalid."""
@@ -181,6 +200,11 @@ class OutputSettings(BaseModel):
 
     color: bool = True
     verbose: bool = False
+    # A plain string, not a Literal of THEME_CHOICES. A config written by a
+    # build with a theme this one lacks must still LOAD -- refusing it would
+    # cost someone every other setting in the file over a colour. The UI falls
+    # back to the default when it meets a name it does not know.
+    theme: str = DEFAULT_THEME
 
 
 class UpdateSettings(BaseModel):
