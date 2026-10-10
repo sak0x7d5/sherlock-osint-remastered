@@ -221,6 +221,35 @@ def _describe_extraction_models(entries: list[dict[str, Any]]) -> str | None:
     )
 
 
+def _usable_evidence(records: Sequence[Any], contract_hash: str) -> int:
+    """How many sites a profile build would actually merge facts from.
+
+    Not the same number as `extraction_models`, and the difference was a bug
+    you could see: that counts every stored extraction, including ones written
+    under an older pass-one contract that synthesis treats as unread, and ones
+    that read a page and found nothing. The build card offered "evidence from
+    N sites is ready" on that count, the build used none of them, and the
+    result was an empty profile under a list of every unread page id.
+
+    Mirrors `synthesize_username_profile`'s own filter -- current contract,
+    parseable, at least one fact -- so the offer and the outcome agree.
+    """
+    usable = 0
+    for record in records:
+        if (
+            record.ai_extraction is None
+            or record.ai_extraction_contract_hash != contract_hash
+        ):
+            continue
+        try:
+            payload = json.loads(record.ai_extraction)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and any(payload.values()):
+            usable += 1
+    return usable
+
+
 async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
     overview = await db.get_username_overview(username)
     if overview is None:
@@ -239,8 +268,12 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
     # Reading it here costs one indexed query and keeps this module's promise:
     # the contract hash is a file read, not a model load, and nothing is
     # written.
+    contract_hash = pass_one_contract_hash()
     pending_analysis = await db.get_pending_ai_extraction_ids(
-        username, contract_hash=pass_one_contract_hash()
+        username, contract_hash=contract_hash
+    )
+    usable_evidence = _usable_evidence(
+        await db.get_ai_profile_evidence(username), contract_hash
     )
 
     return {
@@ -253,6 +286,7 @@ async def _collect(db: SherlockDB, username: str) -> dict[str, Any]:
         "unresolved": _unresolved_sites(saved_rows),
         "extraction_models": _extraction_models(model_counts),
         "pending_analysis": len(pending_analysis),
+        "usable_evidence": usable_evidence,
         "profile_updated_at": cache.updated_at if cache is not None else None,
         "profile": _load_profile(raw_summary),
         "profile_unreadable": bool(raw_summary) and _load_profile(raw_summary) is None,

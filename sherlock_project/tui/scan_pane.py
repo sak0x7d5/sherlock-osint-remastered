@@ -11,7 +11,7 @@ screen, so it gets every remaining cell.
 hits until told otherwise: on a 680-site manifest the overwhelming majority of
 results are "not found", and a feed showing them scrolls the handful of actual
 findings off screen within seconds. Clicking a counter row shows or hides that
-kind, and a row whose results are hidden is struck through -- so the count stays
+kind, and a row whose results are hidden has an empty box -- so the count stays
 exact and readable while saying plainly that the rows behind it are not on
 screen. What the panel counts and what the feed displays are two different
 facts, and only the second one is being toggled.
@@ -91,6 +91,14 @@ SITE_WIDTH = 24
 # every cell here comes out of the URL.
 TIME_WIDTH = 6
 
+# Pane width below which the feed goes compact: the status column drops its word
+# for the glyph alone, and the site column narrows. At 80 columns the full
+# layout spent 14 cells repeating "● found" on every row and pushed the time and
+# the link off the right edge behind a horizontal scrollbar. The word is still
+# on screen, once, in the counters beside the feed.
+COMPACT_WIDTH = 100
+COMPACT_SITE_WIDTH = 16
+
 # How many lines the ACTIVITY pane keeps to scroll back through. Generous, but
 # finite: this is the drawn history, unlike the reporter's LOG_LIMIT, which is
 # only the hand-off buffer between the scan and one screen tick.
@@ -109,6 +117,27 @@ ANCHOR_LINE_WIDTH = 24
 MODEL_LINE_WIDTH = 24
 
 
+# What terminals send for alt+1/2/3, as Textual decodes it. See the bindings in
+# app.py: most terminals send alt+digit as ESC+digit, which arrives as these.
+TAB_KEY_CHARACTERS = frozenset("¡™£")
+
+
+class TargetInput(Input):
+    """The username field, minus the three characters that switch tabs.
+
+    It has focus from launch, and an `Input` claims every printable key before
+    any binding -- Textual drops app bindings for keys the focused field would
+    type, priority or not. So in most terminals alt+1/2/3, which arrive as
+    ¡ ™ £, typed a symbol into the username instead of changing tab. No site's
+    username rules allow those characters, so declining them costs nothing.
+    """
+
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        if character in TAB_KEY_CHARACTERS:
+            return False
+        return super().check_consume_key(key, character)
+
+
 class CounterRow(Static):
     """One line of the SITES panel, and the control that filters on it.
 
@@ -120,7 +149,7 @@ class CounterRow(Static):
     Focusable so the filter is reachable without a mouse. There is no spare key
     for five toggles -- the scan pane's text field claims the letters and digits,
     and alt+1..3 are the tabs -- so Tab-and-Enter is the keyboard route, with
-    `alt+f` beside it for the one-press "everything / hits only" flip.
+    `alt+s` beside it for the one-press "everything / hits only" flip.
     """
 
     can_focus = True
@@ -153,11 +182,19 @@ class ScanPane(Vertical):
     # the moment the app opens. STOP was ctrl+x, which `Input` uses for cut, so
     # the key did nothing at all while a scan was running. Check `Input.BINDINGS`
     # before adding one.
+    #
+    # No ctrl+r. It was "run scan" here and "refresh" on RESULTS -- one chord,
+    # and on this tab it starts a 680-site network run. Enter in the field and
+    # the SCAN button already start one, and neither can be pressed by a hand
+    # still in the habit of the other tab.
     BINDINGS: ClassVar = [
-        Binding("ctrl+r", "run", "run scan"),
         Binding("escape", "stop", "stop"),
         Binding("alt+a", "edit_anchors", "anchors"),
-        Binding("alt+f", "toggle_all_statuses", "filter"),
+        # alt+s first: alt+f arrives as ESC f on most terminals, which Textual
+        # decodes as ctrl+right -- the word-jump the username field owns -- so
+        # it only ever worked on terminals with a richer key protocol. Kept as
+        # the second name for those.
+        Binding("alt+s,alt+f", "toggle_all_statuses", "show all"),
     ]
 
     def __init__(self, settings_values: dict[str, Any]) -> None:
@@ -203,13 +240,15 @@ class ScanPane(Vertical):
         # clock should still be advancing. Kept separate from `_running` because
         # a finished scan must keep its final time on screen, not reset to zero.
         self._started_at: float | None = None
+        # Narrow-terminal feed layout. See COMPACT_WIDTH.
+        self._compact = False
 
     # -- layout -------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         with Grid(id="target-row"):
             yield Static("TARGET", id="target-label")
-            yield Input(
+            yield TargetInput(
                 placeholder="username to look for",
                 id="target-input",
             )
@@ -330,14 +369,7 @@ class ScanPane(Vertical):
                 )
 
     def on_mount(self) -> None:
-        table = self.query_one("#feed", DataTable)
-        # Width on the first two columns, none on the third: the URL takes what
-        # is left. Given a width it would either truncate short URLs for no
-        # reason or overflow the pane on long ones.
-        table.add_column("", key="status", width=STATUS_WIDTH)
-        table.add_column("site", key="site", width=SITE_WIDTH)
-        table.add_column("time", key="time", width=TIME_WIDTH)
-        table.add_column("detail", key="detail")
+        self._add_feed_columns()
 
         self._redraw_options()
         self._show_activity_placeholder()
@@ -353,6 +385,57 @@ class ScanPane(Vertical):
         # and feed updated a tick apart is how a total stops matching the rows
         # above it.
         self.set_interval(REDRAW_INTERVAL, self._flush)
+
+    def _add_feed_columns(self) -> None:
+        """Lay the feed's columns out for the current width.
+
+        Width on the leading columns, none on the last: the URL takes what is
+        left. Given a width it would either truncate short URLs for no reason
+        or overflow the pane on long ones.
+        """
+        table = self.query_one("#feed", DataTable)
+        table.clear(columns=True)
+        compact = self._compact
+        table.add_column("", key="status", width=1 if compact else STATUS_WIDTH)
+        table.add_column(
+            "site", key="site", width=COMPACT_SITE_WIDTH if compact else SITE_WIDTH
+        )
+        table.add_column("time", key="time", width=TIME_WIDTH)
+        table.add_column("link" if compact else "detail", key="detail")
+
+    def on_resize(self) -> None:
+        width = self.size.width
+        if not width:
+            return
+        compact = width < COMPACT_WIDTH
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self.set_class(compact, "-compact")
+        # A column's width is fixed when it is added, so changing layout means
+        # re-adding them -- and re-adding the rows, which the filter path
+        # already knows how to do from the reporter's full history.
+        self._add_feed_columns()
+        self._rebuild_feed()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Offer stop only while something runs, anchors only with analysis on."""
+        if action == "stop":
+            return self._scan_running
+        if action == "edit_anchors":
+            return self._use_ai
+        return True
+
+    def prepare_scan(self, username: str) -> None:
+        """Load a stored username into the field, ready to scan again.
+
+        Starts nothing: pressing SCAN brings up the resume dialog, which has
+        the counts for "check the new sites" against "re-scan everything".
+        """
+        field = self.query_one("#target-input", Input)
+        field.value = username
+        field.focus()
+        self.notify(f"Press SCAN to scan {username} again.")
 
     def prepare_analysis_scan(self, username: str) -> None:
         """Set up a run that will collect AI evidence, without starting it.
@@ -394,13 +477,25 @@ class ScanPane(Vertical):
         anything that answers to a keypress, so one visual language means one
         thing across the whole app.
         """
+        # Checkboxes, the same mark the counters and `found only` use.
+        # `‹ on ›` meant "step through values" on the settings screen, where
+        # arrows really do step; on these it promised a spinner and delivered
+        # a switch.
         self.query_one("#toggle-ai", Button).label = (
-            f"analysis ‹ {'on' if self._use_ai else 'off'} ›"
+            f"{'☑' if self._use_ai else '☐'} analysis"
         )
         self.query_one("#toggle-verbose", Button).label = (
-            f"verbose ‹ {'on' if self._verbose else 'off'} ›"
+            f"{'☑' if self._verbose else '☐'} verbose"
         )
+        self.refresh_bindings()
         self._redraw_anchors()
+        if self._reporter is None:
+            self.query_one("#ai-block").display = self._use_ai
+            self.query_one("#ai-counters", Static).update(
+                Text("starts with the scan", style="dim italic")
+            )
+        else:
+            self._redraw_ai(self._reporter)
         # Drawn from settings alone, so it answers before a scan has ever run
         # and follows a model chosen on the settings tab mid-session.
         self._redraw_model()
@@ -663,7 +758,7 @@ class ScanPane(Vertical):
         """Name what the feed is currently showing.
 
         A filtered table that does not say it is filtered is how someone
-        concludes a scan found nothing. The struck-through counters say it too,
+        concludes a scan found nothing. The unticked counters say it too,
         but the title is where the eye already is when reading the rows.
         """
         shown = [
@@ -694,7 +789,14 @@ class ScanPane(Vertical):
             key = str(len(self._feed_urls))
             self._feed_urls[key] = finding.url
             table.add_row(
-                status_cell(finding.status),
+                (
+                    Text(
+                        status_style(finding.status).glyph,
+                        style=status_style(finding.status).style,
+                    )
+                    if self._compact
+                    else status_cell(finding.status)
+                ),
                 # Text(), always: site names and URLs come from the manifest and
                 # from scanned pages, and Rich reads markup in cells -- a site
                 # with brackets in its name would be swallowed as a style tag.
@@ -732,8 +834,7 @@ class ScanPane(Vertical):
         log = self.query_one("#activity", RichLog)
         log.clear()
         log.write(
-            Text("nothing to report — problems and warnings appear here",
-                 style="dim italic")
+            Text("nothing to report — problems appear here", style="dim italic")
         )
 
     def _append_log(self, reporter: TuiReporter) -> None:
@@ -827,11 +928,11 @@ class ScanPane(Vertical):
                     # at full contrast it draws the eye away from the count that
                     # matters. Dimming is not hiding -- it is still exact.
                     muted=status is QueryStatus.AVAILABLE,
-                    # Struck through when the feed is not showing this kind.
+                    # A checkbox: ticked when the feed is showing this kind.
                     # The count stays exact and readable either way -- what the
                     # line reports and what the feed is displaying are two
                     # different facts, and only the second one is being toggled.
-                    struck=status not in self._visible,
+                    shown=status in self._visible,
                 )
             )
 
@@ -855,6 +956,12 @@ class ScanPane(Vertical):
         real decomposition and not an assortment of related numbers.
         """
         stats = reporter.ai_stats
+        # The whole block, heading included, only when analysis is on or has
+        # something to report. Off, it was a bare ANALYSIS heading over
+        # nothing -- or over "not running" -- on every launch.
+        self.query_one("#ai-block").display = bool(
+            self._use_ai or stats.scheduled or reporter.synthesis is not None
+        )
         counters = self.query_one("#ai-counters", Static)
         if not stats.scheduled:
             # Nothing scheduled means the model is off, nothing was found worth
@@ -1186,6 +1293,7 @@ class ScanPane(Vertical):
         self._log_drawn = 0
         self._reporter = TuiReporter(verbose=self._verbose)
         self._scan_running = True
+        self.refresh_bindings()
         # Captured beside the two places that read them -- the reporter above
         # and `use_ai` in `_scan_worker` -- so the pair cannot drift from what
         # the run is actually doing. The toggles' hover text is the only thing
@@ -1245,6 +1353,7 @@ class ScanPane(Vertical):
 
     def _finish(self, event: Worker.StateChanged) -> None:
         self._scan_running = False
+        self.refresh_bindings()
         self._worker = None
         self._started_at = None
         # Nothing is running, so no toggle is pending any more: both describe

@@ -42,9 +42,11 @@ from rich.text import Text
 from sherlock_project.result import QueryStatus
 
 # Column widths, shared so the scan counters and the results summary agree.
-# A label column wide enough for the longest word it must hold ("inconclusive")
-# plus a space, so nothing is ever truncated into ambiguity.
-STAT_LABEL_WIDTH = 13
+# A label column wide enough for the longest thing it must hold -- a checkbox and
+# "inconclusive", `☐ inconclusive` -- plus a space, so nothing is ever truncated
+# into ambiguity. Every row shares it, checkbox or not, so the digits of the
+# SITES counters and the ANALYSIS counters under them stack in one column.
+STAT_LABEL_WIDTH = 15
 STAT_VALUE_WIDTH = 6
 
 # How often the screens repaint, in seconds. Not a cosmetic number: it is the
@@ -221,7 +223,7 @@ def stat_row(
     style: str,
     *,
     muted: bool = False,
-    struck: bool = False,
+    shown: bool | None = None,
     indent: int = 0,
 ) -> Text:
     """One counter line: label left, number right, both in fixed columns.
@@ -230,11 +232,13 @@ def stat_row(
     and 400 end at the same cell, which is what makes the panel comparable
     without reading it. Left-aligned, every value change shifts the eye.
 
-    `struck` means "counted, but not shown in the feed". Strikethrough rather
-    than dimming or hiding: dim already means something else on this panel (it
-    is how `absent` is de-emphasised while still being shown), and a hidden row
-    would take the count with it -- the whole point is that the number stays
-    readable while the rows behind it are filtered out.
+    `shown` makes the row a checkbox: ☑ when the feed is drawing this kind of
+    result, ☐ when it is counted but filtered out. It was strikethrough, and a
+    struck number reads as crossed off -- wrong, or zero, or void -- which on
+    first launch was four of the five counters before anything had run. A box
+    says "filter state" in the shape every checkbox has, and leaves the number
+    exactly as legible either way. None draws no box, for rows that are not
+    filters.
 
     `indent` marks a row as a BREAKDOWN of the row above it rather than a peer
     of it -- ANALYSIS uses it for the three outcomes that sum to `extracted`.
@@ -242,25 +246,21 @@ def stat_row(
     indented row is exactly as wide as a top-level one and the numbers go on
     stacking. Indenting by prefixing would push every sub-row's value two cells
     right and break the one rule this file is least willing to break.
-
-    The indent itself is drawn unstyled. Folded into the label's span it would
-    carry `strike` through the gutter, drawing a rule in empty space.
     """
     # Never at the cost of the whole label. A pathological indent would
     # otherwise make the width negative and `format` would stop padding.
     indent = max(0, min(indent, STAT_LABEL_WIDTH - 1))
     line = Text()
-    # Empty string, not "none", for the default face. Rich parses "none" alone
-    # but "none strike" fails -- it tries to read `none` as a colour -- so the
-    # neutral base has to actually be neutral for anything to combine with it.
     base = "dim" if muted else ""
     number = "dim" if muted else style
-    if struck:
-        base = f"{base} strike".strip()
-        number = f"{number} strike".strip()
+    room = STAT_LABEL_WIDTH - indent
     if indent:
         line.append(" " * indent)
-    line.append(f"{label:<{STAT_LABEL_WIDTH - indent}}", style=base)
+    if shown is not None:
+        # The box takes its two cells out of the label column, like an indent.
+        line.append("☑ " if shown else "☐ ", style=style if shown else "dim")
+        room -= 2
+    line.append(f"{label:<{room}}", style=base)
     line.append(f"{value:>{STAT_VALUE_WIDTH}}", style=number)
     return line
 
@@ -595,6 +595,72 @@ Button.-primary.-active {
     border-bottom: tall $accent-lighten-3;
 }
 
+/* THE BUTTON GRAMMAR. Three kinds, and what a control looks like says which:
+
+   - Primary (`variant="primary"`, raised amber, above): starts work. One per
+     view -- SCAN, Build profile, a dialog's Done.
+   - Chip (`.chip`, flat one-row panel): changes state, opens something, or
+     points somewhere. Toggles, Actions, Add anchor, Rebuild.
+   - Destructive (`variant="error"`, raised red): only inside a confirmation.
+
+   Before this, raised grey buttons sat beside amber ones and read as disabled,
+   and a flat red "Delete" sat in a header as the loudest thing on screen. */
+.chip {
+    height: 1;
+    min-width: 0;
+    width: auto;
+    border: none;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+    text-style: none;
+}
+.chip:hover { background: $panel-lighten-2; }
+/* Dialogs are painted $panel, so a chip there needs one step up to show. */
+#dialog .chip { background: $panel-lighten-1; }
+#dialog .chip:hover { background: $panel-lighten-2; }
+.chip:disabled { color: $text-disabled; }
+
+/* ONE FOCUS STYLE, app-wide: an amber tint and bold label. Textual's default
+   reverses the label, and on a restyled button that drew a pale chip INSIDE
+   the button -- it looked like a rendering fault (Cancel in the delete dialog,
+   "Check N new" in the resume dialog). The tint reads on flat chips and raised
+   buttons alike, and is the wash `.counter-row:focus` already used. */
+Button:focus {
+    text-style: bold;
+    border-top: tall $accent;
+    border-bottom: tall $accent;
+}
+Button.-primary:focus { background: $accent-lighten-1; border-top: tall $accent-lighten-3; border-bottom: tall $accent-darken-3; }
+/* `Button.` on the front is load-bearing. A pseudo-class weighs the same as a
+   class, so `Button:focus` above (type + pseudo) outranked a bare `.chip:focus`
+   and gave these ONE-ROW controls a tall top and bottom border on focus. The
+   two borders took the only row there is: clicking `verbose` or `found only`
+   left an empty amber bar with no label until focus moved elsewhere. Chips are
+   flat; their focus is a tint and a bold label, never a border. */
+Button.chip:focus, Button.toggle:focus {
+    border: none;
+    text-style: bold;
+    background-tint: $accent 25%;
+}
+
+/* Scrollbars: one cell, panel-coloured. The defaults are two cells of solid
+   colour, which drew a black slab beside a log with one line in it. */
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $panel-lighten-2;
+    scrollbar-color-hover: $panel-lighten-3;
+    scrollbar-color-active: $accent;
+    scrollbar-corner-color: $surface;
+}
+/* The footer scrolls sideways when its keys outrun the width, and hides that
+   scrollbar on purpose -- the rule above would otherwise draw one over it. */
+Footer { scrollbar-size: 0 0; }
+
 /* Hover text, app-wide. Textual ships a `Tooltip` already; these three rules
    are the ones its defaults get wrong on a screen this dense.
 
@@ -649,7 +715,7 @@ Tooltip {
 #options-row {
     layout: grid;
     grid-size: 4 1;
-    grid-columns: 10 20 20 1fr;
+    grid-columns: 10 14 13 1fr;
     grid-gutter: 0 1;
     height: 1;
     margin: 1 0 0 0;
@@ -667,7 +733,6 @@ Tooltip {
     padding: 0 1;
 }
 .toggle:hover { background: $panel-lighten-2; }
-.toggle:focus { text-style: bold; }
 #scan-config { height: 1; color: $text-muted; }
 
 /* Counters left, live feed right. The counters column is fixed rather than
@@ -694,6 +759,10 @@ Tooltip {
     padding: 0 1 0 0;
 }
 #feed-col { height: 1fr; }
+/* Compact (see COMPACT_WIDTH): the counters column gives back three cells --
+   21 for the rows plus the rule and its padding -- and the options row its
+   label column. */
+ScanPane.-compact #scan-body { grid-columns: 23 1fr; }
 /* Sized to content and empty before a scan, so an idle pane shows no startup
    block at all rather than reserving a hole for one. */
 #startup { height: auto; }
@@ -743,7 +812,9 @@ Tooltip {
    evidence and they are what someone is watching for; the log is context and
    only its last few lines matter at any moment. An even split made the feed --
    the reason the screen exists -- look like half a footnote. */
-#feed { height: 2fr; }
+/* Clipped rather than scrolled sideways: the link is the last column and Enter
+   opens it in full, while a horizontal scrollbar cost a row of a short pane. */
+#feed { height: 2fr; overflow-x: hidden; }
 /* A rule above ACTIVITY rather than a box around each panel.
    Boxes were considered and rejected: four framed panels on one screen reads
    as a form, not an instrument, and every border costs a cell of width and a
@@ -821,82 +892,36 @@ Tooltip {
 #results-body {
     layout: grid;
     grid-size: 2 1;
-    grid-columns: 35 1fr;
+    grid-columns: 37 1fr;
     grid-gutter: 0 2;
     height: 1fr;
 }
+/* Narrow: the list becomes a picker over the detail (ctrl+l), so the record
+   gets the full width. See NARROW_WIDTH in results_pane.py. */
+ResultsPane.-narrow #results-body { grid-size: 1 1; grid-columns: 1fr; }
+ResultsPane.-narrow .pane-title { display: none; }
+ResultsPane.-narrow #username-list { border-right: none; }
+ResultsPane.-narrow #username-list { display: none; }
+ResultsPane.-narrow.-picking #username-list { display: block; }
+ResultsPane.-narrow.-picking #result-detail { display: none; }
 #username-list {
     height: 1fr;
     border-right: solid $panel-lighten-2;
     padding: 0 1 0 0;
 }
 #result-detail { height: 1fr; }
-/* Identity left, key right. The right half of this band was empty at every
-   width -- a username and a timestamp do not fill 90 cells -- so the key is
-   drawn in space the header was already paying for. `auto` on the key column
-   so the header text takes the slack and wraps if the pane gets narrow, rather
-   than the key being the thing that disappears. */
+/* Identity left, actions right: two lines of who-and-what, and a one-row
+   chip pinned to the right edge of the first. */
 #detail-head {
     layout: grid;
     grid-size: 2 1;
     grid-columns: 1fr auto;
+    grid-gutter: 0 2;
     height: auto;
     padding: 0 0 1 0;
 }
-#detail-identity { height: auto; }
 #detail-header { height: auto; }
-/* The record's one destructive action, under the identity it acts on.
-
-   It started as a `✕` on the row under the pointer, in the username list, and
-   that is not a thing a `DataTable` can hold. The row cursor paints every cell
-   of its row, so the control had to fight the highlight for its own colours --
-   and winning was worse than losing: it became a dark chip punched into the
-   middle of a blue bar, which reads as a rendering fault rather than a button.
-   A cell can be styled. It cannot be a control.
-
-   So it is a real `Button`, in the same quiet shape as `#add-anchor`, the
-   `found only` toggle and the pointer-state build button: one row of `$panel`,
-   no border, a bold coloured label. That is this app's button, and the shape
-   works here for the reason it failed there -- the header band is flat, and
-   nothing else is painting these cells.
-
-   It also puts the action with the record instead of on every row of the list.
-   The target is whatever the header names two lines above it, there is one of
-   them rather than one per row, and nothing destructive sits under the pointer
-   while someone is reading down a column of names.
-
-   Colours measured: `$text-error` on `$panel` is 4.62:1 dark and 6.24:1 light.
-   Hover and focus turn the block `$error` with the foreground on it (4.12:1 and
-   3.03:1) -- both the contrast fix, since red text on a lighter panel falls to
-   2.79:1, and the arming a destructive control should do before it is pressed.
-
-   Free where the key is drawn: that band is four rows for the bordered box and
-   the identity uses two. Below KEY_MIN_DETAIL_WIDTH there is no box, and this
-   is the one row the band grows by. */
-#delete-username {
-    width: auto;
-    min-width: 0;
-    height: 1;
-    border: none;
-    padding: 0 1;
-    background: $panel;
-    color: $text-error;
-    text-style: bold;
-}
-#delete-username:hover, #delete-username:focus {
-    background: $error;
-    color: $foreground;
-}
-/* The one bordered block on this screen, and it is deliberate: a key is not
-   data, and the border is what says so at a glance in a pane that is otherwise
-   flat. It costs the two rows the border occupies. */
-#detail-keys {
-    border: round $panel-lighten-2;
-    border-title-color: $text-muted;
-    padding: 0 1;
-    height: auto;
-    width: auto;
-}
+#record-actions { margin: 0; }
 
 /* The section strip. Styled DOWN from the tab bar above it, not hidden: two
    bars with the same weight read as two competing navigations, which is what
@@ -941,36 +966,22 @@ Tooltip {
 }
 #detail-tabs:focus .underline--bar { color: $accent; background: $surface; }
 
-/* The key for the symbol column, directly above the column it explains.
-
-   The mark column is two cells wide and its header is blank, so there is
-   nowhere inside it to say that ▲ means the site blocked us and ? means the
-   rules did not decide. The feed on the scan pane does not need this -- it
-   prints the word beside every symbol -- but these tables have no room for
-   that, and an unexplained symbol is a colour-only signal by another route.
-
-   `height: auto` and the widget hidden outright when a section has no symbols,
-   rather than left blank: a key nobody needs must not cost the table a row.
-   No bottom padding for the same reason -- the pane is short, the tabs above
-   already separate it from the header, and every row here is a finding not
-   shown. */
-/* The filter and what it is holding back, on one line above the table. Wide
-   enough for `found only ‹ off ›` and its padding, with the counts taking
-   whatever is left -- the same fixed-label/flexible-value shape the scan
-   pane's options row uses. */
+/* The filter, what it is hiding, and the key -- one line above the table on
+   wide panes. `auto` columns size to the chip and the key; the counts take the
+   rest and WRAP rather than clip, because the unresolved count is the one
+   number on this line that must survive a narrow terminal. */
 #sites-controls {
     layout: grid;
-    grid-size: 2 1;
-    grid-columns: 26 1fr;
+    grid-size: 3 1;
+    grid-columns: auto 1fr auto;
     grid-gutter: 0 2;
-    height: 1;
+    height: auto;
 }
-/* Filling its cell rather than sizing to its label: a `Button` measures itself
-   when it is first drawn and `found only ‹ off ›` is a character wider than
-   `‹ on ›`, so an auto-width toggle clips its own closing bracket the first
-   time it is pressed. */
-#toggle-found-only { width: 100%; }
-#sites-counts { height: 1; content-align: left middle; }
+#sites-counts { height: auto; }
+#sites-key { height: 1; width: auto; }
+/* Too narrow for one line: the key takes a row of its own under the counts. */
+#sites-controls.-stacked { grid-size: 2; grid-columns: auto 1fr; }
+#sites-controls.-stacked #sites-key { column-span: 2; }
 
 /* Exactly one scroll region visible at a time -- the whole point of switching
    rather than stacking. `overflow-x: hidden` because a long URL would otherwise
@@ -986,61 +997,45 @@ Tooltip {
 
 /* Only mounted visible when there is no profile to show, so the section is a
    viewer the rest of the time. */
-#profile-actions { height: auto; padding: 1 0 0 0; }
-#profile-anchor-line { height: auto; padding: 0 0 1 0; }
-#profile-status { height: auto; padding: 0 0 1 0; }
+#profile-actions { height: auto; padding: 0; }
+#profile-anchor-line { height: auto; padding: 0; }
+/* Shown only while a build runs (or just after one stopped or failed). A blank
+   line above, setting it off from the card; none below, where the button row
+   brings its own. */
+#profile-status { height: auto; padding: 1 0 0 0; }
 #profile-buttons {
-    layout: grid;
-    grid-size: 3 1;
-    grid-columns: 1fr 12 20;
-    grid-gutter: 0 2;
-    height: 3;
+    height: auto;
+    width: 100%;
+    margin: 1 0 0 0;
 }
-/* Fill the column rather than floating inside it. `Button` defaults to
-   `width: auto; min-width: 16`, so "Build profile" measured 16 cells in its
-   20-cell column and stopped four cells short of the pane's right edge --
-   out of line with the tables above it, which do reach it. */
-#profile-anchors, #profile-build { width: 100%; }
+/* Left-aligned, directly under the card it acts on, and sized to its label. */
+#profile-build { width: auto; margin: 0 2 0 0; }
+/* The chip sits on the middle row of the raised button beside it. */
+#profile-anchors { margin: 1 0 0 0; }
+#profile-actions.-has-profile #profile-anchors { margin: 0 2 0 0; }
+/* A blank line between what the profile is and what can be done to it. Flush,
+   the chips read as a third line of the status sentence. */
+#profile-actions.-has-profile #profile-buttons { margin: 1 0 0 0; }
+#profile-actions.-has-profile #profile-build { margin: 0 2 0 0; }
+/* Alone in the button row while a build runs. */
+#profile-stop { margin: 0; display: none; }
+#profile-actions.-has-profile { padding: 0 0 1 0; border-bottom: solid $panel-lighten-2; margin: 0 0 1 0; }
 
 /* The POINTER state: no stored evidence, so the only thing on offer is a trip
-   to the scan tab. It is not a commit and it must not look like one.
-
-   Two defects made the raised version wrong rather than merely heavy. Textual's
-   grid SKIPS hidden children, so hiding `#profile-anchors` here slid the build
-   button out of the 20-cell column into the 12-cell one and clipped its label
-   to "Scan with" -- the same silent truncation `#target-row` above documents,
-   arrived at by a different route. And right-aligning it is dialog-footer
-   placement borrowed into a content pane: the eye finishes the sentence at the
-   left margin and then has to cross fifty empty cells to find the action.
-
-   Flat, left-aligned and auto-width answers all three. It cannot clip at any
-   width, it reads straight down one column with the text that asks for it, and
-   it carries the weight the scan pane's toggles carry -- which is the rule
-   this file already states twice: chrome proportional to what a control
-   commits, so that nothing out-shouts the thing that actually starts work. */
-#profile-actions.-no-evidence #profile-buttons { layout: horizontal; height: 1; }
-#profile-actions.-no-evidence #profile-spacer { display: none; }
+   to the scan tab. It is not a commit and it must not look like one -- the
+   chip, in amber, rather than the primary block SCAN wears. */
 #profile-actions.-no-evidence #profile-build {
-    width: auto;
-    min-width: 0;
     height: 1;
+    min-width: 0;
     border: none;
     padding: 0 1;
     background: $panel;
     color: $accent;
     text-style: bold;
 }
-#profile-actions.-no-evidence #profile-build:hover {
-    background: $panel-lighten-2;
-}
-/* Both cues are load-bearing, for the reason `.counter-row` gives: without the
-   hover tint a flat control does not look pressable, and without a focus
-   marker someone arriving by Tab cannot see where they are.
-   The focus rule is NOT optional polish. The ID selector above sets
-   `text-style`, which outranks Textual's own `Button:focus` reverse style and
-   cancels it -- leaving an 8/255 background shift as the only signal, which is
-   no signal. This restores one, in the same amber wash `.counter-row:focus`
-   uses for the same job. */
+#profile-actions.-no-evidence #profile-build:hover { background: $panel-lighten-2; }
+/* The ID selector above outranks the app-wide focus rule, so the pointer
+   needs its own -- without it the only cue was an 8/255 background shift. */
 #profile-actions.-no-evidence #profile-build:focus {
     background: $accent 30%;
     color: $text;
@@ -1124,19 +1119,36 @@ ModalScreen { align: center middle; }
 
 #anchor-blurb { height: auto; padding: 0 0 1 0; }
 #anchor-list { height: auto; max-height: 10; margin: 0 0 1 0; }
-/* Label column then control column, so the three fields form one straight
-   edge rather than each starting wherever its own label ended. */
-#anchor-form {
-    layout: grid;
-    grid-size: 2;
-    grid-columns: 8 1fr;
-    grid-rows: 3 3 1;
-    grid-gutter: 0 1;
+/* field | value | Add, on one row. Every control in it is three cells tall, so
+   Add lines up with the boxes it submits rather than floating beside them. */
+#anchor-form { height: auto; }
+#anchor-field { width: 24; margin: 0 1 0 0; }
+#anchor-value { width: 1fr; margin: 0 1 0 0; }
+#anchor-form Input { border-title-color: $text-muted; }
+#anchor-form Input:focus { border-title-color: $accent; }
+#anchor-add { min-width: 8; }
+#anchor-status { height: auto; padding: 0 0 0 1; }
+/* The footer: the list's own action on the left, the dialog's on the right.
+   Both full-size buttons -- one size in one dialog -- and only Done is amber,
+   because a dialog has one way out that it recommends. */
+#anchor-buttons { height: auto; margin: 1 0 0 0; }
+#anchor-buttons .spacer { width: 1fr; height: 1; }
+
+/* ---- record actions menu --------------------------------------------- */
+
+/* A popup at the top right, under the chip that opens it, not a centred
+   dialog: it is a menu, and a menu appears where it was asked for. */
+RecordActionsScreen { align: right top; background: $background 40%; }
+#actions-menu {
+    width: auto;
     height: auto;
+    margin: 6 3 0 0;
+    background: $panel;
+    border: round $panel-lighten-3;
+    padding: 0 1;
 }
-.anchor-label { color: $text-muted; content-align: left middle; height: 100%; }
-#anchor-trust-help { height: 2; padding: 1 0 0 0; }
-#anchor-status { height: 1; }
+#actions-title { color: $text-muted; padding: 0 1; }
+#actions-list { width: auto; height: auto; border: none; background: $panel; padding: 0; }
 
 /* ---- update dialog --------------------------------------------------- */
 
@@ -1160,12 +1172,17 @@ ModalScreen { align: center middle; }
 /* Buttons right-aligned, cancel first. The destructive one is furthest from
    where the eye lands and is not the one focused on open. */
 #confirm-buttons {
-    layout: grid;
-    grid-size: 3 1;
-    grid-columns: 1fr 12 14;
-    grid-gutter: 0 2;
-    height: 3;
+    height: auto;
+    align: right middle;
 }
+/* A matched pair at one fixed width, whatever the labels say. Sized to the
+   label, a long name in "Delete <name>" made the destructive button the
+   widest thing in the dialog; the name now lives in the title, which wraps. */
+#confirm-buttons Button { width: 14; min-width: 14; margin: 0 0 0 2; }
+/* Danger: the frame and the title go red, so a dialog that destroys something
+   does not wear the same amber as one that asks which sites to check. */
+ConfirmScreen.-danger #dialog { border: round $error; }
+ConfirmScreen.-danger .dialog-title { color: $text-error; }
 
 /* ---- resume dialog --------------------------------------------------- */
 

@@ -26,6 +26,7 @@ from rich.text import Text
 from sherlock_project.profile_synthesis import (
     AGGREGATE_ANCHOR_WARNING,
     IdentityAnchor,
+    readable_warning,
 )
 from sherlock_project.result import QueryResult, QueryStatus
 from sherlock_project.settings import TRANSPORT_DOC_URL
@@ -1370,12 +1371,17 @@ class TerminalReporter(QueryNotify):
         *,
         show_sources: bool = False,
         notes_hint: str | None = "run with --verbose to read them.",
+        framed: bool = True,
     ) -> None:
         """Render a synthesised profile.
 
         Presentation only: values keep the order synthesis produced and nothing
         is dropped. `show_sources` swaps the compact "3 sites: A, B +1" summary
         for the full site URLs.
+
+        `framed=False` drops the outer panel, for a surface that is already a
+        frame of its own -- the TUI's PROFILE section names the username above
+        it, and a boxed, titled panel inside that drew both twice.
 
         `notes_hint` is how this surface lets someone read the diagnostic
         notes. It defaults to the command-line answer because that is where
@@ -1503,12 +1509,6 @@ class TerminalReporter(QueryNotify):
             blocks.append(Text("MATCHING", style="bold"))
             blocks.append(matching)
 
-        if not blocks:
-            self.info("No profile facts were available")
-            for warning in profile.warnings:
-                self.warning(warning)
-            return
-
         # Two positions, decided by what a note is FOR.
         #
         # Above the values goes anything that changes how they should be read:
@@ -1539,7 +1539,7 @@ class TerminalReporter(QueryNotify):
         # the only note here that changes how the VALUES should be read rather
         # than describing how they were gathered.
         shown_warnings = [
-            warning
+            readable_warning(warning)
             for warning in profile.warnings
             if not (caveat_stated and warning == AGGREGATE_ANCHOR_WARNING)
         ]
@@ -1570,11 +1570,23 @@ class TerminalReporter(QueryNotify):
             legend.append("unsure identity match", style="yellow")
             notes.append(legend)
 
+        if not blocks:
+            # The notes follow the same rule as on a full profile -- counted
+            # unless asked for. This path used to print every one of them in
+            # full regardless, and since one of them listed each unanalysed
+            # page id, an empty rebuild filled the screen with numbers.
+            self.info("No profile facts were available")
+            if footnotes:
+                self._write(Group(*footnotes))
+            return
         if notes:
             blocks = [*notes, Text(""), *blocks]
         if footnotes:
             blocks = [*blocks, Text(""), *footnotes]
 
+        if not framed:
+            self._write(Group(*blocks))
+            return
         self._write(
             Panel(
                 Group(*blocks),
