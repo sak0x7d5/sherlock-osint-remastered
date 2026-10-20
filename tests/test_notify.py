@@ -1471,3 +1471,35 @@ def test_retired_sites_line_is_silent_when_nothing_was_dropped():
     reporter.retired_sites_removed(username="7ghost", removed=0)
 
     assert output.getvalue() == ""
+
+
+def test_an_empty_profile_counts_its_notes_rather_than_printing_them() -> None:
+    """The empty path printed every warning in full, ignoring --verbose.
+
+    One of them listed each unanalysed page id, so an empty rebuild of a
+    username with a few hundred hits filled the screen with numbers.
+    """
+    payload = {
+        "username": "fixture_handle",
+        "input_hash": "hash",
+        "mode": "aggregate",
+        "resolution_status": "no_evidence",
+        "completeness": "partial",
+        "warnings": [
+            "Pass-one extraction is still pending for site ids: "
+            + ", ".join(str(n) for n in range(5000, 5300))
+        ],
+    }
+
+    quiet, quiet_output, _ = _reporter()
+    quiet.render_profile(ProfileSynthesis.model_validate(payload))
+    rendered = quiet_output.getvalue().replace("\n", " ")
+    assert "No profile facts were available" in rendered
+    assert "1 note about how this was built" in rendered
+    assert "5000" not in rendered
+
+    loud, loud_output, _ = _reporter(verbose=True)
+    loud.render_profile(ProfileSynthesis.model_validate(payload))
+    detailed = loud_output.getvalue().replace("\n", " ")
+    assert "300 stored pages have not been analysed" in detailed
+    assert "5000" not in detailed

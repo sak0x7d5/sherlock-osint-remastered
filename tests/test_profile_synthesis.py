@@ -291,5 +291,6 @@ def test_pending_and_invalid_sources_become_completeness_warnings():
 
     assert evidence.completeness == "partial"
     warnings = synthesis_warnings(evidence)
-    assert "site ids: 2" in warnings[0]
+    # A count, not the ids: on a real username the id list ran to hundreds.
+    assert warnings[0].startswith("1 stored page has not been analysed")
     assert "site id 3" in warnings[1]

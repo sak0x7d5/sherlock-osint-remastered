@@ -2379,3 +2379,151 @@ async def test_synthesize_profiles_hands_back_the_usernames_that_failed(
     # Isolated, so "good" still got its profile -- and reported, so the caller
     # can tell the difference.
     assert failures == {"bad": boom}
+
+
+def _pending_db(pending: list[int]):
+    class FakeDB:
+        closed = False
+
+        async def get_pending_ai_extraction_ids(self, _username, *, contract_hash):
+            return list(pending)
+
+        async def close(self):
+            self.closed = True
+
+    return FakeDB()
+
+
+async def test_analyse_pending_reads_unread_pages_before_merging(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Pass one first, then pass two -- the order a scan already keeps.
+
+    A rebuild merged whatever was stored and left unread pages out, so a
+    profile could be "rebuilt" over evidence that was still half-extracted.
+    """
+    order: list[str] = []
+    db = _pending_db([7, 9])
+
+    async def fake_db_create(_path):
+        return db
+
+    class Service:
+        async def close(self):
+            return None
+
+    async def fake_model_create(*_args, **_kwargs):
+        order.append("model")
+        return Service()
+
+    async def fake_server(**kwargs):
+        return None
+
+    async def fake_extract(*, db, ai_service, site_ids, reporter):
+        order.append(f"pass1:{list(site_ids)}")
+
+    async def fake_synthesize_profiles(**_kwargs):
+        order.append("pass2")
+        return {}
+
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.AIService, "create", fake_model_create)
+    monkeypatch.setattr(sherlock_module, "_ensure_server_for_synthesis", fake_server)
+    monkeypatch.setattr(sherlock_module, "_extract_stored_pages", fake_extract)
+    monkeypatch.setattr(
+        sherlock_module, "synthesize_profiles", fake_synthesize_profiles
+    )
+
+    await sherlock_module.run_synthesis_only(
+        usernames=["blue"], force=True, analyse_pending=True
+    )
+
+    assert order == ["model", "pass1:[7, 9]", "pass2"]
+    assert db.closed is True
+
+
+async def test_an_unanchored_build_still_merges_if_the_model_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The model was only wanted for the leftover pages. Without one, merging
+    what is stored is still a profile -- failing the whole build is not."""
+    order: list[str] = []
+    db = _pending_db([7])
+
+    async def fake_db_create(_path):
+        return db
+
+    async def broken_model_create(*_args, **_kwargs):
+        raise RuntimeError("no model configured")
+
+    async def fake_server(**kwargs):
+        return None
+
+    async def unexpected_extract(**_kwargs):
+        raise AssertionError("pass one cannot run without a model")
+
+    async def fake_synthesize_profiles(**kwargs):
+        order.append("pass2")
+        assert kwargs["ai_service"]._provider is None
+        return {}
+
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.AIService, "create", broken_model_create)
+    monkeypatch.setattr(sherlock_module, "_ensure_server_for_synthesis", fake_server)
+    monkeypatch.setattr(sherlock_module, "_extract_stored_pages", unexpected_extract)
+    monkeypatch.setattr(
+        sherlock_module, "synthesize_profiles", fake_synthesize_profiles
+    )
+
+    await sherlock_module.run_synthesis_only(
+        usernames=["blue"], force=True, analyse_pending=True
+    )
+    assert order == ["pass2"]
+
+
+async def test_stopping_a_build_while_the_model_loads_stops_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Stop in the UI cancels the build mid-load. The server it started must
+    not be left running behind it."""
+    from sherlock_project.profile_synthesis import IdentityAnchor
+
+    events: list[str] = []
+    db = _pending_db([])
+
+    async def fake_db_create(_path):
+        return db
+
+    class HangingServer:
+        def __init__(self, settings):
+            pass
+
+        async def ensure_running(self):
+            events.append("loading")
+            await asyncio.Event().wait()
+
+        async def stop(self):
+            events.append("stop")
+
+    class Settings:
+        is_cloud = False
+
+    monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", HangingServer)
+    monkeypatch.setattr(sherlock_module, "load_ai_settings", lambda: Settings())
+    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+
+    task = asyncio.create_task(
+        sherlock_module.run_synthesis_only(
+            usernames=["blue"],
+            force=True,
+            inline_anchors=[IdentityAnchor(field="name", value="Avery Stone")],
+        )
+    )
+    while "loading" not in events:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["loading", "stop"]
+    assert db.closed is True
