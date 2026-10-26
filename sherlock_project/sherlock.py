@@ -504,13 +504,22 @@ async def run_synthesis_only(
     inline_anchors: Sequence[IdentityAnchor] = (),
     reporter: TerminalReporter | None = None,
     ai_settings: AISettings | None = None,
+    analyse_pending: bool = False,
 ) -> dict[str, Exception]:
     """Rebuild pass two from stored evidence. Returns the usernames that failed.
 
-    Fetches nothing and extracts nothing: pass two merges extractions already on
-    disk. An UNANCHORED run needs no model at all -- the merge is deterministic
-    and in-process -- which is why the model is started only when anchors make
-    one necessary.
+    Fetches nothing: pass two merges extractions already on disk. An
+    UNANCHORED run needs no model at all -- the merge is deterministic and
+    in-process -- which is why the model is started only when anchors make one
+    necessary.
+
+    `analyse_pending` runs pass one over stored pages it has not read yet
+    FIRST, in the same model session, so the merge works from every page
+    rather than leaving the unread ones out. That is the order a scan with
+    analysis already keeps (pass two waits for the extraction queue to drain);
+    a rebuild skipped it and merged whatever happened to be there. A page that
+    still fails is left pending and the profile says so. If the model cannot
+    start, an unanchored build falls back to merging what is stored.
     """
     database_path = default_database_path()
     if reporter is not None:
@@ -527,7 +536,16 @@ async def run_synthesis_only(
             contract_hash=contract_hash,
             reporter=reporter,
         )
-        needs_model = build_investigation_context(inline_anchors).has_anchors
+        anchored = build_investigation_context(inline_anchors).has_anchors
+        pending_ids: list[int] = []
+        if analyse_pending:
+            for username in usernames:
+                pending_ids.extend(
+                    await db.get_pending_ai_extraction_ids(
+                        username, contract_hash=contract_hash
+                    )
+                )
+        needs_model = anchored or bool(pending_ids)
         if needs_model and reporter is not None:
             reporter.ai_model_starting()
         if needs_model:
@@ -536,16 +554,38 @@ async def run_synthesis_only(
                 reporter=reporter,
             )
         trace_callback = reporter.ai_trace if reporter is not None else None
-        ai_service = (
-            await AIService.create(
-                settings=ai_settings,
-                trace_callback=trace_callback,
+        if needs_model:
+            try:
+                ai_service = await AIService.create(
+                    settings=ai_settings,
+                    trace_callback=trace_callback,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # Anchors cannot be resolved without a model, so that build
+                # fails as it always has. An unanchored one only wanted the
+                # model to read the leftover pages: it merges what is stored,
+                # and the profile's own note counts the pages left out.
+                if anchored:
+                    raise
+                if reporter is not None:
+                    reporter.ai_model_failed(error)
+                ai_service = AIService(trace_callback=trace_callback)
+                pending_ids = []
+            else:
+                if reporter is not None:
+                    reporter.ai_model_ready()
+        else:
+            ai_service = AIService(trace_callback=trace_callback)
+
+        if pending_ids:
+            await _extract_stored_pages(
+                db=db,
+                ai_service=ai_service,
+                site_ids=pending_ids,
+                reporter=reporter,
             )
-            if needs_model
-            else AIService(trace_callback=trace_callback)
-        )
-        if needs_model and reporter is not None:
-            reporter.ai_model_ready()
         failures = await synthesize_profiles(
             db=db,
             ai_service=ai_service,
@@ -569,6 +609,35 @@ async def run_synthesis_only(
                 raise cleanup_error
 
     return failures
+
+
+async def _extract_stored_pages(
+    *,
+    db: SherlockDB,
+    ai_service: AIService,
+    site_ids: Sequence[int],
+    reporter: TerminalReporter | None,
+) -> None:
+    """Run pass one over stored pages, and return once every one is done.
+
+    The scan's own worker, fed a closed queue: it drains the ids and returns.
+    Per-page failures are the worker's to report and leave pending, exactly as
+    during a scan -- one unreadable page must not cost the build.
+    """
+    queue: asyncio.Queue[int] = asyncio.Queue()
+    for site_id in site_ids:
+        queue.put_nowait(site_id)
+        if reporter is not None:
+            reporter.ai_scheduled()
+    queue.shutdown()
+    await ai_worker(
+        ai_queue=queue,
+        sherlock_db=db,
+        ai_service=ai_service,
+        reporter=reporter,
+    )
+    if reporter is not None:
+        reporter.ai_pass_finished()
 
 
 async def _ensure_server_for_synthesis(

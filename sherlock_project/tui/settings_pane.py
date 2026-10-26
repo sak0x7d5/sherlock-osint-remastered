@@ -135,6 +135,19 @@ def styled_value(field: SettingField, value: Any) -> Text:
     elif plain == "not set":
         text.append(plain, style="dim italic")
     else:
+        # Never wider than the column. A long model key ran straight into the
+        # "⏎ change" beside it. For a model the END is what identifies it, so
+        # it is shortened the way the scan pane's MODEL block does; anything
+        # else keeps its start and gets an ellipsis.
+        room = VALUE_WIDTH - 2
+        if len(plain) <= room:
+            pass
+        elif field.kind == "model":
+            from sherlock_project.tui.theme import model_name
+
+            plain = model_name(plain, room)
+        elif len(plain) > room:
+            plain = plain[: room - 1] + "…"
         text.append(plain, style="bold")
     text.pad_right(max(0, VALUE_WIDTH - text.cell_len))
     return text
@@ -494,7 +507,10 @@ class SettingsPane(Vertical):
         Binding("enter", "edit", "edit"),
         Binding("r", "reset", "reset row"),
         Binding("ctrl+s", "save", "save"),
-        Binding("escape", "leave", "close"),
+        # "done", not "close": in the unified UI Escape leaves this tab for
+        # SCAN rather than closing anything, and in `sherlock-rm settings` it
+        # exits. "done" is true of both.
+        Binding("escape", "leave", "done"),
     ]
 
     class Closed(Message):

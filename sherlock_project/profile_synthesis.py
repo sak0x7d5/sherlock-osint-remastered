@@ -378,13 +378,43 @@ AGGREGATE_ANCHOR_WARNING = (
 )
 
 
+def pending_pages_warning(count: int) -> str:
+    """The note for stored pages pass one has not read, as a COUNT.
+
+    It used to list every site id. On a username with a few hundred hits that
+    was a paragraph of numbers -- and it was the first thing an empty profile
+    showed, so "rebuild" looked like it had printed a database dump. The ids
+    are still in `pending_site_ids` on the evidence and in the input hash; a
+    person needs how many and what to do about it, not which rows.
+    """
+    if count == 1:
+        return (
+            "1 stored page has not been analysed yet, so this profile leaves "
+            "it out. Analysing it re-fetches nothing."
+        )
+    return (
+        f"{count} stored pages have not been analysed yet, so this profile "
+        "leaves them out. Analysing them re-fetches nothing."
+    )
+
+
+# The wording `pending_pages_warning` replaced. Profiles stored before then
+# still carry it, so the renderer recognises it and counts the ids instead.
+LEGACY_PENDING_WARNING_PREFIX = "Pass-one extraction is still pending for site ids: "
+
+
+def readable_warning(warning: str) -> str:
+    """A stored warning, as it should be shown to a person."""
+    if warning.startswith(LEGACY_PENDING_WARNING_PREFIX):
+        ids = warning.removeprefix(LEGACY_PENDING_WARNING_PREFIX).split(",")
+        return pending_pages_warning(len([i for i in ids if i.strip()]))
+    return warning
+
+
 def synthesis_warnings(evidence: SynthesisEvidence) -> list[str]:
     warnings: list[str] = []
     if evidence.pending_site_ids:
-        warnings.append(
-            "Pass-one extraction is still pending for site ids: "
-            + ", ".join(str(site_id) for site_id in evidence.pending_site_ids)
-        )
+        warnings.append(pending_pages_warning(len(evidence.pending_site_ids)))
     for invalid in evidence.invalid_extractions:
         warnings.append(
             f"Ignored invalid pass-one JSON for site id {invalid.site_id}: "
