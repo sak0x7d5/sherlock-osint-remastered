@@ -470,12 +470,20 @@ async def test_saving_without_a_model_says_only_the_model_is_missing(
 
     The old wording said "AI needs both an endpoint and a model", which sent
     people hunting for a second problem after the endpoint started defaulting.
+
+    An AI field is edited first: an untouched [ai] block is not an attempt to
+    configure AI, and saving it must succeed (see the test below).
     """
     path = tmp_path / "config.toml"
     save_settings(SherlockSettings(), path=path, environ={})
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
+        for _ in range(_index_of("ai.temperature")):
+            await pilot.press("down")
+        await pilot.press("right")
+        assert app._values["ai.temperature"] != DEFAULT_AI_TEMPERATURE
+
         await pilot.press("ctrl+s")
 
         assert "Cannot save" in app._status
@@ -483,6 +491,34 @@ async def test_saving_without_a_model_says_only_the_model_is_missing(
         assert "an endpoint" not in app._status
 
     assert load_settings(path=path, environ={}).ai is None
+
+
+async def test_a_scan_setting_saves_without_ever_setting_up_ai(
+    tmp_path: Path,
+):
+    """No [ai] section and no AI edits must not block every other setting.
+
+    The AI rows arrive pre-filled with their defaults, and those defaults used
+    to count as edits: with no model to go with them, ctrl+s refused to save
+    anything at all -- concurrency, NSFW, theme -- until `setup ai` had run.
+    """
+    path = tmp_path / "config.toml"
+    save_settings(SherlockSettings(scan=ScanSettings(concurrency=20)),
+                  path=path, environ={})
+    app = SettingsApp(config_path=path)
+
+    async with app.run_test() as pilot:
+        for _ in range(_index_of("scan.concurrency")):
+            await pilot.press("down")
+        await pilot.press("right")
+        assert app._values["scan.concurrency"] != 20
+
+        await pilot.press("ctrl+s")
+        assert "Saved" in app._status
+
+    stored = load_settings(path=path, environ={})
+    assert stored.ai is None
+    assert stored.scan.concurrency == app._values["scan.concurrency"]
 
 
 async def test_a_stale_message_is_cleared_when_the_cursor_moves(tmp_path: Path):

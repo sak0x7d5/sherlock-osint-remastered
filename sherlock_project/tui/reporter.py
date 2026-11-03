@@ -689,6 +689,17 @@ class TuiReporter(TerminalReporter):
         return found
 
     @property
+    def analysis_progress(self) -> tuple[int, int, int] | None:
+        """Pass one's (done, total, failed), or None when none was scheduled.
+
+        For a rebuild that reads leftover pages before merging: the scan has
+        its own ANALYSIS panel for this, the profile pane has one status line.
+        """
+        if not self._ai_scheduled:
+            return None
+        return (self._ai_completed, self._ai_scheduled, self._ai_pending)
+
+    @property
     def extraction(self) -> Extraction | None:
         """What the model is working on this instant, or None between jobs.
 
