@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from sherlock_project.ai_config import (
     DEFAULT_LLAMACPP_BASE_URL,
+    THEME_CHOICES,
     AISettings,
     OutputSettings,
     ScanSettings,
@@ -271,6 +272,10 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
     SettingField("scan", "nsfw", "NSFW sites", "toggle"),
     SettingField("output", "color", "colour", "toggle"),
     SettingField("output", "verbose", "verbose", "toggle"),
+    # Last in its section: it is the one setting here that changes nothing
+    # about what any surface SAYS. The TUI previews each step live, so the
+    # spinner is a way of looking through them rather than of guessing.
+    SettingField("output", "theme", "theme", "spin", THEME_CHOICES),
     SettingField("update", "check_on_startup", "check on startup", "toggle"),
 )
 
@@ -450,6 +455,12 @@ _STATIC_DESCRIPTIONS: dict[str, str] = {
     "output.verbose": (
         "Show the diagnostic detail behind a run: per-request traces, model "
         "failures, and what was skipped."
+    ),
+    "output.theme": (
+        "The interface's colours. The amoled themes are true black, so an "
+        "OLED screen shows nothing behind them. Previewed as you step through; "
+        "^S keeps it, esc puts the saved one back. Only the full-screen UI "
+        "uses it."
     ),
     "update.check_on_startup": (
         "Ask GitHub whether a newer release exists when the UI opens, and "

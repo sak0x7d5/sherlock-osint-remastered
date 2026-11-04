@@ -73,6 +73,8 @@ from sherlock_project.settings import (
     step_value,
     value_label,
 )
+from sherlock_project.tui.theme import tone
+from sherlock_project.tui.themes import apply_theme
 
 SECTION_TITLES = {
     "ai": "AI",
@@ -81,6 +83,7 @@ SECTION_TITLES = {
     "update": "Update",
 }
 LABEL_WIDTH = 18
+THEME_KEY = "output.theme"
 VALUE_WIDTH = 26
 
 
@@ -129,9 +132,9 @@ def styled_value(field: SettingField, value: Any) -> Text:
     plain = render_value(field, value)
     text = Text()
     if field.kind in {"spin", "toggle"}:
-        text.append("‹", style="bold cyan")
+        text.append("‹", style=tone("bold accent"))
         text.append(plain[1:-1], style="bold")
-        text.append("›", style="bold cyan")
+        text.append("›", style=tone("bold accent"))
     elif plain == "not set":
         text.append(plain, style="dim italic")
     else:
@@ -339,7 +342,7 @@ class ModelPickerScreen(ModalScreen[ModelChoice]):
         """
         table = self.query_one("#models", DataTable)
         table.add_row(
-            Text("▸" if self._models_dir is None else " ", style="bold cyan"),
+            Text("▸" if self._models_dir is None else " ", style=tone("bold accent")),
             Text("Change models folder…", style="bold"),
             Text(self._models_dir or "not set", style="dim"),
             Text(""),
@@ -404,7 +407,7 @@ class ModelPickerScreen(ModalScreen[ModelChoice]):
                 Text(
                     ("▸" if model.key == self._current else " ")
                     + ("●" if model.loaded else " "),
-                    style="bold cyan",
+                    style=tone("bold accent"),
                 ),
                 model.key,
                 model.params or "?",
@@ -578,9 +581,9 @@ class SettingsPane(Vertical):
     def _redraw(self) -> None:
         self.query_one("#title", Static).update(
             Text.assemble(
-                ("Sherlock settings", "bold cyan"),
+                ("Sherlock settings", tone("bold accent")),
                 "   ",
-                ("● unsaved", "bold yellow") if self.dirty else ("saved", "dim"),
+                ("● unsaved", tone("bold warning")) if self.dirty else ("saved", "dim"),
             )
         )
         for index, field in enumerate(SETTING_FIELDS):
@@ -605,10 +608,10 @@ class SettingsPane(Vertical):
             note = field_note(field, self._values[field.key])
             if note:
                 if note.warning:
-                    tone = "yellow" if selected else "dim yellow"
+                    note_style = tone("warning" if selected else "dim warning")
                 else:
-                    tone = "dim"
-                line.append(note.text, style=tone)
+                    note_style = "dim"
+                line.append(note.text, style=note_style)
             row.update(line)
             row.set_class(selected, "row-selected")
         self._redraw_help()
@@ -629,6 +632,22 @@ class SettingsPane(Vertical):
             help_text.append(f"  {field.doc_url}", style="dim")
         self.query_one("#help", Static).update(help_text)
 
+    def repaint(self) -> None:
+        """Redraw in the current theme. The rows are the only colour here."""
+        self._redraw()
+
+    def preview_theme(self) -> None:
+        """Show the theme the row is set to, saved or not.
+
+        The theme is the one setting whose effect can be shown rather than
+        described, so stepping through it shows each one. Saving is still what
+        keeps it: the host puts the saved theme back when this pane is left.
+        """
+        apply_theme(self.app, self._values.get(THEME_KEY))
+
+    def _restore_saved_theme(self) -> None:
+        apply_theme(self.app, self._saved.get(THEME_KEY))
+
     def action_move(self, delta: int) -> None:
         self._cursor = max(0, min(self._cursor + delta, len(SETTING_FIELDS) - 1))
         # Clear any leftover message. A "Saved to ..." line still sitting there
@@ -645,6 +664,8 @@ class SettingsPane(Vertical):
         else:
             self._values[field.key] = step_value(field, current, delta)
             self._status = ""
+        if field.key == THEME_KEY:
+            self.preview_theme()
         self._redraw()
 
     def action_edit(self) -> None:
@@ -745,6 +766,8 @@ class SettingsPane(Vertical):
                 f"{field.label} back to the default "
                 f"({plain_value(field, default)})"
             )
+            if field.key == THEME_KEY:
+                self.preview_theme()
         self._redraw()
 
     def action_save(self) -> None:
@@ -775,6 +798,10 @@ class SettingsPane(Vertical):
             self._status = "Unsaved changes — ^S to save, esc again to discard"
             self._redraw()
             return
+        # Leaving with the edit discarded: the preview goes with it. In the
+        # unified UI the tab change would restore it too, but the standalone
+        # command exits without one.
+        self._restore_saved_theme()
         self.post_message(
             self.Closed(
                 self._saved != field_values(try_load_settings(path=self._config_path))

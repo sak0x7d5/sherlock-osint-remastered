@@ -171,6 +171,7 @@ from sherlock_project.tui.theme import (
     status_from_name,
     status_key,
     status_style,
+    tone,
 )
 
 # Width the profile renderer is asked to lay out against. Fixed rather than the
@@ -525,12 +526,7 @@ class ResultsPane(Vertical):
         # suppressed -- so the next key seemed to go nowhere.
         self.query_one("#detail-tabs", Tabs).can_focus = False
 
-        # Drawn once. The key is the app's vocabulary, not this record's, so
-        # nothing that happens to the data can change it. One line, beside the
-        # filter, on the one section whose table draws these symbols.
-        self.query_one("#sites-key", Static).update(
-            status_key(KEY_STATUSES, columns=len(KEY_STATUSES))
-        )
+        self._redraw_key()
         self._redraw_found_only()
         self._fit_keys()
 
@@ -565,6 +561,33 @@ class ResultsPane(Vertical):
         self._request_load()
 
     # -- loading ------------------------------------------------------------
+
+    def _redraw_key(self) -> None:
+        """The status key, beside the filter on the one section whose table
+        draws these symbols.
+
+        The app's vocabulary, not this record's, so no change to the DATA
+        redraws it -- which is exactly why a theme change must. Drawn only at
+        mount, it kept the first palette's colours while the rows under it took
+        the new one, and a key that disagrees with the column it explains is
+        the one thing `status_key` exists to prevent.
+        """
+        self.query_one("#sites-key", Static).update(
+            status_key(KEY_STATUSES, columns=len(KEY_STATUSES))
+        )
+
+    def repaint(self) -> None:
+        """Redraw the list and the open record in the current theme.
+
+        A reload rather than a re-render from the record in hand: the record is
+        spread across the list, the header, the sites table, the extractions
+        and the profile card, and the reload already rebuilds every one of
+        them -- this tab runs it on every visit, so it is the well-trodden
+        path rather than a second one written for a colour change. The key is
+        not part of a record, so it is redrawn here on its own.
+        """
+        self._redraw_key()
+        self.action_reload()
 
     def action_reload(self) -> None:
         self._request_load()
@@ -636,7 +659,7 @@ class ResultsPane(Vertical):
                 Text(listing.username, overflow="ellipsis", no_wrap=True),
                 Text(
                     str(listing.claimed_sites),
-                    style="bold green" if listing.claimed_sites else "dim",
+                    style=tone("bold success") if listing.claimed_sites else "dim",
                 ),
                 Text(str(listing.total_sites), style="dim"),
                 key=listing.username,
@@ -960,11 +983,11 @@ class ResultsPane(Vertical):
         """
         line = Text()
         if unresolved and self._found_only:
-            line.append(f"{unresolved} unresolved hidden", style="yellow")
+            line.append(f"{unresolved} unresolved hidden", style=tone("warning"))
             line.append("  ·  ", style="dim")
-            line.append(f"{found} found", style="green" if found else "dim")
+            line.append(f"{found} found", style=tone("success") if found else "dim")
         else:
-            line.append(f"{found} found", style="green" if found else "dim")
+            line.append(f"{found} found", style=tone("success") if found else "dim")
             line.append("  ·  ", style="dim")
             line.append(
                 f"{unresolved} unresolved", style="dim" if not unresolved else ""
@@ -1245,17 +1268,17 @@ class ResultsPane(Vertical):
                 else ""
             )
             name.append("▾ ", style="dim")
-            name.append(str(record["username"]), style="bold cyan")
+            name.append(str(record["username"]), style=tone("bold accent"))
             name.append(f"{position} · ^l list", style="dim")
         else:
-            name.append(str(record["username"]), style="bold cyan")
+            name.append(str(record["username"]), style=tone("bold accent"))
         facts = Text(no_wrap=True, overflow="ellipsis")
         facts.append(
-            f"{len(accounts)} found", style="green" if accounts else "dim"
+            f"{len(accounts)} found", style=tone("success") if accounts else "dim"
         )
         if unresolved:
             facts.append(" · ", style="dim")
-            facts.append(f"{len(unresolved)} unresolved", style="yellow")
+            facts.append(f"{len(unresolved)} unresolved", style=tone("warning"))
         facts.append(
             f" · {record['sites_checked']} checked"
             f" · scanned {record['last_scanned_at']}",
@@ -1568,7 +1591,7 @@ class ResultsPane(Vertical):
                 Text(
                     f"{spinner(self._build_tick)} merging evidence  "
                     f"{elapsed_label(elapsed)}",
-                    style="cyan",
+                    style=tone("accent"),
                 )
             )
         # Joined, not each followed by a newline: a trailing one drew an empty
@@ -1807,7 +1830,7 @@ class ResultsPane(Vertical):
             )
             card.append(
                 " " * 10 + "Without anchors it describes anyone using this name.",
-                style="yellow",
+                style=tone("warning"),
             )
         card.rstrip()
         hint.update(card)
@@ -1837,7 +1860,7 @@ class ResultsPane(Vertical):
             else:
                 line.append(
                     "No site matched your anchors closely enough",
-                    style="yellow",
+                    style=tone("warning"),
                 )
         else:
             line.append(
@@ -1845,7 +1868,7 @@ class ResultsPane(Vertical):
                 if used
                 else "Merged from every analysed site"
             )
-            line.append(" · no anchors", style="yellow")
+            line.append(" · no anchors", style=tone("warning"))
         built = built_label(record.get("profile_updated_at"))
         if built:
             line.append(f" · built {built}", style="dim")
@@ -1879,13 +1902,13 @@ class ResultsPane(Vertical):
             line.append(
                 "\nThis profile is anchored, but no anchors are set — rebuilding "
                 "now would replace it with an unresolved merge.",
-                style="yellow",
+                style=tone("warning"),
             )
         elif wanted != built_with:
             # Anchors are listed in the profile body; here only the fact that
             # the edits have not been applied, which the body cannot show.
             line.append(
-                "\nAnchors changed — rebuild to apply them.", style="yellow"
+                "\nAnchors changed — rebuild to apply them.", style=tone("warning")
             )
         return line
 
@@ -2039,7 +2062,7 @@ class ResultsPane(Vertical):
         """
         self._set_building(False)
         self.query_one("#profile-status", Static).update(
-            Text(f"Could not build profile: {error}", style="red")
+            Text(f"Could not build profile: {error}", style=tone("error"))
         )
 
     def _profile_block(self, record: dict[str, Any]) -> Any:
@@ -2056,7 +2079,7 @@ class ResultsPane(Vertical):
                 "A profile is stored but no longer matches the current "
                 "format. Rebuild it from the CLI:\n"
                 f"  sherlock-rm {record['username']} --ai-synthesize-only",
-                style="yellow",
+                style=tone("warning"),
             )
         profile = record.get("profile")
         if profile is None or not profile_has_facts(profile):

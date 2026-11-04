@@ -26,7 +26,7 @@ from collections.abc import Iterable, Sequence
 from rich.text import Text
 
 from sherlock_project.database import SiteExtractionRecord
-from sherlock_project.tui.theme import model_name
+from sherlock_project.tui.theme import model_name, tone
 
 # How wide a model key may be on the provenance line. Narrower than the 48 the
 # old dialog used: this now renders into the panel's detail column, which is the
@@ -116,12 +116,12 @@ def extraction_summary(records: Sequence[SiteExtractionRecord]) -> Text:
     never = len(records) - analysed
 
     text = Text()
-    text.append(f"{with_facts} with facts", style="green" if with_facts else "dim")
+    text.append(f"{with_facts} with facts", style=tone("success") if with_facts else "dim")
     text.append(f"\n{empty} empty", style="dim")
     if never:
         # Only when there are any. A permanent `0 never analysed` would be a
         # line that says nothing on every run where analysis was on throughout.
-        text.append(f"\n{never} never analysed", style="yellow")
+        text.append(f"\n{never} never analysed", style=tone("warning"))
     return text
 
 
@@ -138,7 +138,7 @@ def extraction_detail(
         )
 
     text = Text()
-    text.append(record.site_name, style="bold cyan")
+    text.append(record.site_name, style=tone("bold accent"))
     text.append("\n")
     text.append_text(extraction_provenance(record, contract_hash))
     text.append("\n\n")
@@ -180,7 +180,7 @@ def extraction_provenance(
         _row(
             "model",
             model_name(model, MODEL_LINE_WIDTH) if model else "not recorded",
-            style="cyan" if model else "",
+            style=tone("accent") if model else "",
             muted=not model,
         )
     )
@@ -197,7 +197,7 @@ def extraction_provenance(
             _row(
                 "contract",
                 "current" if fresh else "superseded — a re-scan will redo it",
-                style="green" if fresh else "yellow",
+                style=tone("success") if fresh else tone("warning"),
             )
         )
     return text
@@ -253,7 +253,7 @@ def extraction_facts(record: SiteExtractionRecord) -> Text:
             )
             # Text(), never markup: this is model output about a scanned page,
             # and Rich would read brackets in it as a style tag.
-            text.append(value, style="cyan")
+            text.append(value, style=tone("accent"))
     return text
 
 
@@ -329,4 +329,4 @@ def facts_cell(record: SiteExtractionRecord | None) -> Text:
     if not count:
         # Dim, but a real zero. It is an answer.
         return Text("0", style="dim")
-    return Text(str(count), style="green")
+    return Text(str(count), style=tone("success"))
