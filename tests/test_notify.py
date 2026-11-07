@@ -6,19 +6,19 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from sherlock_project import notify as notify_module
-from sherlock_project import sherlock as sherlock_module
-from sherlock_project.ai_engine import AIRequestTrace, StructuredResponseError
-from sherlock_project.ai_provider import AIGenerationStats
-from sherlock_project.notify import (
+from sift_osint import notify as notify_module
+from sift_osint import sherlock as sherlock_module
+from sift_osint.ai_engine import AIRequestTrace, StructuredResponseError
+from sift_osint.ai_provider import AIGenerationStats
+from sift_osint.notify import (
     INTERRUPTION_MESSAGE,
     QueryNotifyPrint,
     TerminalReporter,
 )
-from sherlock_project.playwright_engine import BrowserUnavailable
-from sherlock_project.profile_synthesis import ProfileSynthesis
-from sherlock_project.result import QueryResult, QueryStatus
-from sherlock_project.settings import TRANSPORT_DOC_URL
+from sift_osint.playwright_engine import BrowserUnavailable
+from sift_osint.profile_synthesis import ProfileSynthesis
+from sift_osint.result import QueryResult, QueryStatus
+from sift_osint.settings import TRANSPORT_DOC_URL
 
 
 def _reporter(
@@ -211,7 +211,7 @@ def test_scan_summary_reports_unresolved_sites_separately_from_absent() -> None:
     assert "1 blocked by bot protection" in rendered
     assert "1 rejected the username format" in rendered
     assert 'Not the same as "not found"' in rendered
-    assert "sherlock-rm show target --unresolved" in rendered
+    assert "sift-osint show target --unresolved" in rendered
 
 
 def test_scan_summary_counters_reset_between_usernames() -> None:
@@ -228,9 +228,9 @@ def test_scan_summary_counters_reset_between_usernames() -> None:
 
     rendered = output.getvalue()
     assert "1 site of 1 gave no answer" in rendered
-    assert "sherlock-rm show first --unresolved" in rendered
+    assert "sift-osint show first --unresolved" in rendered
     # The clean second scan says nothing about the first scan's failure.
-    assert "sherlock-rm show second --unresolved" not in rendered
+    assert "sift-osint show second --unresolved" not in rendered
     assert rendered.count("gave no answer") == 1
 
 
@@ -663,7 +663,7 @@ def test_module_entrypoint_routes_through_cli(
     monkeypatch.setattr(sherlock_module, "cli", interrupted_cli)
 
     with pytest.raises(SystemExit) as error:
-        runpy.run_module("sherlock_project", run_name="__main__")
+        runpy.run_module("sift_osint", run_name="__main__")
 
     assert error.value.code == 130
     assert cli_calls == 1
@@ -1249,7 +1249,7 @@ def test_anchorless_profile_shows_no_anchor_row() -> None:
 
 
 def test_format_sources_summarises_by_count_and_name() -> None:
-    from sherlock_project.notify import _format_sources
+    from sift_osint.notify import _format_sources
 
     assert _format_sources([]) == ""
     assert _format_sources(["GitLab"]) == "1 site: GitLab"
@@ -1433,7 +1433,7 @@ def test_other_model_extractions_are_reported_once_and_only_on_mismatch():
     assert "9 from vendor/small" in text
     assert "3 from an unrecorded model" in text
     # The remedy has to be nameable, or the warning is just bad news.
-    assert "sherlock-rm blue --ai --fresh" in text
+    assert "sift-osint blue --ai --fresh" in text
 
 
 def test_other_model_extractions_uses_singular_for_one():

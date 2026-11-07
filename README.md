@@ -1,21 +1,21 @@
-# sherlock-osint-remastered
+# sift-osint
 
 **Find accounts by username across 719 sites — then have a local model tell you
 who they belong to, with every claim traced back to the page it came from.**
 
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Regression](https://github.com/sak0x7d5/sherlock-osint-remastered/actions/workflows/regression.yml/badge.svg)
+![Regression](https://github.com/sak0x7d5/sift-osint/actions/workflows/regression.yml/badge.svg)
 
 ```console
-$ sherlock-rm show hackerman1337
+$ sift-osint show hackerman1337
 [*] Stored results for 'hackerman1337' (last scanned 2026-09-10 14:22:07 · 680 sites checked · nothing written)
 [+] GitHub: https://github.com/hackerman1337
 [+] Mastodon: https://mastodon.social/@hackerman1337
 [+] Last.fm: https://last.fm/user/hackerman1337
 [+] Bandcamp: https://bandcamp.com/hackerman1337 (no browser)
 [!] 34 sites of 680 gave no answer: 21 inconclusive, 13 blocked by bot protection
-    Not the same as "not found". List them: sherlock-rm show hackerman1337 --unresolved
+    Not the same as "not found". List them: sift-osint show hackerman1337 --unresolved
 [*] AI profile for 'hackerman1337' (built 2026-09-10 14:31:52 · extracted by Qwen3-8B-Q4_K_M)
 ╭─ Profile: hackerman1337 ──────────────────────────────────────────────────────╮
 │ [!] No anchors used, so these values may describe different people who share  │
@@ -36,7 +36,7 @@ $ sherlock-rm show hackerman1337
 <sub>Illustrative output. `--sources` replaces each `3 sites: …` summary with the
 full URL behind every value.</sub>
 
-<!-- TODO: add a screenshot of `sherlock-rm ui` here (docs/images/ui.png).
+<!-- TODO: add a screenshot of `sift-osint ui` here (docs/images/ui.png).
      Upstream's demo.png showed the old URL-list output, i.e. the thing this
      fork replaces, so it was removed rather than reused. -->
 
@@ -95,36 +95,31 @@ each page, every value names the sites behind it, a site that could not be
 determined is reported as undetermined rather than as absent, and none of it is
 thrown away between runs.
 
-> [!IMPORTANT]
-> **This is not Sherlock, and it does not speak for Sherlock.**
+> [!NOTE]
+> **Origin.** sift-osint began as a fork of the
+> [Sherlock Project](https://github.com/sherlock-project/sherlock) and has since
+> become a different tool. It is independent: not affiliated with, endorsed by,
+> or supported by Sherlock's maintainers, so please report issues here rather
+> than there.
 >
-> It began as a fork of the [Sherlock Project](https://github.com/sherlock-project/sherlock)
-> and has since become a different tool:
->
-> - **Independent.** Not affiliated with, endorsed by, or supported by the
->   Sherlock Project or its maintainers. Please do not report anything you find
->   here to them, or anything you find there to us.
-> - **Not their package.** `pip install sherlock-project` installs *upstream's*
->   release. This one installs as `sherlock-rm` and does not collide with it.
 > - **Overwhelmingly new code.** 86% of the Python here is in files that do not
 >   exist upstream — the stealth-browser fetch engine, the SQLite persistence
 >   layer, bounded content extraction, the two-pass local-model pipeline, and
 >   the terminal UI. What is inherited is the site-iteration and result
 >   modelling, the scan loop's argument surface, and the TXT output format.
-> - **Different data, too.** Scans run on the
+> - **Different data.** Scans run on the
 >   [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset, not
 >   upstream's manifest, which is retained only for `--json`.
-> - **Attribution is kept, not minimised.** Upstream's copyright stays in
->   [LICENSE](LICENSE) because the MIT licence requires it and because it is
->   accurate. [NOTICE.md](NOTICE.md) itemises exactly what is inherited, what is
->   new, what is third-party, and which upstream services this still calls.
-
-> [!NOTE]
-> **A rename is coming.** `sherlock-rm` is an interim name. Carrying "sherlock"
-> invites exactly the confusion the box above spends five bullets dispelling,
-> and the project has outgrown being described as a version of something else.
-> A new name will land before the first tagged release; the repository will
-> redirect, and the command will change with it.
+> - **Its own package.** It installs as `sift-osint`; `pip install
+>   sherlock-project` installs upstream's release, so the two can coexist.
+> - **Attribution is kept.** Upstream's copyright stays in [LICENSE](LICENSE)
+>   because the MIT licence requires it and because it is accurate.
+>   [NOTICE.md](NOTICE.md) itemises what is inherited, what is new, what is
+>   third-party, and which upstream services this still calls.
+>
+> *Formerly `sherlock-rm`.* If you used that name, your database and settings
+> are picked up where they are, and the old `SHERLOCK_*` environment variables
+> still work — see [Where your data lives](#where-your-data-lives).
 
 ## Install
 
@@ -132,35 +127,35 @@ Needs **Python 3.13+** (see [Requirements](#requirements) — the floor is real)
 There is no published package yet, so install from the repository.
 `pip install sherlock-project` installs **upstream's** release, not this work.
 
-**One line, no clone.** This puts a `sherlock-rm` command on your PATH, which is
+**One line, no clone.** This puts a `sift-osint` command on your PATH, which is
 what every example below assumes. The name is deliberate: it does not collide
 with upstream's `sherlock`, so you can keep both installed.
 
 ```bash
-pipx install git+https://github.com/sak0x7d5/sherlock-osint-remastered
-# or: uv tool install git+https://github.com/sak0x7d5/sherlock-osint-remastered
-sherlock-rm --version
+pipx install git+https://github.com/sak0x7d5/sift-osint
+# or: uv tool install git+https://github.com/sak0x7d5/sift-osint
+sift-osint --version
 ```
 
 **Docker**, if you would rather not have Python 3.13 on the host — which is the
 practical answer on Debian 12, Ubuntu 24.04, and RHEL 9:
 
 ```bash
-git clone https://github.com/sak0x7d5/sherlock-osint-remastered
-cd sherlock-osint-remastered
-docker build -t sherlock-osint-remastered .
-docker run --rm sherlock-osint-remastered someusername
+git clone https://github.com/sak0x7d5/sift-osint
+cd sift-osint
+docker build -t sift-osint .
+docker run --rm sift-osint someusername
 ```
 
 The stealth browser binary is not baked into the image; the first browser-backed
 run downloads it. Mount a volume at the browser cache and at
-`/root/.local/share/sherlock` to keep both across containers.
+`/root/.local/share/sift-osint` to keep both across containers.
 
 **From a clone**, with a plain virtualenv:
 
 ```bash
-git clone https://github.com/sak0x7d5/sherlock-osint-remastered
-cd sherlock-osint-remastered
+git clone https://github.com/sak0x7d5/sift-osint
+cd sift-osint
 python3.13 -m venv .venv && source .venv/bin/activate
 pip install .
 ```
@@ -169,12 +164,12 @@ pip install .
 
 ```bash
 poetry install
-poetry run sherlock-rm --help
+poetry run sift-osint --help
 tox
 ```
 
-Installed this way `sherlock` is not on your PATH, so every `sherlock ...`
-below becomes `poetry run sherlock ...` (or run `poetry shell` once).
+Installed this way `sift-osint` is not on your PATH, so every `sift-osint ...`
+below becomes `poetry run sift-osint ...` (or run `poetry shell` once).
 
 ## Requirements
 
@@ -183,11 +178,11 @@ below becomes `poetry run sherlock ...` (or run `poetry shell` once).
   3.10–3.12. If your distribution ships an older Python, use the Docker image
   above rather than fighting it.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` on your
-  PATH, plus some `.gguf` models, for the optional AI passes. Sherlock runs the
+  PATH, plus some `.gguf` models, for the optional AI passes. sift-osint runs the
   server for you — you never start or stop one:
 
   ```
-  sherlock-rm setup ai
+  sift-osint setup ai
   ```
 
   It looks where models usually already are (LM Studio, the llama.cpp and
@@ -199,7 +194,7 @@ below becomes `poetry run sherlock ...` (or run `poetry shell` once).
   seconds.
 
   Already running your own `llama-server`? It is used exactly as it is and
-  never restarted or stopped — Sherlock only manages a server it started
+  never restarted or stopped — sift-osint only manages a server it started
   itself. That covers single-model servers (`-m model.gguf`) too.
 
   Other local OpenAI-compatible runtimes (Ollama, vLLM, plain endpoints) are
@@ -216,19 +211,19 @@ smallest thing tested here that reliably returns well-formed structured fields
 in Pass 1.
 
 Download a `Q4_K_M` build from [Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF)
-into wherever you keep `.gguf` files, then point Sherlock at that folder once:
+into wherever you keep `.gguf` files, then point sift-osint at that folder once:
 
 ```bash
-sherlock-rm setup ai --models-dir <folder>
+sift-osint setup ai --models-dir <folder>
 ```
 
-You do not start `llama-server` yourself — Sherlock starts and stops the one it
+You do not start `llama-server` yourself — sift-osint starts and stops the one it
 uses.
 
 Smaller models will run, and mostly cost you Pass 1 precision — they invent
 fields or file facts under the wrong heading. Larger models help most in Pass 2,
 where the merge decisions live. Whatever you pick is recorded against every
-extraction, and `sherlock-rm show` names it, so a profile built by a model you no
+extraction, and `sift-osint show` names it, so a profile built by a model you no
 longer trust is identifiable rather than silently mixed in.
 
 ### Hosted models (Gemini)
@@ -238,7 +233,7 @@ instead of `llama-server`:
 
 ```bash
 export GEMINI_API_KEY=...        # from https://aistudio.google.com/apikey
-sherlock-rm setup ai --provider gemini
+sift-osint setup ai --provider gemini
 ```
 
 What that trades away, plainly:
@@ -272,39 +267,39 @@ Pass 1 still sends one request per site, which is correct but slow on a free
 tier (about seven minutes for 70 pages at 10 a minute). Packing several sites
 per request is planned once its accuracy has been measured.
 
-`sherlock-rm setup ai --provider llamacpp` switches back.
+`sift-osint setup ai --provider llamacpp` switches back.
 
 ## Quick start
 
 Scan a username:
 
 ```bash
-sherlock-rm someusername
+sift-osint someusername
 ```
 
 Scan several at once:
 
 ```bash
-sherlock-rm user1 user2 user3
+sift-osint user1 user2 user3
 ```
 
 Scan, then have the local model read what it found:
 
 ```bash
-sherlock-rm setup ai
-sherlock-rm --ai someusername
+sift-osint setup ai
+sift-osint --ai someusername
 ```
 
 Look at what is already stored, without scanning or writing anything:
 
 ```bash
-sherlock-rm show someusername
+sift-osint show someusername
 ```
 
 Trade accuracy for speed by skipping the browser entirely:
 
 ```bash
-sherlock-rm --no-webbrowser someusername
+sift-osint --no-webbrowser someusername
 ```
 
 ## How the analysis works
@@ -321,7 +316,7 @@ merged into one profile. Fields that several sites agree on are marked
 confident; fields resting on weaker or conflicting evidence are separated out
 rather than blended in. Each value carries the sites that support it.
 
-`sherlock-rm show <user> --sources` prints the full URL behind every value.
+`sift-osint show <user> --sources` prints the full URL behind every value.
 `--json` emits the whole thing machine-readably.
 
 ### Anchoring
@@ -332,7 +327,7 @@ something true about your subject, pass it as an anchor and accounts that
 contradict it are weighted accordingly:
 
 ```bash
-sherlock-rm --ai --anchor "name=Jane Doe" --anchor "verified:location=Berlin" janedoe
+sift-osint --ai --anchor "name=Jane Doe" --anchor "verified:location=Berlin" janedoe
 ```
 
 ## Accuracy, honestly
@@ -349,7 +344,7 @@ confirm, and a fast "not found" never gets mistaken for a settled answer.
 
 **UNKNOWN is a real answer.** The site rules are two-sided — one pattern proves
 presence, another proves absence. When neither matches, the result is
-inconclusive rather than a guess. `sherlock-rm show <user> --unresolved` lists
+inconclusive rather than a guess. `sift-osint show <user> --unresolved` lists
 those sites. Sites blocked by bot protection or rejecting the username's format
 land here too, and they are *not* the same as sites where the username was free.
 
@@ -360,7 +355,7 @@ each claim actually rests on.
 ### How long a scan takes
 
 <!-- TODO: fill these from a real run before publishing. Suggested method:
-     `time sherlock-rm --fresh <user>` and `time sherlock-rm --fresh --no-webbrowser <user>`
+     `time sift-osint --fresh <user>` and `time sift-osint --fresh --no-webbrowser <user>`
      on a stated connection and machine, best of three, 680 sites, --concurrency 30.
      Blackbird publishes 731 sites in 44s for comparison, so leaving this blank
      reads worse than a slow honest number. -->
@@ -411,17 +406,22 @@ Nothing is written to the directory you run from. State follows the user:
 
 | | Windows | Linux | macOS |
 | - | - | - | - |
-| Database | `%LOCALAPPDATA%\sherlock\sherlock.db` | `~/.local/share/sherlock/sherlock.db` | `~/Library/Application Support/sherlock/sherlock.db` |
-| Settings | `%LOCALAPPDATA%\sherlock\config.toml` | `~/.config/sherlock/config.toml` | `~/Library/Application Support/sherlock/config.toml` |
+| Database | `%LOCALAPPDATA%\sift-osint\sift-osint.db` | `~/.local/share/sift-osint/sift-osint.db` | `~/Library/Application Support/sift-osint/sift-osint.db` |
+| Settings | `%LOCALAPPDATA%\sift-osint\config.toml` | `~/.config/sift-osint/config.toml` | `~/Library/Application Support/sift-osint/config.toml` |
 
-Override with `SHERLOCK_DB` and `SHERLOCK_CONFIG`. Pointing `SHERLOCK_DB` at a
+Coming from `sherlock-rm`? Nothing needs moving. If there is no file at the new
+location but one at the old (`.../sherlock/sherlock.db`, `.../sherlock/config.toml`),
+the old one is used; once a new one exists it takes over. Nothing is copied or deleted.
+
+Override with `SIFT_DB` and `SIFT_CONFIG` (the old `SHERLOCK_DB` and
+`SHERLOCK_CONFIG` are still read when the new names are unset). Pointing `SIFT_DB` at a
 scratch file gives you a throwaway database — the right move for demos, tests,
 and anything you would rather not keep.
 
 The database stores captured page content, extracted fields, and synthesised
 profiles, keyed by username. It persists until you delete it.
 
-**Removing someone.** On the RESULTS tab of `sherlock-rm ui`, pick a username and
+**Removing someone.** On the RESULTS tab of `sift-osint ui`, pick a username and
 press **✕ Delete this username** under the name on the right — or press `delete`
 with it selected. Either way it names what will go and asks first, then erases
 that username's results, stored page content, extractions and profile. Nothing
@@ -430,7 +430,7 @@ else is touched.
 > [!NOTE]
 > **There is no command-line equivalent yet.** Outside the UI, removing someone
 > still means deleting the database file or opening it with an external SQLite
-> tool. For scripted runs, pointing `SHERLOCK_DB` at a scratch file is the way
+> tool. For scripted runs, pointing `SIFT_DB` at a scratch file is the way
 > to keep a scan from being retained at all.
 
 ## Sites
@@ -470,14 +470,14 @@ uses.
 ## Commands
 
 ```
-sherlock-rm USERNAME...        Scan for a username
-sherlock-rm show USERNAME      Read what is stored. Never scans, never writes
-sherlock-rm ui                 Full-screen interface: scan, results and settings
-sherlock-rm setup ai           Configure the local model endpoint
-sherlock-rm settings           Edit stored defaults for scans, output and AI
+sift-osint USERNAME...        Scan for a username
+sift-osint show USERNAME      Read what is stored. Never scans, never writes
+sift-osint ui                 Full-screen interface: scan, results and settings
+sift-osint setup ai           Configure the local model endpoint
+sift-osint settings           Edit stored defaults for scans, output and AI
 ```
 
-`sherlock-rm ui` puts all three in one place and needs a terminal; without one it
+`sift-osint ui` puts all three in one place and needs a terminal; without one it
 says so and exits rather than failing.
 
 > [!NOTE]
@@ -521,7 +521,7 @@ says so and exits rather than failing.
 </details>
 
 <details>
-<summary><strong><code>sherlock-rm show</code> options</strong></summary>
+<summary><strong><code>sift-osint show</code> options</strong></summary>
 
 | Option | Effect |
 | - | - |
@@ -544,7 +544,7 @@ tox -e online        # live-site probes; network dependent, never a gate
 ```
 
 Bug reports, false positives, false negatives, and site requests each have an
-[issue template](https://github.com/sak0x7d5/sherlock-osint-remastered/issues/new/choose);
+[issue template](https://github.com/sak0x7d5/sift-osint/issues/new/choose);
 a false negative with the site name and the transport used is the single most
 useful thing you can file.
 
@@ -561,7 +561,7 @@ Micah Hoffman and contributors.
 MIT.
 
 - © 2019 Sherlock Project — the upstream work this is built on
-- © 2026 sherlock-osint-remastered contributors — changes made here
+- © 2026 sift-osint contributors — changes made here
 
 See [LICENSE](LICENSE) for the full text and [NOTICE.md](NOTICE.md) for
 provenance.

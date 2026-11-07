@@ -4,8 +4,8 @@ import re
 
 import pytest
 
-from sherlock_project.ai_config import AISettings
-from sherlock_project.ai_engine import (
+from sift_osint.ai_config import AISettings
+from sift_osint.ai_engine import (
     DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
     PASS_TWO_MAX_OUTPUT_TOKENS,
     AIRequestTrace,
@@ -17,12 +17,12 @@ from sherlock_project.ai_engine import (
     TargetDecision,
     pass_one_contract_hash,
 )
-from sherlock_project.ai_provider import (
+from sift_osint.ai_provider import (
     AICompletion,
     AIGenerationStats,
     AIProviderUnavailableError,
 )
-from sherlock_project.profile_synthesis import (
+from sift_osint.profile_synthesis import (
     CANONICAL_PROFILE_FIELDS,
     IdentityAnchor,
     InvestigationContext,
@@ -746,21 +746,21 @@ async def test_pass_one_contract_hash_is_deterministic_and_model_independent(
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            "sherlock_project.ai_engine.PASS_ONE_VALIDATION_POLICY_VERSION",
+            "sift_osint.ai_engine.PASS_ONE_VALIDATION_POLICY_VERSION",
             "changed-for-test",
         )
         assert pass_one_contract_hash() != expected
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            "sherlock_project.ai_engine.PROFILE_CONTENT_EXTRACTION_POLICY_VERSION",
+            "sift_osint.ai_engine.PROFILE_CONTENT_EXTRACTION_POLICY_VERSION",
             "changed-for-test",
         )
         assert pass_one_contract_hash() != expected
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            "sherlock_project.ai_engine._compact_model_schema",
+            "sift_osint.ai_engine._compact_model_schema",
             lambda _model: '{"changed":true}',
         )
         assert pass_one_contract_hash() != expected
@@ -1144,7 +1144,7 @@ async def test_provider_wide_failure_marks_remaining_sources_without_more_calls(
 
 async def test_oversized_pass_two_input_becomes_failed_source(monkeypatch):
     monkeypatch.setattr(
-        "sherlock_project.ai_engine.PASS_TWO_MAX_INPUT_BYTES",
+        "sift_osint.ai_engine.PASS_TWO_MAX_INPUT_BYTES",
         100,
     )
     service, provider = _service([])
@@ -1190,11 +1190,11 @@ async def test_pass_one_budget_widens_only_for_always_thinking_models():
     without headroom every site truncates and fails validation. Models that
     honour reasoning-off are charged nothing for this.
     """
-    from sherlock_project.ai_engine import (
+    from sift_osint.ai_engine import (
         DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
         NATIVE_REASONING_TOKEN_ALLOWANCE,
     )
-    from sherlock_project.ai_provider import AIModelInfo
+    from sift_osint.ai_provider import AIModelInfo
 
     service, _ = _service()
 
@@ -1235,7 +1235,7 @@ async def test_pass_one_contract_hash_ignores_the_widened_budget():
     cached extraction on disk -- the exact outcome the model-independent hash
     exists to prevent.
     """
-    from sherlock_project.ai_provider import AIModelInfo
+    from sift_osint.ai_provider import AIModelInfo
 
     service, _ = _service()
     baseline = service.pass_one_contract_hash
@@ -1255,7 +1255,7 @@ async def test_pass_one_contract_hash_ignores_the_widened_budget():
 
 
 def _model_info(reasoning: tuple[str, ...]):
-    from sherlock_project.ai_provider import AIModelInfo
+    from sift_osint.ai_provider import AIModelInfo
 
     return AIModelInfo(
         key="vendor/model",
@@ -1366,7 +1366,7 @@ async def test_pass_one_contract_hash_ignores_the_prompt_variant():
     on configuring an always-thinking model, and stranded again on switching
     back.
     """
-    from sherlock_project.ai_engine import (
+    from sift_osint.ai_engine import (
         PASS_ONE_NATIVE_REASONING_PROMPT_PATH,
         PASS_ONE_PROMPT_PATH,
     )
@@ -1390,7 +1390,7 @@ async def test_both_pass_one_prompts_share_every_extraction_rule():
     and not the other silently changes what a scan finds depending on which
     model is configured.
     """
-    from sherlock_project.ai_engine import (
+    from sift_osint.ai_engine import (
         PASS_ONE_NATIVE_REASONING_PROMPT_PATH,
         PASS_ONE_PROMPT_PATH,
     )

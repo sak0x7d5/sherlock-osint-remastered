@@ -2,12 +2,12 @@ import os
 
 import pytest
 
-from sherlock_project.detection import (
+from sift_osint.detection import (
     QueryConfidence,
     evaluate,
     is_rule_stale,
 )
-from sherlock_project.wmn_adapter import load_wmn_manifest
+from sift_osint.wmn_adapter import load_wmn_manifest
 
 HIT = "profile-header"
 MISS = "no such user"
@@ -307,7 +307,7 @@ class TestEveryRuleInTheDataset:
     @pytest.fixture(scope="class")
     def sites(self) -> dict:
         path = os.path.join(
-            os.path.dirname(__file__), "../sherlock_project/resources/wmn-data.json"
+            os.path.dirname(__file__), "../sift_osint/resources/wmn-data.json"
         )
         adapted, _ = load_wmn_manifest(path)
         return adapted

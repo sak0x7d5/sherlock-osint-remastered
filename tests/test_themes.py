@@ -15,27 +15,27 @@ from pathlib import Path
 
 from textual.app import App
 
-from sherlock_project.ai_config import (
+from sift_osint.ai_config import (
     DEFAULT_THEME,
     THEME_CHOICES,
     AISettings,
     OutputSettings,
-    SherlockSettings,
+    SiftSettings,
     load_settings,
     save_settings,
 )
-from sherlock_project.result import QueryStatus
-from sherlock_project.settings import SETTING_FIELDS, field_values
-from sherlock_project.settings_tui import SettingsApp
-from sherlock_project.tui.app import SherlockUI
-from sherlock_project.tui.theme import (
+from sift_osint.result import QueryStatus
+from sift_osint.settings import SETTING_FIELDS, field_values
+from sift_osint.settings_tui import SettingsApp
+from sift_osint.tui.app import SiftUI
+from sift_osint.tui.theme import (
     STATUS_ORDER,
     progress_bar,
     status_cell,
     tone,
 )
-from sherlock_project.tui.themes import (
-    SHERLOCK_THEMES,
+from sift_osint.tui.themes import (
+    SIFT_THEMES,
     oklch,
     register_themes,
     resolve_theme,
@@ -45,7 +45,7 @@ from sherlock_project.tui.themes import (
 def _seed(path: Path, theme: str | None = None) -> None:
     """A config that can be saved from the screen: one with a model in it."""
     save_settings(
-        SherlockSettings(
+        SiftSettings(
             ai=AISettings(base_url="http://127.0.0.1:8080", model="vendor/m"),
             output=OutputSettings(theme=theme or DEFAULT_THEME),
         ),
@@ -62,8 +62,8 @@ def _index_of(key: str) -> int:
 
 
 def test_the_default_theme_is_the_original_look():
-    assert OutputSettings().theme == DEFAULT_THEME == "sherlock"
-    assert field_values(SherlockSettings())["output.theme"] == "sherlock"
+    assert OutputSettings().theme == DEFAULT_THEME == "sift"
+    assert field_values(SiftSettings())["output.theme"] == "sift"
 
 
 def test_a_config_written_before_themes_existed_still_loads(tmp_path: Path):
@@ -106,7 +106,7 @@ def test_an_unknown_name_falls_back_to_the_default():
 
 
 def test_amoled_themes_are_black():
-    amoled = [theme for theme in SHERLOCK_THEMES if theme.name.startswith("amoled")]
+    amoled = [theme for theme in SIFT_THEMES if theme.name.startswith("amoled")]
 
     assert len(amoled) == 3
     for theme in amoled:
@@ -118,7 +118,7 @@ def test_amoled_themes_are_black():
 # The rules the AMOLED palettes were derived from, in OKLCH. See the module
 # docstring of tui/themes.py for what broke before they existed.
 
-_AMOLED = [theme for theme in SHERLOCK_THEMES if theme.name.startswith("amoled")]
+_AMOLED = [theme for theme in SIFT_THEMES if theme.name.startswith("amoled")]
 
 
 def _hue_gap(first: float, second: float) -> float:
@@ -175,7 +175,7 @@ def test_reading_settings_does_not_import_textual():
     """Every CLI run loads the config. The theme names are in it, so they must
     not drag the UI toolkit in with them."""
     probe = (
-        "import sys, sherlock_project.settings; "
+        "import sys, sift_osint.settings; "
         "print('textual' in sys.modules)"
     )
     out = subprocess.run(
@@ -305,8 +305,8 @@ async def test_leaving_without_saving_puts_the_saved_theme_back(tmp_path: Path):
 async def test_the_ui_opens_in_the_stored_theme(tmp_path: Path, monkeypatch):
     path = tmp_path / "config.toml"
     _seed(path, theme="amoled-mono")
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
-    app = SherlockUI()
+    monkeypatch.setenv("SIFT_CONFIG", str(path))
+    app = SiftUI()
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -318,8 +318,8 @@ async def test_the_ui_opens_on_an_unknown_theme_in_the_default(
 ):
     path = tmp_path / "config.toml"
     path.write_text('version = 1\n[output]\ntheme = "from-the-future"\n')
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
-    app = SherlockUI()
+    monkeypatch.setenv("SIFT_CONFIG", str(path))
+    app = SiftUI()
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -331,8 +331,8 @@ async def test_switching_theme_repaints_the_wordmark(tmp_path: Path, monkeypatch
     the old palette's wordmark under the new palette's chrome."""
     path = tmp_path / "config.toml"
     _seed(path)
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
-    app = SherlockUI()
+    monkeypatch.setenv("SIFT_CONFIG", str(path))
+    app = SiftUI()
 
     def wordmark_colour() -> str:
         rendered = app.query_one("#appbar").render()
@@ -358,8 +358,8 @@ async def test_the_command_palette_has_no_second_theme_picker(
     tab switch. The settings row is the one place a theme is chosen."""
     path = tmp_path / "config.toml"
     _seed(path)
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
-    app = SherlockUI()
+    monkeypatch.setenv("SIFT_CONFIG", str(path))
+    app = SiftUI()
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -377,8 +377,8 @@ async def test_switching_theme_repaints_the_status_key(tmp_path: Path, monkeypat
 
     path = tmp_path / "config.toml"
     _seed(path)
-    monkeypatch.setenv("SHERLOCK_CONFIG", str(path))
-    app = SherlockUI()
+    monkeypatch.setenv("SIFT_CONFIG", str(path))
+    app = SiftUI()
 
     def key_found_colour() -> str:
         rendered = app.query_one("#sites-key", Static).render()

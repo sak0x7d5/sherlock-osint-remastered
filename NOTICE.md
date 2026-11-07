@@ -1,6 +1,6 @@
 # Provenance
 
-`sherlock-osint-remastered` is an **independent derivative work** of the
+`sift-osint` is an **independent derivative work** of the
 [Sherlock Project](https://github.com/sherlock-project/sherlock).
 
 It is **not affiliated with, endorsed by, or supported by** the Sherlock
@@ -28,7 +28,7 @@ in this file instead.
 
 ## Inherited from upstream
 
-- The legacy site manifest (`sherlock_project/resources/data.json`) and its
+- The legacy site manifest (`sift_osint/resources/data.json`) and its
   schema. Retained and still shipped, but no longer the manifest a scan uses by
   default — see "Third-party data: WhatsMyName" below.
 - Site iteration and result modelling (`sites.py`, `result.py`).
@@ -48,7 +48,7 @@ The site manifest is being migrated to the WhatsMyName (WMN) dataset, which is
 | License | [CC BY-SA 4.0](http://creativecommons.org/licenses/by-sa/4.0/) |
 | Copyright | © Micah Hoffman |
 | Contributors | 3xp0rt, AlexisPradoOficial, funnyzak, mbiesiad, Micah Hoffman, mtedholm |
-| Vendored at | `sherlock_project/resources/wmn-data.json` |
+| Vendored at | `sift_osint/resources/wmn-data.json` |
 
 The dataset is vendored **unmodified**, with its embedded license block intact,
 and is kept as a standalone file rather than merged into any other manifest.
@@ -83,10 +83,10 @@ talks to:
 
 | Resource | Used for | Defined in |
 | - | - | - |
-| `https://data.sherlockproject.xyz` | Live site manifest | `sherlock_project/sites.py` |
-| `.../sherlock/refs/heads/exclusions/false_positive_exclusions.txt` | False-positive exclusions | `sherlock_project/sites.py` |
+| `https://data.sherlockproject.xyz` | Live site manifest | `sift_osint/sites.py` |
+| `.../sherlock/refs/heads/exclusions/false_positive_exclusions.txt` | False-positive exclusions | `sift_osint/sites.py` |
 | `.../sherlock/master/.../data.schema.json` | Remote schema conformance test | `tests/conftest.py` |
-| `.../sherlock-project/sherlock/pulls/{n}` | `--json <PR number>` manifest loading | `sherlock_project/sherlock.py` |
+| `.../sherlock-project/sherlock/pulls/{n}` | `--json <PR number>` manifest loading | `sift_osint/sherlock.py` |
 
 Pass `--local` to use only the bundled manifest and avoid the first two.
 
@@ -96,9 +96,9 @@ tool talks to:
 
 | Resource | Used for | Defined in |
 | - | - | - |
-| `https://api.github.com/repos/sak0x7d5/sherlock-osint-remastered/releases/latest` | Update check, once per scan, and once when the UI opens if `update.check_on_startup` is on | `sherlock_project/__init__.py`, `sherlock_project/updater.py` |
-| `https://github.com/sak0x7d5/sherlock-osint-remastered` | Downloading a release, and only after the update dialog is confirmed | `sherlock_project/updater.py` |
-| `https://generativelanguage.googleapis.com/v1beta/openai` | Both AI passes, **only** when `ai.provider = "gemini"` is configured; sends the text of every profile page found | `sherlock_project/ai_provider.py` |
+| `https://api.github.com/repos/sak0x7d5/sift-osint/releases/latest` | Update check, once per scan, and once when the UI opens if `update.check_on_startup` is on | `sift_osint/__init__.py`, `sift_osint/updater.py` |
+| `https://github.com/sak0x7d5/sift-osint` | Downloading a release, and only after the update dialog is confirmed | `sift_osint/updater.py` |
+| `https://generativelanguage.googleapis.com/v1beta/openai` | Both AI passes, **only** when `ai.provider = "gemini"` is configured; sends the text of every profile page found | `sift_osint/ai_provider.py` |
 
 The check runs off-thread with a 10s timeout, and any failure -- including the
 404 returned while no release exists -- is swallowed into a verbose-only debug
@@ -106,16 +106,24 @@ line, so it can neither block nor fail a scan.
 
 The startup check is **off by default** and is the only one of these that is
 configurable: `update.check_on_startup` in the config file, or the Update
-section of `sherlock-rm settings`. It is rate-limited to one call every six
-hours by a stamp in the user cache directory (`SHERLOCK_CACHE` overrides the
+section of `sift-osint settings`. It is rate-limited to one call every six
+hours by a stamp in the user cache directory (`SIFT_CACHE` overrides the
 location). The download happens only when someone presses Update in the dialog
 that the check raises, so the second row is reached by an explicit action
 rather than by the check itself.
 
 ## Naming
 
-This repository has not been renamed away from the upstream package name
-(`sherlock-project`) or console script (`sherlock`). It is **not published**
-under that name on PyPI, and no claim is made to it. Installing
-`sherlock-project` from PyPI installs upstream's release, not this work. See
-[README.md](README.md) for how to install from this source tree.
+This project is named `sift-osint` (distribution, import package `sift_osint`,
+and console script alike). It was previously called `sherlock-rm`, an interim
+name that carried the upstream project's; that name was never released.
+
+It makes no claim to upstream's names. `sherlock-project` on PyPI is upstream's
+release, not this work, and the two can be installed side by side. The one
+inherited name left is the module `sift_osint/sherlock.py` (the scan loop),
+kept because it is inherited code; see "Inherited from upstream" above.
+
+For anyone who ran it under the old name: the old per-user data directory
+(`sherlock`) and `SHERLOCK_*` environment variables are still honoured as a
+fallback, so no database or settings are lost. See
+[README.md](README.md#where-your-data-lives).

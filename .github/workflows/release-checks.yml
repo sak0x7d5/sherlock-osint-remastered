@@ -18,7 +18,7 @@ on:
       - 'Dockerfile'
       - 'poetry.lock'
       - 'pyproject.toml'
-      - 'sherlock_project/**'
+      - 'sift_osint/**'
   push:
     branches:
       - main
@@ -28,7 +28,7 @@ on:
       - 'Dockerfile'
       - 'poetry.lock'
       - 'pyproject.toml'
-      - 'sherlock_project/**'
+      - 'sift_osint/**'
   workflow_dispatch:
 
 permissions:
@@ -89,14 +89,14 @@ jobs:
           wheel = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(wheel).namelist()
           required = [
-              "sherlock_project/resources/wmn-data.json",
-              "sherlock_project/resources/wmn-data.schema.json",
-              "sherlock_project/resources/data.json",
-              "sherlock_project/resources/data.schema.json",
-              "sherlock_project/resources/pass_one.md",
-              "sherlock_project/resources/pass_one_native_reasoning.md",
-              "sherlock_project/resources/pass_two.md",
-              "sherlock_project/resources/pass_two_narrative.md",
+              "sift_osint/resources/wmn-data.json",
+              "sift_osint/resources/wmn-data.schema.json",
+              "sift_osint/resources/data.json",
+              "sift_osint/resources/data.schema.json",
+              "sift_osint/resources/pass_one.md",
+              "sift_osint/resources/pass_one_native_reasoning.md",
+              "sift_osint/resources/pass_two.md",
+              "sift_osint/resources/pass_two_narrative.md",
           ]
           missing = [name for name in required if name not in names]
           if missing:
@@ -143,8 +143,8 @@ jobs:
       - name: Console script runs
         shell: bash
         run: |
-          sherlock-rm --version
-          sherlock-rm --help
+          sift-osint --version
+          sift-osint --help
 
       # Loaded through the same entry point a scan uses, so this fails if the
       # manifest is absent, unparseable, or adapts to nothing -- the three ways
@@ -156,14 +156,14 @@ jobs:
           import json
           from importlib.resources import files
 
-          from sherlock_project.sites import SitesInformation
+          from sift_osint.sites import SitesInformation
 
           sites = [site.name for site in SitesInformation()]
           if not sites:
               raise SystemExit("default manifest adapted to no usable sites")
           print(f"default manifest loaded, {len(sites)} usable sites")
 
-          legacy = files("sherlock_project").joinpath("resources/data.json")
+          legacy = files("sift_osint").joinpath("resources/data.json")
           legacy_sites = [
               k for k in json.loads(legacy.read_text(encoding="utf-8"))
               if k != "$schema"
@@ -197,7 +197,7 @@ jobs:
           python -m pip install dist/*.tar.gz
 
       - name: Console script runs
-        run: sherlock-rm --version
+        run: sift-osint --version
 
   rejects-unsupported-runtime:
     name: Refuses install below Python 3.13
@@ -253,4 +253,4 @@ jobs:
           python -m pip install dist/*.whl
 
       - name: Console script runs
-        run: sherlock-rm --version
+        run: sift-osint --version

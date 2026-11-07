@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from sherlock_project.profile_synthesis import (
+from sift_osint.profile_synthesis import (
     IdentityAnchor,
     InvalidExtraction,
     InvestigationContext,

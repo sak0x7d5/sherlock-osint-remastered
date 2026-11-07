@@ -1,6 +1,6 @@
 ## Security Policy
 
-This policy covers `sherlock-osint-remastered` only. It is an independent
+This policy covers `sift-osint` only. It is an independent
 derivative of the Sherlock Project and shares none of its maintainers — see
 [NOTICE.md](../NOTICE.md).
 
@@ -18,5 +18,5 @@ If the flaw is in code inherited unchanged from upstream, report it to
 [the Sherlock Project][upstream-url] as well — this repository cannot ship a
 fix for their users.
 
-[report-url]: https://github.com/sak0x7d5/sherlock-osint-remastered/security/advisories/new
+[report-url]: https://github.com/sak0x7d5/sift-osint/security/advisories/new
 [upstream-url]: https://github.com/sherlock-project/sherlock/security/advisories/new

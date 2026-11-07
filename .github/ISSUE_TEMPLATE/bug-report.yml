@@ -31,7 +31,7 @@ body:
     attributes:
       label: Version
       description: |
-        Output of `sherlock --version`. If you are running from a git checkout,
+        Output of `sift-osint --version`. If you are running from a git checkout,
         the commit hash (`git rev-parse --short HEAD`) is more useful than the
         version number.
     validations:

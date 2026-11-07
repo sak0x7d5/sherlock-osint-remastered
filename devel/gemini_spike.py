@@ -27,7 +27,7 @@ Examples:
     export GEMINI_API_KEY=...
     python devel/gemini_spike.py --username alice
     python devel/gemini_spike.py --username alice --limit 20 --report spike.json
-    SHERLOCK_DB=/path/to/sherlock.db python devel/gemini_spike.py -u alice -u bob
+    SIFT_DB=/path/to/sherlock.db python devel/gemini_spike.py -u alice -u bob
 """
 
 from __future__ import annotations
@@ -44,16 +44,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from sherlock_project.ai_config import DEFAULT_GEMINI_BASE_URL, AISettings
-from sherlock_project.ai_engine import AIRequestTrace, AIService
-from sherlock_project.ai_provider import (
+from sift_osint.ai_config import DEFAULT_GEMINI_BASE_URL, AISettings
+from sift_osint.ai_engine import AIRequestTrace, AIService
+from sift_osint.ai_provider import (
     AIQuotaExhaustedError,
     OpenAICompatibleProvider,
 )
-from sherlock_project.content_extraction import extract_profile_content
-from sherlock_project.database import default_database_path
-from sherlock_project.profile_synthesis import CANONICAL_PROFILE_FIELDS
-from sherlock_project.result import QueryStatus
+from sift_osint.content_extraction import extract_profile_content
+from sift_osint.database import default_database_path
+from sift_osint.profile_synthesis import CANONICAL_PROFILE_FIELDS
+from sift_osint.result import QueryStatus
 
 
 def _rows(db_path: Path, usernames: list[str], limit: int | None) -> list[sqlite3.Row]:
@@ -233,7 +233,7 @@ async def run(arguments: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("-u", "--username", action="append", required=True)
-    parser.add_argument("--db", help="Database path. Defaults to SHERLOCK_DB or the usual location.")
+    parser.add_argument("--db", help="Database path. Defaults to SIFT_DB or the usual location.")
     parser.add_argument("--model", default="gemini-2.5-flash")
     parser.add_argument("--base-url", default=DEFAULT_GEMINI_BASE_URL)
     parser.add_argument("--rpm", type=int, default=10, help="Requests per minute (default 10).")

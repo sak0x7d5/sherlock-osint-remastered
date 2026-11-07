@@ -5,7 +5,7 @@ import os
 import pytest
 from jsonschema import validate
 
-from sherlock_project.wmn_adapter import (
+from sift_osint.wmn_adapter import (
     NSFW_CATEGORY,
     adapt_wmn_manifest,
     adapt_wmn_site,
@@ -14,8 +14,8 @@ from sherlock_project.wmn_adapter import (
     preferred_transport,
 )
 
-WMN_DATA_RELATIVE = "../sherlock_project/resources/wmn-data.json"
-WMN_SCHEMA_RELATIVE = "../sherlock_project/resources/wmn-data.schema.json"
+WMN_DATA_RELATIVE = "../sift_osint/resources/wmn-data.json"
+WMN_SCHEMA_RELATIVE = "../sift_osint/resources/wmn-data.schema.json"
 
 
 def _resource(relative: str) -> str:

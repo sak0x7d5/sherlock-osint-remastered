@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Normalize the site manifest and regenerate the supported-site listing.
 
-Run with no arguments to rewrite `sherlock_project/resources/data.json` in
+Run with no arguments to rewrite `sift_osint/resources/data.json` in
 normalized form (sorted, two-space indent, trailing newline) and regenerate
 `docs/sites.md` from it.
 
@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_PATH = REPO_ROOT / "sherlock_project" / "resources" / "data.json"
-SCHEMA_PATH = REPO_ROOT / "sherlock_project" / "resources" / "data.schema.json"
+MANIFEST_PATH = REPO_ROOT / "sift_osint" / "resources" / "data.json"
+SCHEMA_PATH = REPO_ROOT / "sift_osint" / "resources" / "data.schema.json"
 SITE_LIST_PATH = REPO_ROOT / "docs" / "sites.md"
 
 DEFAULT_ENCODING = "utf-8"
@@ -56,7 +56,7 @@ def render_site_list(data: dict) -> str:
         "",
         (
             f"The **{len(social_networks)}** sites in "
-            "`sherlock_project/resources/data.json`, the legacy upstream manifest."
+            "`sift_osint/resources/data.json`, the legacy upstream manifest."
         ),
         "",
         "> This is **not** the list a normal scan uses. The default manifest is",

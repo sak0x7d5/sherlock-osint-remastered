@@ -46,15 +46,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from sherlock_project.detection import evaluate
-from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.wmn_adapter import (
+from sift_osint.detection import evaluate
+from sift_osint.playwright_engine import PlaywrightEngine
+from sift_osint.wmn_adapter import (
     load_wmn_manifest,
     normalize_username,
     preferred_transport,
 )
 
-MANIFEST_PATH = REPO_ROOT / "sherlock_project" / "resources" / "wmn-data.json"
+MANIFEST_PATH = REPO_ROOT / "sift_osint" / "resources" / "wmn-data.json"
 
 # Telegram and friends never reach 'load'; the markers live in the initial HTML.
 PAGE_WAIT_UNTIL = "domcontentloaded"

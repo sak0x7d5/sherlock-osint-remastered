@@ -6,7 +6,7 @@ that module marks its whole suite `asyncio`.
 
 import pytest
 
-from sherlock_project.ai_engine import sanitize_pass_one_extraction
+from sift_osint.ai_engine import sanitize_pass_one_extraction
 
 
 def _sanitized_name(value: str, site_name: str) -> list[str]:

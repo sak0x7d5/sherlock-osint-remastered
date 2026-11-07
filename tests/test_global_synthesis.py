@@ -1,23 +1,23 @@
 import json
 
-from sherlock_project.ai_config import DEFAULT_GEMINI_BASE_URL, AISettings
-from sherlock_project.ai_engine import (
+from sift_osint.ai_config import DEFAULT_GEMINI_BASE_URL, AISettings
+from sift_osint.ai_engine import (
     PASS_TWO_GLOBAL_MAX_OUTPUT_TOKENS,
     AIService,
     GlobalDecisions,
 )
-from sherlock_project.ai_provider import (
+from sift_osint.ai_provider import (
     AICompletion,
     AIGenerationStats,
     AIQuotaExhaustedError,
 )
-from sherlock_project.global_synthesis import (
+from sift_osint.global_synthesis import (
     Verdict,
     chunk_refs,
     deterministic_round,
     site_refs,
 )
-from sherlock_project.profile_synthesis import (
+from sift_osint.profile_synthesis import (
     IdentityAnchor,
     InvestigationContext,
     SiteExtraction,
@@ -287,7 +287,7 @@ async def test_a_skipped_ref_is_asked_again_on_its_own():
 
 
 async def test_a_failed_chunk_fails_only_its_sites(monkeypatch):
-    monkeypatch.setattr("sherlock_project.ai_engine.chunk_refs", lambda refs, sites, **_: [[ref] for ref in refs])
+    monkeypatch.setattr("sift_osint.ai_engine.chunk_refs", lambda refs, sites, **_: [[ref] for ref in refs])
 
     def answer(payload, call):
         ref = payload["sites"][0]["ref"]

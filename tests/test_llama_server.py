@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sherlock_project import llama_server
-from sherlock_project.ai_config import AISettings
-from sherlock_project.llama_server import (
+from sift_osint import llama_server
+from sift_osint.ai_config import AISettings
+from sift_osint.llama_server import (
     LlamaServerError,
     ManagedLlamaServer,
     resolve_binary,

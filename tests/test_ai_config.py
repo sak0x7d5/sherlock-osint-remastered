@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from sherlock_project.ai_config import (
+from sift_osint.ai_config import (
     CONFIG_VERSION,
     AIConfigError,
     AIConfigNotFound,
     AISettings,
-    SherlockSettings,
+    SiftSettings,
     ai_config_path,
     load_ai_settings,
     load_settings_or_default,
@@ -42,11 +42,40 @@ def test_config_round_trip_and_environment_url_override(tmp_path: Path):
 def test_config_path_honors_explicit_environment_override(tmp_path: Path):
     configured = tmp_path / "custom.toml"
 
-    assert ai_config_path({"SHERLOCK_CONFIG": str(configured)}) == configured
+    assert ai_config_path({"SIFT_CONFIG": str(configured)}) == configured
+
+
+def test_config_path_keeps_using_pre_rename_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        "sift_osint.ai_config.user_config_path",
+        lambda app, **_: tmp_path / "cfg" / app,
+    )
+    legacy = tmp_path / "cfg" / "sherlock" / "config.toml"
+    legacy.parent.mkdir(parents=True)
+    legacy.touch()
+
+    assert ai_config_path({}) == legacy
+    assert ai_config_path({"SHERLOCK_CONFIG": str(tmp_path / "x")}) == tmp_path / "x"
+
+    new = tmp_path / "cfg" / "sift-osint" / "config.toml"
+    new.parent.mkdir(parents=True)
+    new.touch()
+
+    assert ai_config_path({}) == new
+
+
+def test_saved_theme_from_before_the_rename_still_loads():
+    from sift_osint.ai_config import DEFAULT_THEME, OutputSettings
+
+    assert DEFAULT_THEME == "sift"
+    assert OutputSettings(theme="sherlock").theme == DEFAULT_THEME
+    assert OutputSettings(theme="nord").theme == "nord"
 
 
 def test_missing_config_has_actionable_error(tmp_path: Path):
-    with pytest.raises(AIConfigError, match="sherlock-rm setup ai"):
+    with pytest.raises(AIConfigError, match="sift-osint setup ai"):
         load_ai_settings(path=tmp_path / "missing.toml", environ={})
 
 
@@ -86,7 +115,7 @@ def test_absent_config_is_not_reported_as_a_read_failure(tmp_path: Path):
     """A fresh install has no config file, and that is not an error.
 
     This is the most-seen path in the tool: every first run reaches it. The
-    loader used to hand back "AI is not configured. Run `sherlock-rm setup ai`
+    loader used to hand back "AI is not configured. Run `sift-osint setup ai`
     first." for a file that had simply never been written, and the scan
     printed it as "Stored settings could not be read" -- warning about lost
     preferences that never existed, and about a model a plain scan does not
@@ -97,7 +126,7 @@ def test_absent_config_is_not_reported_as_a_read_failure(tmp_path: Path):
     )
 
     assert error is None
-    assert settings == SherlockSettings()
+    assert settings == SiftSettings()
 
 
 def test_unreadable_config_still_reports_why(tmp_path: Path):
@@ -112,7 +141,7 @@ def test_unreadable_config_still_reports_why(tmp_path: Path):
 
     settings, error = load_settings_or_default(path=path, environ={})
 
-    assert settings == SherlockSettings()
+    assert settings == SiftSettings()
     assert error is not None
     assert str(path) in error
 
@@ -124,7 +153,7 @@ def test_missing_config_keeps_raising_for_the_ai_specific_loader(tmp_path: Path)
     for the AI section specifically, an absent file really does mean "not
     configured", and the run cannot proceed.
     """
-    with pytest.raises(AIConfigNotFound, match="sherlock-rm setup ai"):
+    with pytest.raises(AIConfigNotFound, match="sift-osint setup ai"):
         load_ai_settings(path=tmp_path / "missing.toml", environ={})
 
     assert issubclass(AIConfigNotFound, AIConfigError)

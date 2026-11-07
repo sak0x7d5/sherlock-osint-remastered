@@ -9,9 +9,9 @@ class Interactives:
         """Pass arguments to Sherlock as a normal user on the command line"""
         # Adapt for platform differences (Windows likes to be special)
         if platform.system() == "Windows":
-            command:str = f"py -m sherlock_project {args}"
+            command:str = f"py -m sift_osint {args}"
         else:
-            command:str = f"sherlock-rm {args}"
+            command:str = f"sift-osint {args}"
 
         proc_out:str = ""
         try:
@@ -25,7 +25,7 @@ class Interactives:
         """Check all files within the Sherlock package for matching patterns"""
         pattern:re.Pattern = re.compile(pattern)
         matching_files:list[str] = []
-        for root, dirs, files in os.walk("sherlock_project"):
+        for root, dirs, files in os.walk("sift_osint"):
             for file in files:
                 file_path = os.path.join(root,file)
                 if "__pycache__" in file_path:

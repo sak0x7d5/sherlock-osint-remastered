@@ -3,10 +3,10 @@ import string
 
 import pytest
 
-from sherlock_project.notify import QueryNotify
-from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.result import QueryStatus
-from sherlock_project.sherlock import sherlock
+from sift_osint.notify import QueryNotify
+from sift_osint.playwright_engine import PlaywrightEngine
+from sift_osint.result import QueryStatus
+from sift_osint.sherlock import sherlock
 
 # These tests used to be grouped by errorType -- message, status_code,
 # response_url -- because that was how the legacy manifest described a site.

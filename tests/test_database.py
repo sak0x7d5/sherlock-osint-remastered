@@ -6,8 +6,8 @@ from typing import Any
 import aiosqlite
 import pytest
 
-from sherlock_project.database import SherlockDB, default_database_path
-from sherlock_project.result import QueryStatus
+from sift_osint.database import SiftDB, default_database_path
+from sift_osint.result import QueryStatus
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,7 +31,7 @@ def user_data() -> dict[str, Any]:
     }
 
 
-async def _get_result_row(db: SherlockDB, username: str, site_name: str):
+async def _get_result_row(db: SiftDB, username: str, site_name: str):
     assert db.db is not None
     async with db.db.execute(
         """
@@ -45,7 +45,7 @@ async def _get_result_row(db: SherlockDB, username: str, site_name: str):
         return await cur.fetchone()
 
 
-async def _get_username_row(db: SherlockDB, username: str):
+async def _get_username_row(db: SiftDB, username: str):
     assert db.db is not None
     async with db.db.execute(
         "SELECT * FROM usernames WHERE username = ?",
@@ -54,7 +54,7 @@ async def _get_username_row(db: SherlockDB, username: str):
         return await cur.fetchone()
 
 
-async def test_schema_is_created(db: SherlockDB):
+async def test_schema_is_created(db: SiftDB):
     assert db.db is not None
 
     async with db.db.execute(
@@ -109,7 +109,7 @@ async def test_cancelled_schema_initialization_closes_connection_and_can_reopen(
     original_rollback = aiosqlite.Connection.rollback
     original_close = aiosqlite.Connection.close
 
-    async def block_during_initialization(database: SherlockDB) -> None:
+    async def block_during_initialization(database: SiftDB) -> None:
         connection = database._require_db()
         captured_connections.append(connection)
         await connection.execute("BEGIN IMMEDIATE")
@@ -126,11 +126,11 @@ async def test_cancelled_schema_initialization_closes_connection_and_can_reopen(
         await original_close(connection)
 
     with monkeypatch.context() as patch:
-        patch.setattr(SherlockDB, "_initialize_tables", block_during_initialization)
+        patch.setattr(SiftDB, "_initialize_tables", block_during_initialization)
         patch.setattr(aiosqlite.Connection, "rollback", record_rollback)
         patch.setattr(aiosqlite.Connection, "close", record_close)
 
-        create_task = asyncio.create_task(SherlockDB.create(str(database_path)))
+        create_task = asyncio.create_task(SiftDB.create(str(database_path)))
         try:
             await asyncio.wait_for(initialization_started.wait(), timeout=1)
             create_task.cancel()
@@ -148,7 +148,7 @@ async def test_cancelled_schema_initialization_closes_connection_and_can_reopen(
     assert close_calls == [connection]
     assert connection._connection is None
 
-    reopened = await SherlockDB.create(str(database_path))
+    reopened = await SiftDB.create(str(database_path))
     try:
         assert reopened.db is not None
         async with reopened.db.execute(
@@ -174,7 +174,7 @@ async def test_schema_initialization_error_survives_cleanup_errors(monkeypatch):
     initialization_error = RuntimeError("schema initialization failed")
     original_close = aiosqlite.Connection.close
 
-    async def fail_initialization(database: SherlockDB) -> None:
+    async def fail_initialization(database: SiftDB) -> None:
         raise initialization_error
 
     async def fail_rollback(connection) -> None:
@@ -185,12 +185,12 @@ async def test_schema_initialization_error_survives_cleanup_errors(monkeypatch):
         raise OSError("close failed")
 
     with monkeypatch.context() as patch:
-        patch.setattr(SherlockDB, "_initialize_tables", fail_initialization)
+        patch.setattr(SiftDB, "_initialize_tables", fail_initialization)
         patch.setattr(aiosqlite.Connection, "rollback", fail_rollback)
         patch.setattr(aiosqlite.Connection, "close", close_then_fail)
 
         with pytest.raises(RuntimeError) as exc_info:
-            await SherlockDB.create(":memory:")
+            await SiftDB.create(":memory:")
 
     assert exc_info.value is initialization_error
     assert exc_info.value.__notes__ == [
@@ -233,7 +233,7 @@ async def test_existing_database_is_migrated_for_profile_cache(tmp_path):
     connection.commit()
     connection.close()
 
-    migrated = await SherlockDB.create(str(database_path))
+    migrated = await SiftDB.create(str(database_path))
     try:
         assert migrated.db is not None
         async with migrated.db.execute("PRAGMA table_info(usernames)") as cur:
@@ -250,7 +250,7 @@ async def test_existing_database_is_migrated_for_profile_cache(tmp_path):
     assert "ai_extraction_contract_hash" in result_column_names
 
 
-async def test_get_or_create_username_id_returns_id(db: SherlockDB, user_data: dict[str, Any]):
+async def test_get_or_create_username_id_returns_id(db: SiftDB, user_data: dict[str, Any]):
     username_id = await db.get_or_create_username_id(user_data["username"])
     assert isinstance(username_id, int)
     assert username_id > 0
@@ -261,14 +261,14 @@ async def test_get_or_create_username_id_returns_id(db: SherlockDB, user_data: d
     assert row["username"] == user_data["username"]
 
 
-async def test_get_or_create_username_id_is_stable(db: SherlockDB, user_data: dict[str, Any]):
+async def test_get_or_create_username_id_is_stable(db: SiftDB, user_data: dict[str, Any]):
     first_id = await db.get_or_create_username_id(user_data["username"])
     second_id = await db.get_or_create_username_id(user_data["username"])
 
     assert first_id == second_id
 
 
-async def test_save_result_persists_row(db: SherlockDB, user_data: dict[str, Any]):
+async def test_save_result_persists_row(db: SiftDB, user_data: dict[str, Any]):
     result_id = await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -296,7 +296,7 @@ async def test_save_result_persists_row(db: SherlockDB, user_data: dict[str, Any
     assert row["confidence"] is None
 
 
-async def test_save_result_persists_confidence(db: SherlockDB, user_data: dict[str, Any]):
+async def test_save_result_persists_confidence(db: SiftDB, user_data: dict[str, Any]):
     await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -309,7 +309,7 @@ async def test_save_result_persists_confidence(db: SherlockDB, user_data: dict[s
 
 
 async def test_save_result_updates_confidence_on_rescan(
-    db: SherlockDB, user_data: dict[str, Any]
+    db: SiftDB, user_data: dict[str, Any]
 ):
     """A rescan that downgrades the evidence must not leave the old grade behind."""
     await db.save_result(
@@ -329,7 +329,7 @@ async def test_save_result_updates_confidence_on_rescan(
     assert row["confidence"] == "Probable"
 
 
-async def test_save_result_persists_transport(db: SherlockDB, user_data: dict[str, Any]):
+async def test_save_result_persists_transport(db: SiftDB, user_data: dict[str, Any]):
     await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -342,7 +342,7 @@ async def test_save_result_persists_transport(db: SherlockDB, user_data: dict[st
 
 
 async def test_save_result_updates_transport_on_rescan(
-    db: SherlockDB, user_data: dict[str, Any]
+    db: SiftDB, user_data: dict[str, Any]
 ):
     """A re-check over a different transport must not keep the old label.
 
@@ -369,7 +369,7 @@ async def test_save_result_updates_transport_on_rescan(
 
 
 async def test_get_saved_results_reports_transport(
-    db: SherlockDB, user_data: dict[str, Any]
+    db: SiftDB, user_data: dict[str, Any]
 ):
     """The scan reads this to decide whether a stored row may be resumed."""
     await db.save_result(
@@ -384,7 +384,7 @@ async def test_get_saved_results_reports_transport(
 
 
 async def test_save_result_transport_defaults_to_unrecorded(
-    db: SherlockDB, user_data: dict[str, Any]
+    db: SiftDB, user_data: dict[str, Any]
 ):
     """NULL means "written before the column existed", not "no browser"."""
     await db.save_result(
@@ -397,7 +397,7 @@ async def test_save_result_transport_defaults_to_unrecorded(
     assert row["transport"] is None
 
 
-async def test_save_result_upserts_same_username_site(db: SherlockDB, user_data: dict[str, Any]):
+async def test_save_result_upserts_same_username_site(db: SiftDB, user_data: dict[str, Any]):
     first_id = await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -446,7 +446,7 @@ async def test_save_result_upserts_same_username_site(db: SherlockDB, user_data:
     assert row["response_text"] == "new text"
 
 
-async def test_update_result_ai_extraction_updates_field(db: SherlockDB, user_data: dict[str, Any]):
+async def test_update_result_ai_extraction_updates_field(db: SiftDB, user_data: dict[str, Any]):
     site_id = await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -473,7 +473,7 @@ async def test_update_result_ai_extraction_updates_field(db: SherlockDB, user_da
 
 
 async def test_update_result_ai_extraction_preserves_scan_timestamp(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     site_id = await db.save_result(
@@ -503,7 +503,7 @@ async def test_update_result_ai_extraction_preserves_scan_timestamp(
     assert row["scanned_at"] == scanned_at
 
 
-async def test_update_result_ai_extraction_raises_for_missing_site(db: SherlockDB):
+async def test_update_result_ai_extraction_raises_for_missing_site(db: SiftDB):
     with pytest.raises(RuntimeError, match="Failed to update AI extraction"):
         await db.update_result_ai_extraction(
             site_id=999,
@@ -514,7 +514,7 @@ async def test_update_result_ai_extraction_raises_for_missing_site(db: SherlockD
 
 
 async def test_get_pending_ai_extraction_ids_filters_for_eligible_rows(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     pending_id = await db.save_result(
@@ -575,7 +575,7 @@ async def test_get_pending_ai_extraction_ids_filters_for_eligible_rows(
 
 
 async def test_get_ai_extraction_job_joins_username_and_site_data(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     site_id = await db.save_result(
@@ -598,7 +598,7 @@ async def test_get_ai_extraction_job_joins_username_and_site_data(
 
 
 async def test_get_ai_extraction_job_clears_stale_cache_transactionally(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     site_id = await db.save_result(
@@ -632,7 +632,7 @@ async def test_get_ai_extraction_job_clears_stale_cache_transactionally(
 
 
 async def test_get_ai_extraction_job_skips_current_cached_extraction(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     site_id = await db.save_result(
@@ -651,7 +651,7 @@ async def test_get_ai_extraction_job_skips_current_cached_extraction(
 
 
 async def test_save_result_invalidates_ai_only_when_source_changes(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     original_ai = '{"name": "Blue"}'
@@ -699,7 +699,7 @@ async def test_save_result_invalidates_ai_only_when_source_changes(
 
 
 async def test_save_result_can_force_fresh_ai_extraction_for_same_source(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     original_ai = '{"full_name": "Blue Example"}'
@@ -743,7 +743,7 @@ async def test_save_result_can_force_fresh_ai_extraction_for_same_source(
     ) is not None
 
 
-async def test_concurrent_result_writes_are_serialized(db: SherlockDB):
+async def test_concurrent_result_writes_are_serialized(db: SiftDB):
     site_ids = await asyncio.gather(
         *(
             db.save_result(
@@ -770,7 +770,7 @@ async def test_cancelled_write_rolls_back_and_database_remains_usable(
     monkeypatch,
 ):
     database_path = tmp_path / "cancelled-write.db"
-    database = await SherlockDB.create(str(database_path))
+    database = await SiftDB.create(str(database_path))
     commit_started = asyncio.Event()
 
     assert database.db is not None
@@ -807,7 +807,7 @@ async def test_cancelled_write_rolls_back_and_database_remains_usable(
     finally:
         await database.close()
 
-    reopened = await SherlockDB.create(str(database_path))
+    reopened = await SiftDB.create(str(database_path))
     try:
         assert await _get_result_row(reopened, "cancelled", "in-flight") is None
         assert (
@@ -837,7 +837,7 @@ async def test_cancelled_write_rolls_back_and_database_remains_usable(
         await reopened.close()
 
 
-async def test_update_username_profile_summary_inserts_and_updates(db: SherlockDB, user_data: dict[str, Any]):
+async def test_update_username_profile_summary_inserts_and_updates(db: SiftDB, user_data: dict[str, Any]):
     await db.update_username_profile_summary(
         username=user_data["username"],
         profile_summary="First summary",
@@ -864,7 +864,7 @@ async def test_update_username_profile_summary_inserts_and_updates(db: SherlockD
 
 
 async def test_ai_update_invalidates_hash_but_preserves_last_good_profile(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     site_id = await db.save_result(
@@ -893,7 +893,7 @@ async def test_ai_update_invalidates_hash_but_preserves_last_good_profile(
 
 
 async def test_get_ai_profile_evidence_returns_claimed_profile_rows(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     claimed_id = await db.save_result(
         username="blue",
@@ -920,19 +920,19 @@ async def test_get_ai_profile_evidence_returns_claimed_profile_rows(
     assert records[0].ai_extraction_contract_hash == CONTRACT_HASH
 
 
-async def test_get_username_by_id_when_exists(db: SherlockDB, user_data: dict[str, Any]):
+async def test_get_username_by_id_when_exists(db: SiftDB, user_data: dict[str, Any]):
     username_id = await db.get_or_create_username_id(user_data["username"])
     username = await db.get_username_by_id(username_id)
 
     assert username == user_data["username"]
 
 
-async def test_get_username_by_id_when_not_exists(db: SherlockDB):
+async def test_get_username_by_id_when_not_exists(db: SiftDB):
     username = await db.get_username_by_id(999)
     assert username is None
 
 
-async def test_clear_tables(db: SherlockDB, user_data: dict[str, Any]):
+async def test_clear_tables(db: SiftDB, user_data: dict[str, Any]):
     await db.save_result(
         username=user_data["username"],
         site_name=user_data["site_name"],
@@ -960,7 +960,7 @@ async def test_clear_tables(db: SherlockDB, user_data: dict[str, Any]):
     assert usernames_row["count"] == 0
 
 
-async def test_query_when_closed(db: SherlockDB):
+async def test_query_when_closed(db: SiftDB):
     await db.close()
 
     with pytest.raises(RuntimeError):
@@ -971,7 +971,13 @@ async def test_default_database_path_does_not_follow_working_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Results must land in one place regardless of where sherlock is run."""
+    """Results must land in one place regardless of where sift-osint is run."""
+    # Hermetic: a developer who still has data from before the rename would
+    # otherwise get the legacy file back here and fail on the name.
+    monkeypatch.setattr(
+        "sift_osint.database.user_data_path",
+        lambda app, **_: tmp_path / "data" / app,
+    )
     before = default_database_path({})
 
     monkeypatch.chdir(tmp_path)
@@ -979,17 +985,49 @@ async def test_default_database_path_does_not_follow_working_directory(
 
     assert before == after
     assert before.is_absolute()
-    assert before.name == "sherlock.db"
+    assert before.name == "sift-osint.db"
+
+
+async def test_default_database_path_keeps_using_pre_rename_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Someone who scanned before the rename must not open an empty database."""
+    monkeypatch.setattr(
+        "sift_osint.database.user_data_path",
+        lambda app, **_: tmp_path / "data" / app,
+    )
+    legacy = tmp_path / "data" / "sherlock" / "sherlock.db"
+    legacy.parent.mkdir(parents=True)
+    legacy.touch()
+
+    assert default_database_path({}) == legacy
+
+    # Once a file exists under the new name it wins, for good.
+    new = tmp_path / "data" / "sift-osint" / "sift-osint.db"
+    new.parent.mkdir(parents=True)
+    new.touch()
+
+    assert default_database_path({}) == new
+
+
+async def test_database_env_override_accepts_the_old_variable_name(tmp_path: Path):
+    old, new = tmp_path / "old.db", tmp_path / "new.db"
+
+    assert default_database_path({"SHERLOCK_DB": str(old)}) == old
+    # The new spelling wins when both are set, and an empty one does not shadow.
+    assert default_database_path({"SIFT_DB": str(new), "SHERLOCK_DB": str(old)}) == new
+    assert default_database_path({"SIFT_DB": "", "SHERLOCK_DB": str(old)}) == old
 
 
 async def test_default_database_path_honors_env_override(tmp_path: Path):
     override = tmp_path / "investigation.db"
 
-    assert default_database_path({"SHERLOCK_DB": str(override)}) == override
+    assert default_database_path({"SIFT_DB": str(override)}) == override
 
 
 async def test_default_database_path_expands_user_in_override():
-    resolved = default_database_path({"SHERLOCK_DB": "~/sherlock/results.db"})
+    resolved = default_database_path({"SIFT_DB": "~/sherlock/results.db"})
 
     assert "~" not in str(resolved)
     assert resolved.is_absolute()
@@ -999,14 +1037,14 @@ async def test_connect_creates_missing_parent_directories(tmp_path: Path):
     """The user data directory does not exist until we write to it."""
     nested = tmp_path / "does" / "not" / "exist" / "sherlock.db"
 
-    database = await SherlockDB.create(str(nested))
+    database = await SiftDB.create(str(nested))
     try:
         assert nested.exists()
     finally:
         await database.close()
 
 
-async def test_get_saved_results_returns_full_rows(db: SherlockDB):
+async def test_get_saved_results_returns_full_rows(db: SiftDB):
     """The resume path needs the stored row, not just the site name."""
     await db.save_result(
         username="blue",
@@ -1031,7 +1069,7 @@ async def test_get_saved_results_returns_full_rows(db: SherlockDB):
 
 
 async def test_update_result_ai_extraction_records_the_model(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """Provenance for the extraction, so a mixed-model profile is not silent."""
@@ -1055,7 +1093,7 @@ async def test_update_result_ai_extraction_records_the_model(
 
 
 async def test_the_reasoning_is_stored_beside_the_extraction(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """How the model got there, not just what it decided.
@@ -1087,7 +1125,7 @@ async def test_the_reasoning_is_stored_beside_the_extraction(
 
 
 async def test_absent_reasoning_is_null_not_empty(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """NULL means "not recorded", which is not the same as "said nothing".
@@ -1118,7 +1156,7 @@ async def test_absent_reasoning_is_null_not_empty(
 
 
 async def test_forced_extraction_clears_the_recorded_reasoning(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """Reasoning must never outlive the extraction it explains.
@@ -1156,7 +1194,7 @@ async def test_forced_extraction_clears_the_recorded_reasoning(
 
 
 async def test_a_contract_change_clears_the_reasoning_too(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """The other route that discards an extraction, and the same rule applies.
@@ -1189,7 +1227,7 @@ async def test_a_contract_change_clears_the_reasoning_too(
 
 
 async def test_get_site_extractions_reports_analysed_and_unanalysed_sites(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """Sites with no extraction are RETURNED, not filtered out.
 
@@ -1257,7 +1295,7 @@ async def test_get_site_extractions_reports_analysed_and_unanalysed_sites(
     assert records["Zulip"].fact_count == 0
 
 
-async def test_a_corrupt_stored_extraction_reads_as_no_facts(db: SherlockDB):
+async def test_a_corrupt_stored_extraction_reads_as_no_facts(db: SiftDB):
     """Model output that was valid when written is not a promise about disk.
 
     A viewer that raised on one unparseable row would cost the user every other
@@ -1285,7 +1323,7 @@ async def test_a_corrupt_stored_extraction_reads_as_no_facts(db: SherlockDB):
 
 
 async def test_forced_extraction_clears_the_recorded_model(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """--fresh must not leave the old model attached to a redone extraction."""
@@ -1318,7 +1356,7 @@ async def test_forced_extraction_clears_the_recorded_model(
 
 
 async def test_unforced_save_keeps_the_recorded_model(
-    db: SherlockDB,
+    db: SiftDB,
     user_data: dict[str, Any],
 ):
     """A plain re-save of unchanged content keeps both extraction and model.
@@ -1353,7 +1391,7 @@ async def test_unforced_save_keeps_the_recorded_model(
     assert row["ai_extraction_model"] == MODEL_KEY
 
 
-async def test_get_extraction_model_counts_groups_by_model(db: SherlockDB):
+async def test_get_extraction_model_counts_groups_by_model(db: SiftDB):
     """Counts per model, with rows that predate the column reported as None."""
     ids = {}
     for site_name in ("GitHub", "GitLab", "Keybase", "Mastodon"):
@@ -1397,7 +1435,7 @@ async def test_get_extraction_model_counts_groups_by_model(db: SherlockDB):
 
 
 async def test_get_extraction_model_counts_ignores_sites_without_extractions(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """An unextracted site has nothing to attribute and must not read as None."""
     await db.save_result(
@@ -1428,8 +1466,8 @@ async def test_a_delete_survives_a_read_held_open_on_another_connection(tmp_path
     """
     path = str(tmp_path / "sherlock.db")
 
-    writer = await SherlockDB.create(path)
-    reader = await SherlockDB.create(path)
+    writer = await SiftDB.create(path)
+    reader = await SiftDB.create(path)
     try:
         for username in ("marcus", "keeper"):
             await writer.save_result(
@@ -1479,13 +1517,13 @@ async def test_concurrent_creation_of_a_new_database_does_not_lock_itself(tmp_pa
     assert not database_path.exists()
 
     async def open_and_close() -> None:
-        db = await SherlockDB.create(str(database_path))
+        db = await SiftDB.create(str(database_path))
         await db.close()
 
     await asyncio.gather(*(open_and_close() for _ in range(4)))
 
     # And the schema that survived the race is usable.
-    db = await SherlockDB.create(str(database_path))
+    db = await SiftDB.create(str(database_path))
     try:
         await db.save_result(
             username="racer",
@@ -1502,7 +1540,7 @@ async def test_concurrent_creation_of_a_new_database_does_not_lock_itself(tmp_pa
         await db.close()
 
 
-async def _seed_mixed_manifest_history(db: SherlockDB) -> None:
+async def _seed_mixed_manifest_history(db: SiftDB) -> None:
     """A username scanned under two different site lists.
 
     The duplicate spelling is the point: the two manifests name the same
@@ -1519,7 +1557,7 @@ async def _seed_mixed_manifest_history(db: SherlockDB) -> None:
 
 
 async def test_delete_retired_sites_drops_only_what_the_manifest_lost(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """The duplicate survives as one row, not two.
 
@@ -1536,7 +1574,7 @@ async def test_delete_retired_sites_drops_only_what_the_manifest_lost(
 
 
 async def test_delete_retired_sites_keeps_the_profile_and_extractions(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """The reason this is not `delete_username`.
 
@@ -1567,7 +1605,7 @@ async def test_delete_retired_sites_keeps_the_profile_and_extractions(
 
 
 async def test_delete_retired_sites_treats_an_empty_manifest_as_unknown(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """A manifest that failed to load must not read as "every site retired".
 
@@ -1581,7 +1619,7 @@ async def test_delete_retired_sites_treats_an_empty_manifest_as_unknown(
 
 
 async def test_delete_retired_sites_is_quiet_when_there_is_nothing_to_do(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     """Every re-scan after the first, and every username never scanned."""
     await _seed_mixed_manifest_history(db)

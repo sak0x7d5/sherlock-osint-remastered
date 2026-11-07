@@ -10,18 +10,18 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sherlock_project.ai_config import (
+from sift_osint.ai_config import (
     AIConfigError,
     AISettings,
     OutputSettings,
     ScanSettings,
-    SherlockSettings,
+    SiftSettings,
     load_settings,
     save_ai_settings,
     save_settings,
     try_load_settings,
 )
-from sherlock_project.settings import (
+from sift_osint.settings import (
     NO_DEFAULT,
     SETTING_FIELDS,
     field_default,
@@ -32,7 +32,7 @@ from sherlock_project.settings import (
 )
 
 
-def _resolve(stored: SherlockSettings, **flags):
+def _resolve(stored: SiftSettings, **flags):
     defaults = {
         "concurrency": None,
         "timeout": None,
@@ -47,7 +47,7 @@ def _resolve(stored: SherlockSettings, **flags):
 
 
 def test_flag_beats_config_beats_default():
-    stored = SherlockSettings(scan=ScanSettings(concurrency=50, timeout=15))
+    stored = SiftSettings(scan=ScanSettings(concurrency=50, timeout=15))
 
     resolved = _resolve(stored, concurrency=100)
 
@@ -66,7 +66,7 @@ def test_a_flag_matching_the_default_still_counts_as_a_flag():
     than to its real default: absence has to be distinguishable from a value
     that happens to equal the default.
     """
-    stored = SherlockSettings(scan=ScanSettings(concurrency=50))
+    stored = SiftSettings(scan=ScanSettings(concurrency=50))
 
     resolved = _resolve(stored, concurrency=30)
 
@@ -76,7 +76,7 @@ def test_a_flag_matching_the_default_still_counts_as_a_flag():
 
 def test_only_config_sourced_settings_are_reported():
     """Flags are already on screen; defaults are what everyone else gets."""
-    stored = SherlockSettings(
+    stored = SiftSettings(
         scan=ScanSettings(concurrency=50, nsfw=True),
         output=OutputSettings(verbose=True),
     )
@@ -88,21 +88,21 @@ def test_only_config_sourced_settings_are_reported():
 
 
 def test_nothing_is_reported_when_nothing_was_stored():
-    assert _resolve(SherlockSettings()).from_config() == {}
+    assert _resolve(SiftSettings()).from_config() == {}
 
 
 def test_no_color_flag_inverts_into_the_stored_positive():
     """The flag says --no-color; the file says color = true."""
-    stored = SherlockSettings(output=OutputSettings(color=True))
+    stored = SiftSettings(output=OutputSettings(color=True))
 
     assert _resolve(stored, no_color=True).color.value is False
     assert _resolve(stored).color.value is True
-    assert _resolve(SherlockSettings(output=OutputSettings(color=False))).color.source == "config"
+    assert _resolve(SiftSettings(output=OutputSettings(color=False))).color.source == "config"
 
 
 def test_no_webbrowser_flag_inverts_into_the_stored_positive():
     """The flag says --no-webbrowser; the file says webbrowser = true."""
-    stored = SherlockSettings()
+    stored = SiftSettings()
 
     assert _resolve(stored).webbrowser.value is True
     assert _resolve(stored, no_webbrowser=True).webbrowser.value is False
@@ -113,7 +113,7 @@ def test_the_browser_can_be_forced_back_on_for_one_run():
     """Without the positive flag, a stored `webbrowser = false` is a one-way
     door: every later scan is degraded and no command line can undo it for a
     single run, on the one setting that decides whether answers are right."""
-    stored = SherlockSettings(scan=ScanSettings(webbrowser=False))
+    stored = SiftSettings(scan=ScanSettings(webbrowser=False))
 
     assert _resolve(stored).webbrowser.value is False
     assert _resolve(stored, webbrowser=True).webbrowser.value is True
@@ -126,7 +126,7 @@ def test_a_stored_browserless_default_is_reported_at_scan_start():
     Someone reading the output days later has no other way to know the browser
     was off -- it is not in the command line, because nobody typed it.
     """
-    stored = SherlockSettings(scan=ScanSettings(webbrowser=False))
+    stored = SiftSettings(scan=ScanSettings(webbrowser=False))
 
     resolved = _resolve(stored)
 
@@ -243,7 +243,7 @@ def test_saving_ai_settings_preserves_scan_preferences(tmp_path: Path):
     """Changing model must not silently discard someone's other settings."""
     path = tmp_path / "config.toml"
     save_settings(
-        SherlockSettings(scan=ScanSettings(concurrency=77, timeout=12)),
+        SiftSettings(scan=ScanSettings(concurrency=77, timeout=12)),
         path=path,
         environ={},
     )
@@ -266,7 +266,7 @@ def test_scan_preferences_are_storable_without_any_ai_config(tmp_path: Path):
     path = tmp_path / "config.toml"
 
     save_settings(
-        SherlockSettings(scan=ScanSettings(concurrency=8)),
+        SiftSettings(scan=ScanSettings(concurrency=8)),
         path=path,
         environ={},
     )

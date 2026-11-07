@@ -1,6 +1,6 @@
 import pytest
 
-from sherlock_project.content_extraction import (
+from sift_osint.content_extraction import (
     MAX_PROFILE_CONTENT_CHARS,
     extract_profile_content,
     inspect_profile_content,

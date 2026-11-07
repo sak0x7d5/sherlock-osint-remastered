@@ -6,13 +6,13 @@ import pytest
 import pytest_asyncio
 import requests
 
-from sherlock_project import ai_setup as ai_setup_module
-from sherlock_project import sherlock as sherlock_module
-from sherlock_project.database import SherlockDB
-from sherlock_project.llama_server import ServerStatus
-from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.sites import SitesInformation
-from sherlock_project.tui import settings_pane as settings_pane_module
+from sift_osint import ai_setup as ai_setup_module
+from sift_osint import sherlock as sherlock_module
+from sift_osint.database import SiftDB
+from sift_osint.llama_server import ServerStatus
+from sift_osint.playwright_engine import PlaywrightEngine
+from sift_osint.sites import SitesInformation
+from sift_osint.tui import settings_pane as settings_pane_module
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +21,7 @@ def isolated_user_state(request, tmp_path, monkeypatch):
 
     Settings and the database resolve to per-user locations, not to the working
     directory, so without this the suite reads whatever the developer last saved
-    with `sherlock-rm settings`. That is not hypothetical: a stored
+    with `sift-osint settings`. That is not hypothetical: a stored
     `webbrowser = false` made eight tests in test_synthesis_cli.py fail with
     `KeyError: 'concurrency'` minutes after being saved, with no change to the
     tests or the code.
@@ -32,7 +32,7 @@ def isolated_user_state(request, tmp_path, monkeypatch):
     did not cause, and the badge gave them no reason to suspect their own state.
 
     Resolution already honours these overrides -- default_database_path reads
-    SHERLOCK_DB and ai_config_path reads SHERLOCK_CONFIG -- so this is isolation
+    SIFT_DB and ai_config_path reads SIFT_CONFIG -- so this is isolation
     rather than new machinery. LLAMA_SERVER_BASE_URL is cleared for the same
     reason: it overrides the configured endpoint, and a developer who exported
     it should not thereby change what the suite tests.
@@ -49,13 +49,13 @@ def isolated_user_state(request, tmp_path, monkeypatch):
     # and that is exactly why the isolation costs nothing and must stay: a
     # future edit that did write would otherwise write to the real one.
     if request.node.get_closest_marker("local_ai_acceptance") is None:
-        monkeypatch.setenv("SHERLOCK_CONFIG", str(tmp_path / "config.toml"))
+        monkeypatch.setenv("SIFT_CONFIG", str(tmp_path / "config.toml"))
         monkeypatch.delenv("LLAMA_SERVER_BASE_URL", raising=False)
-    monkeypatch.setenv("SHERLOCK_DB", str(tmp_path / "sherlock.db"))
+    monkeypatch.setenv("SIFT_DB", str(tmp_path / "sherlock.db"))
     # The update check's throttle stamp, for the same reason as the other two:
     # left alone it writes into the developer's real cache directory, and a
     # stamp written by one test run would then suppress the check in the next.
-    monkeypatch.setenv("SHERLOCK_CACHE", str(tmp_path / "update-check.json"))
+    monkeypatch.setenv("SIFT_CACHE", str(tmp_path / "update-check.json"))
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +109,7 @@ def no_real_llama_server(monkeypatch):
 # Nothing here tests exclusions. These fixtures exist to read the shipped
 # manifest, so they read it as shipped.
 def fetch_local_manifest(honor_exclusions: bool = False) -> dict[str, dict[str, str]]:
-    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=honor_exclusions)
+    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sift_osint/resources/data.json"), honor_exclusions=honor_exclusions)
     sites_iterable: dict[str, dict[str, str]] = {site.name: site.information for site in sites_obj}
     return sites_iterable
 
@@ -120,8 +120,8 @@ async def playwright_engine():
 
 
 @pytest_asyncio.fixture()
-async def db() -> SherlockDB:
-    db = await SherlockDB.create(":memory:")
+async def db() -> SiftDB:
+    db = await SiftDB.create(":memory:")
     yield db
     await db.close()
 
@@ -130,7 +130,7 @@ async def db() -> SherlockDB:
 def sites_obj():
     # Explicit for the same reason as fetch_local_manifest above: the
     # constructor's own default is True, which would fetch.
-    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sherlock_project/resources/data.json"), honor_exclusions=False)
+    sites_obj = SitesInformation(data_file_path=os.path.join(os.path.dirname(__file__), "../sift_osint/resources/data.json"), honor_exclusions=False)
     yield sites_obj
 
 @pytest.fixture(scope="session")
@@ -151,7 +151,7 @@ def wmn_sites_info() -> dict[str, dict]:
 
 @pytest.fixture(scope="session")
 def remote_schema():
-    schema_url: str = 'https://raw.githubusercontent.com/sherlock-project/sherlock/master/sherlock_project/resources/data.schema.json'
+    schema_url: str = 'https://raw.githubusercontent.com/sherlock-project/sherlock/master/sift_osint/resources/data.schema.json'
     with urllib.request.urlopen(schema_url) as remoteschema:
         schemadat = json.load(remoteschema)
     yield schemadat

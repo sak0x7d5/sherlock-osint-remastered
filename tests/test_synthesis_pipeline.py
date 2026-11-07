@@ -2,15 +2,15 @@ import json
 
 import pytest
 
-from sherlock_project.database import SherlockDB
-from sherlock_project.profile_synthesis import (
+from sift_osint.database import SiftDB
+from sift_osint.profile_synthesis import (
     IdentityAnchor,
     InvestigationContext,
     ProfileSynthesis,
     SourceDecision,
 )
-from sherlock_project.result import QueryStatus
-from sherlock_project.synthesis_pipeline import synthesize_username_profile
+from sift_osint.result import QueryStatus
+from sift_osint.synthesis_pipeline import synthesize_username_profile
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,7 +91,7 @@ class ContractFilteringService:
 
 
 async def _save_extraction(
-    db: SherlockDB,
+    db: SiftDB,
     *,
     username: str = "blue",
     site_name: str = "example",
@@ -109,7 +109,7 @@ async def _save_extraction(
     )
 
 
-async def test_pipeline_caches_unchanged_synthesis(db: SherlockDB):
+async def test_pipeline_caches_unchanged_synthesis(db: SiftDB):
     await _save_extraction(db)
     service = FakeSynthesisService()
 
@@ -135,7 +135,7 @@ async def test_pipeline_caches_unchanged_synthesis(db: SherlockDB):
     assert cache.updated_at is not None
 
 
-async def test_pipeline_force_and_changed_context_bypass_cache(db: SherlockDB):
+async def test_pipeline_force_and_changed_context_bypass_cache(db: SiftDB):
     await _save_extraction(db)
     service = FakeSynthesisService()
 
@@ -170,7 +170,7 @@ async def test_pipeline_force_and_changed_context_bypass_cache(db: SherlockDB):
     assert len(service.calls) == 3
 
 
-async def test_latest_profile_cache_tracks_run_only_context(db: SherlockDB):
+async def test_latest_profile_cache_tracks_run_only_context(db: SiftDB):
     await _save_extraction(db)
     service = FakeSynthesisService()
     no_anchors = InvestigationContext()
@@ -212,7 +212,7 @@ async def test_latest_profile_cache_tracks_run_only_context(db: SherlockDB):
     assert cache.input_hash == latest.profile.input_hash
 
 
-async def test_pipeline_reports_pending_and_invalid_extractions(db: SherlockDB):
+async def test_pipeline_reports_pending_and_invalid_extractions(db: SiftDB):
     pending_id = await _save_extraction(db, site_name="pending", payload=None)
     invalid_id = await _save_extraction(db, site_name="invalid", payload="not-json")
     await _save_extraction(db, site_name="empty", payload="{}")
@@ -233,7 +233,7 @@ async def test_pipeline_reports_pending_and_invalid_extractions(db: SherlockDB):
 
 
 async def test_pipeline_excludes_missing_and_stale_contract_extractions(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     current_id = await _save_extraction(
         db,
@@ -269,7 +269,7 @@ async def test_pipeline_excludes_missing_and_stale_contract_extractions(
 
 
 async def test_pipeline_rejects_malformed_current_contract_extraction_shape(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     malformed_id = await _save_extraction(
         db,
@@ -303,7 +303,7 @@ async def test_pipeline_rejects_malformed_current_contract_extraction_shape(
 
 
 async def test_failed_rebuild_preserves_previous_profile_and_remains_retryable(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     site_id = await _save_extraction(db)
     service = FakeSynthesisService()
@@ -347,7 +347,7 @@ async def test_failed_rebuild_preserves_previous_profile_and_remains_retryable(
 
 
 async def test_anchorless_cache_ignores_model_and_identity_prompt_changes(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     await _save_extraction(db)
     service = FakeSynthesisService()
@@ -372,7 +372,7 @@ async def test_anchorless_cache_ignores_model_and_identity_prompt_changes(
 
 
 async def test_anchored_cache_tracks_model_and_identity_prompt_changes(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     await _save_extraction(db)
     service = FakeSynthesisService()
@@ -404,7 +404,7 @@ async def test_anchored_cache_tracks_model_and_identity_prompt_changes(
     assert len(service.calls) == 3
 
 
-async def test_cached_profile_uses_current_schema(db: SherlockDB):
+async def test_cached_profile_uses_current_schema(db: SiftDB):
     await _save_extraction(db)
     service = FakeSynthesisService()
 
@@ -421,7 +421,7 @@ async def test_cached_profile_uses_current_schema(db: SherlockDB):
     assert parsed["schema_version"] == 8
 
 
-async def test_cached_profile_from_previous_schema_is_rebuilt(db: SherlockDB):
+async def test_cached_profile_from_previous_schema_is_rebuilt(db: SiftDB):
     await _save_extraction(db)
     service = FakeSynthesisService()
     first = await synthesize_username_profile(
@@ -451,7 +451,7 @@ async def test_cached_profile_from_previous_schema_is_rebuilt(db: SherlockDB):
 
 
 async def test_partial_profile_with_failed_decision_is_never_a_cache_hit(
-    db: SherlockDB,
+    db: SiftDB,
 ):
     await _save_extraction(db)
     service = FakeSynthesisService()

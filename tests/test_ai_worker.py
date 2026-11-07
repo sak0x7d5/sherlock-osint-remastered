@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from sherlock_project.ai_engine import StructuredResponseError
-from sherlock_project.ai_provider import AIQuotaExhaustedError
-from sherlock_project.database import SherlockDB
-from sherlock_project.notify import QueryNotify, TerminalReporter
-from sherlock_project.profile_synthesis import CANONICAL_PROFILE_FIELDS
-from sherlock_project.result import QueryStatus
-from sherlock_project.sherlock import ai_worker, run_ai_pipeline, sherlock
+from sift_osint.ai_engine import StructuredResponseError
+from sift_osint.ai_provider import AIQuotaExhaustedError
+from sift_osint.database import SiftDB
+from sift_osint.notify import QueryNotify, TerminalReporter
+from sift_osint.profile_synthesis import CANONICAL_PROFILE_FIELDS
+from sift_osint.result import QueryStatus
+from sift_osint.sherlock import ai_worker, run_ai_pipeline, sherlock
 
 pytestmark = pytest.mark.asyncio
 
@@ -174,7 +174,7 @@ def _structured_error(
     )
 
 
-async def _get_ai_extraction(db: SherlockDB, site_id: int) -> str | None:
+async def _get_ai_extraction(db: SiftDB, site_id: int) -> str | None:
     assert db.db is not None
     async with db.db.execute(
         "SELECT ai_extraction FROM results WHERE id = ?",
@@ -187,7 +187,7 @@ async def _get_ai_extraction(db: SherlockDB, site_id: int) -> str | None:
 
 
 async def _get_ai_contract_hash(
-    db: SherlockDB,
+    db: SiftDB,
     site_id: int,
 ) -> str | None:
     assert db.db is not None
@@ -215,11 +215,11 @@ async def _finish_worker(
 
 
 async def test_ai_worker_loads_joined_job_and_saves_valid_json(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: f"cleaned: {content}",
     )
     site_id = await db.save_result(
@@ -254,11 +254,11 @@ async def test_ai_worker_loads_joined_job_and_saves_valid_json(
 
 
 async def test_ai_worker_feeds_all_committed_key_names_to_later_sites(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     site_ids = [
@@ -309,11 +309,11 @@ async def test_ai_worker_feeds_all_committed_key_names_to_later_sites(
 
 
 async def test_ai_worker_keeps_key_feedback_isolated_by_username(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     jobs = [
@@ -352,11 +352,11 @@ async def test_ai_worker_keeps_key_feedback_isolated_by_username(
 
 
 async def test_ai_worker_learns_keys_only_after_database_commit(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     first_id = await db.save_result(
@@ -417,12 +417,12 @@ async def test_ai_worker_resume_hydration_matches_uninterrupted_hints(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
 
     async def third_call_hints(path: Path, *, restart: bool) -> list[str]:
-        run_db = await SherlockDB.create(str(path))
+        run_db = await SiftDB.create(str(path))
         try:
             site_ids = [
                 await run_db.save_result(
@@ -486,11 +486,11 @@ async def test_ai_worker_resume_hydration_matches_uninterrupted_hints(
 
 
 async def test_ai_worker_hydrates_only_valid_current_contract_keys(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     await db.save_result(
@@ -542,11 +542,11 @@ async def test_ai_worker_hydrates_only_valid_current_contract_keys(
 
 
 async def test_ai_worker_continues_after_job_failure(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: content,
     )
     failed_id = await db.save_result(
@@ -591,11 +591,11 @@ class QuotaAIService(FakeAIService):
 
 
 async def test_ai_worker_stops_calling_the_model_once_the_daily_quota_is_spent(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: content,
     )
     site_ids = [
@@ -626,7 +626,7 @@ async def test_ai_worker_stops_calling_the_model_once_the_daily_quota_is_spent(
 
 
 async def test_ai_worker_leaves_malformed_response_pending_after_one_call(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     extraction_calls = 0
@@ -637,7 +637,7 @@ async def test_ai_worker_leaves_malformed_response_pending_after_one_call(
         return f"cleaned: {content}"
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         fake_extract,
     )
     site_id = await db.save_result(
@@ -700,7 +700,7 @@ async def test_ai_worker_leaves_malformed_response_pending_after_one_call(
 
 
 async def test_ai_worker_retries_pending_malformed_response_on_later_run(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     extraction_calls = 0
@@ -711,7 +711,7 @@ async def test_ai_worker_retries_pending_malformed_response_on_later_run(
         return content
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         fake_extract,
     )
     site_id = await db.save_result(
@@ -747,11 +747,11 @@ async def test_ai_worker_retries_pending_malformed_response_on_later_run(
 
 
 async def test_ai_worker_processes_jobs_serially_and_drains_before_returning(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: content,
     )
     site_ids = [
@@ -789,11 +789,11 @@ async def test_ai_worker_processes_jobs_serially_and_drains_before_returning(
 
 
 async def test_ai_worker_cancellation_balances_queue_accounting(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: content,
     )
     site_id = await db.save_result(
@@ -834,11 +834,11 @@ async def test_ai_worker_cancellation_balances_queue_accounting(
 
 
 async def test_ai_worker_balances_missing_and_duplicate_jobs(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **kwargs: content,
     )
     site_id = await db.save_result(
@@ -866,11 +866,11 @@ async def test_ai_worker_balances_missing_and_duplicate_jobs(
 
 
 async def test_ai_worker_saves_empty_extraction_without_calling_model(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: "",
     )
     site_id = await db.save_result(
@@ -898,11 +898,11 @@ async def test_ai_worker_saves_empty_extraction_without_calling_model(
 
 
 async def test_ai_worker_reports_valid_model_empty_object_as_no_facts(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     site_id = await db.save_result(
@@ -932,11 +932,11 @@ async def test_ai_worker_reports_valid_model_empty_object_as_no_facts(
 
 
 async def test_ai_pipeline_buffers_fifo_jobs_while_model_loads(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     site_ids = [
@@ -958,7 +958,7 @@ async def test_ai_pipeline_buffers_fifo_jobs_while_model_loads(
         return service
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.AIService.create",
+        "sift_osint.sherlock.AIService.create",
         fake_create,
     )
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -992,11 +992,11 @@ async def test_ai_pipeline_buffers_fifo_jobs_while_model_loads(
 
 
 async def test_ai_pipeline_ready_model_waits_for_queue_without_polling(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "sherlock_project.sherlock.extract_profile_content",
+        "sift_osint.sherlock.extract_profile_content",
         lambda content, **_kwargs: content,
     )
     site_id = await db.save_result(
@@ -1016,7 +1016,7 @@ async def test_ai_pipeline_ready_model_waits_for_queue_without_polling(
         return service
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.AIService.create",
+        "sift_osint.sherlock.AIService.create",
         fake_create,
     )
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -1037,7 +1037,7 @@ async def test_ai_pipeline_ready_model_waits_for_queue_without_polling(
 
 
 async def test_ai_pipeline_model_failure_drains_jobs_as_pending(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     site_ids = [
@@ -1058,7 +1058,7 @@ async def test_ai_pipeline_model_failure_drains_jobs_as_pending(
         raise RuntimeError("sensitive LM Studio startup details")
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.AIService.create",
+        "sift_osint.sherlock.AIService.create",
         failing_create,
     )
     reporter, output = _reporter(verbose=True)
@@ -1095,7 +1095,7 @@ async def test_ai_pipeline_model_failure_drains_jobs_as_pending(
 
 
 async def test_ai_pipeline_cancellation_closes_loaded_service_once(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     service = FakeAIService()
@@ -1106,7 +1106,7 @@ async def test_ai_pipeline_cancellation_closes_loaded_service_once(
         return service
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.AIService.create",
+        "sift_osint.sherlock.AIService.create",
         fake_create,
     )
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -1124,7 +1124,7 @@ async def test_ai_pipeline_cancellation_closes_loaded_service_once(
 
 
 async def test_ai_pipeline_cancellation_during_model_loading_is_collected(
-    db: SherlockDB,
+    db: SiftDB,
     monkeypatch: pytest.MonkeyPatch,
 ):
     loading_started = asyncio.Event()
@@ -1140,7 +1140,7 @@ async def test_ai_pipeline_cancellation_during_model_loading_is_collected(
         raise AssertionError("unreachable")
 
     monkeypatch.setattr(
-        "sherlock_project.sherlock.AIService.create",
+        "sift_osint.sherlock.AIService.create",
         blocked_create,
     )
     queue: asyncio.Queue[int] = asyncio.Queue()
@@ -1156,7 +1156,7 @@ async def test_ai_pipeline_cancellation_during_model_loading_is_collected(
     await asyncio.wait_for(queue.join(), timeout=1)
 
 
-async def test_sherlock_without_ai_keeps_caller_database_open(db: SherlockDB):
+async def test_sherlock_without_ai_keeps_caller_database_open(db: SiftDB):
     results = await sherlock(
         username="invalid!",
         engine=object(),  # type: ignore[arg-type]

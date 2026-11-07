@@ -279,11 +279,11 @@ caller cannot forget to do this because a caller never does it.
 **The database follows the user, not the working directory.**
 `default_database_path()` resolves to the per-user data dir
 (`%LOCALAPPDATA%\sherlock\sherlock.db` on Windows), overridable with
-`SHERLOCK_DB`. A relative path would start an empty database whenever the tool
+`SIFT_DB`. A relative path would start an empty database whenever the tool
 was invoked from a different directory, silently discarding the extraction cache
 and scattering scan data. This was a real regression that has already been fixed
 once; do not reintroduce it. The same rule applies to `ai_config_path()` and
-`SHERLOCK_CONFIG`.
+`SIFT_CONFIG`.
 
 `response_text` is stored in full. It is the input to Pass 1, so retention is
 what makes re-extraction possible without re-scanning — and it is also why the

@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the GitHub Release that `sherlock-rm` checks for updates against.
+# Publishes the GitHub Release that `sift-osint` checks for updates against.
 #
 # Tag-driven, and deliberately the ONLY way a release gets made. The update
 # check reads `releases/latest` and installs `git+<repo>@<tag_name>`, so a

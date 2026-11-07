@@ -5,18 +5,18 @@ from typing import ClassVar
 import pytest
 from rich.console import Console
 
-from sherlock_project import ai_setup
-from sherlock_project.ai_config import (
+from sift_osint import ai_setup
+from sift_osint.ai_config import (
     DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     load_ai_settings,
     save_ai_settings,
 )
-from sherlock_project.ai_provider import (
+from sift_osint.ai_provider import (
     AIModelInfo,
     AIProviderUnavailableError,
 )
-from sherlock_project.llama_server import ServerStatus
+from sift_osint.llama_server import ServerStatus
 
 
 def _model(
@@ -390,11 +390,11 @@ async def test_show_reports_an_unconfigured_install_without_failing_hard(
     )
     text = output.getvalue()
 
-    # 1 is "nothing stored", matching `sherlock-rm show`; 2 is reserved for
+    # 1 is "nothing stored", matching `sift-osint show`; 2 is reserved for
     # something being wrong.
     assert result == 1
     assert "not configured" in text
-    assert "sherlock-rm setup ai" in text
+    assert "sift-osint setup ai" in text
     assert FakeSetupProvider.close_calls == 0
 
 
@@ -445,7 +445,7 @@ async def test_setup_survives_a_terminal_that_cannot_answer(
     """A prompt with nothing behind it must not raise a traceback.
 
     isatty() is not a reliable interactivity test on Windows: NUL is a
-    character device, so `sherlock-rm setup ai < NUL` -- explicitly "I have no
+    character device, so `sift-osint setup ai < NUL` -- explicitly "I have no
     keyboard" -- reports True and skips the non-interactive guard. Reaching the
     prompt anyway used to end in an unhandled EOFError out of rich.
     """
