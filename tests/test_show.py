@@ -1,4 +1,4 @@
-"""Tests for `sherlock-rm show`, the read-only view of stored results.
+"""Tests for `sift-osint show`, the read-only view of stored results.
 
 The behaviour worth protecting here is negative: showing must never write.
 Before this command existed, the only way to display a pass-two profile was
@@ -10,10 +10,10 @@ import json
 
 import pytest
 
-from sherlock_project.database import SherlockDB
-from sherlock_project.profile_synthesis import IdentityAnchor, ProfileSynthesis
-from sherlock_project.result import QueryStatus
-from sherlock_project.show import (
+from sift_osint.database import SiftDB
+from sift_osint.profile_synthesis import IdentityAnchor, ProfileSynthesis
+from sift_osint.result import QueryStatus
+from sift_osint.show import (
     _claimed_accounts,
     _describe_extraction_models,
     _load_profile,
@@ -36,7 +36,7 @@ def _profile_json(username: str) -> str:
 
 
 async def _seed(path: str, *, with_profile: bool = True) -> None:
-    db = await SherlockDB.create(path)
+    db = await SiftDB.create(path)
     try:
         await db.save_result(
             username="blue",
@@ -65,7 +65,7 @@ async def _seed(path: str, *, with_profile: bool = True) -> None:
 
 async def _snapshot(path: str) -> list[tuple]:
     """Everything `show` must leave untouched."""
-    db = await SherlockDB.create(path)
+    db = await SiftDB.create(path)
     try:
         cache = await db.get_profile_summary_cache("blue")
         rows = await db.get_saved_results("blue")
@@ -125,7 +125,7 @@ async def test_show_marks_accounts_found_without_a_browser(
     reader how the answer was obtained.
     """
     database = tmp_path / "sherlock.db"
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         await db.save_result(
             username="blue",
@@ -145,7 +145,7 @@ async def test_show_marks_accounts_found_without_a_browser(
         )
     finally:
         await db.close()
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     exit_code = await run_show(["blue", "--accounts"])
 
@@ -172,7 +172,7 @@ async def test_show_does_not_modify_the_database(
     """The whole point of the command: looking changes nothing."""
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     before = await _snapshot(str(database))
     exit_code = await run_show(["blue", "--no-color"])
@@ -194,7 +194,7 @@ async def test_show_reports_unknown_username(
 ):
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     exit_code = await run_show(["never-scanned", "--no-color"])
 
@@ -216,7 +216,7 @@ async def test_show_json_is_parseable(
     """
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     exit_code = await run_show(["blue", "--json"])
 
@@ -238,7 +238,7 @@ async def test_show_accounts_only_omits_the_profile(
 ):
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--accounts", "--no-color"])
 
@@ -254,7 +254,7 @@ async def test_show_points_at_the_rebuild_when_no_profile_is_stored(
 ):
     database = tmp_path / "sherlock.db"
     await _seed(str(database), with_profile=False)
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--profile", "--no-color"])
 
@@ -263,7 +263,7 @@ async def test_show_points_at_the_rebuild_when_no_profile_is_stored(
 
 async def _seed_unresolved(path: str) -> None:
     """A username whose scan left real answers and real gaps."""
-    db = await SherlockDB.create(path)
+    db = await SiftDB.create(path)
     try:
         await db.save_result(
             username="grey",
@@ -322,7 +322,7 @@ async def test_show_warns_about_unresolved_sites_without_listing_them(
     """The count rides along with the accounts; the names wait to be asked for."""
     database = tmp_path / "sherlock.db"
     await _seed_unresolved(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["grey", "--accounts", "--no-color"])
 
@@ -342,7 +342,7 @@ async def test_show_unresolved_lists_each_site_with_its_reason(
 ):
     database = tmp_path / "sherlock.db"
     await _seed_unresolved(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["grey", "--unresolved", "--no-color"])
 
@@ -364,7 +364,7 @@ async def test_show_stays_quiet_when_every_site_resolved(
     """No gaps, no caveat -- the warning must mean something when it appears."""
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--accounts", "--no-color"])
 
@@ -375,7 +375,7 @@ async def test_username_overview_counts_only_that_username(tmp_path):
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
 
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         await db.save_result(
             username="green",
@@ -416,7 +416,7 @@ async def test_show_displays_the_anchors_a_profile_was_built_from(
 
     database = tmp_path / "sherlock.db"
     await _seed(str(database), with_profile=False)
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         await db.update_username_profile_summary(
             username="blue",
@@ -425,7 +425,7 @@ async def test_show_displays_the_anchors_a_profile_was_built_from(
         )
     finally:
         await db.close()
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--profile", "--no-color"])
 
@@ -473,7 +473,7 @@ async def test_show_sources_flag_switches_to_full_urls(
 
     database = tmp_path / "sherlock.db"
     await _seed(str(database), with_profile=False)
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         await db.update_username_profile_summary(
             username="blue",
@@ -482,7 +482,7 @@ async def test_show_sources_flag_switches_to_full_urls(
         )
     finally:
         await db.close()
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--profile", "--no-color"])
     compact = capsys.readouterr().out
@@ -518,7 +518,7 @@ async def test_show_reports_which_models_produced_the_extractions(
     """A profile assembled by two models must say so on the profile line."""
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         rows = await db.get_saved_results("blue")
         assert "GitHub" in rows
@@ -550,7 +550,7 @@ async def test_show_reports_which_models_produced_the_extractions(
         )
     finally:
         await db.close()
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     exit_code = await run_show(["blue", "--profile", "--no-color"])
     output = capsys.readouterr().out
@@ -568,7 +568,7 @@ async def test_show_json_carries_model_provenance(
 ):
     database = tmp_path / "sherlock.db"
     await _seed(str(database))
-    db = await SherlockDB.create(str(database))
+    db = await SiftDB.create(str(database))
     try:
         site_id = await db.save_result(
             username="blue",
@@ -584,7 +584,7 @@ async def test_show_json_carries_model_provenance(
         )
     finally:
         await db.close()
-    monkeypatch.setenv("SHERLOCK_DB", str(database))
+    monkeypatch.setenv("SIFT_DB", str(database))
 
     await run_show(["blue", "--json"])
     payload = json.loads(capsys.readouterr().out)

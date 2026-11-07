@@ -3,13 +3,13 @@ import json
 import httpx
 import pytest
 
-from sherlock_project.ai_config import (
+from sift_osint.ai_config import (
     DEFAULT_GEMINI_BASE_URL,
     AISettings,
     load_ai_settings,
     save_ai_settings,
 )
-from sherlock_project.ai_provider import (
+from sift_osint.ai_provider import (
     AIContentBlockedError,
     AIModelNotFoundError,
     AIProviderAuthenticationError,
@@ -21,7 +21,7 @@ from sherlock_project.ai_provider import (
     ProviderWideError,
     create_provider,
 )
-from sherlock_project.ai_rate_limit import RequestRateLimiter, backoff_delay
+from sift_osint.ai_rate_limit import RequestRateLimiter, backoff_delay
 
 
 def _settings(**overrides) -> AISettings:

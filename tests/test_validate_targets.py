@@ -3,10 +3,10 @@ import re
 import pytest
 import rstr
 
-from sherlock_project.notify import QueryNotify
-from sherlock_project.playwright_engine import PlaywrightEngine
-from sherlock_project.result import QueryResult, QueryStatus
-from sherlock_project.sherlock import sherlock
+from sift_osint.notify import QueryNotify
+from sift_osint.playwright_engine import PlaywrightEngine
+from sift_osint.result import QueryResult, QueryStatus
+from sift_osint.sherlock import sherlock
 
 FALSE_POSITIVE_ATTEMPTS: int = 2    # Since the usernames are randomly generated, it's POSSIBLE that a real username can be hit
 FALSE_POSITIVE_QUANTIFIER_UPPER_BOUND: int = 15  # If a pattern uses quantifiers such as `+` `*` or `{n,}`, limit the upper bound (0 to disable)

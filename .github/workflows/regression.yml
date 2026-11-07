@@ -91,6 +91,6 @@ jobs:
         run: |
           docker build \
             --build-arg VERSION_TAG=${{ steps.get-version.outputs.version }} \
-            -t sherlock-test:latest .
+            -t sift-test:latest .
       - name: Test Docker image runs
-        run: docker run --rm sherlock-test:latest --version
+        run: docker run --rm sift-test:latest --version

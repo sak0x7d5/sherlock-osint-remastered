@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-import sherlock_project.playwright_engine as playwright_module
-from sherlock_project.playwright_engine import BrowserUnavailable, PlaywrightEngine
+import sift_osint.playwright_engine as playwright_module
+from sift_osint.playwright_engine import BrowserUnavailable, PlaywrightEngine
 
 
 async def _already_installed(_callback=None) -> None:
@@ -450,7 +450,7 @@ def test_cloakbrowser_update_setting_defaults_off_but_preserves_override(
             sys.executable,
             "-c",
             (
-                "import os; import sherlock_project.playwright_engine; "
+                "import os; import sift_osint.playwright_engine; "
                 "print(os.environ['CLOAKBROWSER_AUTO_UPDATE'])"
             ),
         ],

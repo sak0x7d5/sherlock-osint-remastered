@@ -2,13 +2,13 @@
 
 Run this benchmark explicitly against the configured LM Studio model with:
 
-    SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE=1 \
-    SHERLOCK_PASS_ONE_CAPTURE_BASELINE=1 \
-    SHERLOCK_PASS_ONE_REPORT_PATH=/tmp/pass-one-baseline.json \
+    SIFT_RUN_LOCAL_AI_ACCEPTANCE=1 \
+    SIFT_PASS_ONE_CAPTURE_BASELINE=1 \
+    SIFT_PASS_ONE_REPORT_PATH=/tmp/pass-one-baseline.json \
       poetry run pytest tests/test_pass_one_local_acceptance.py -q -s
 
-Then evaluate a candidate with ``SHERLOCK_PASS_ONE_BASELINE_REPORT`` pointing
-to that frozen report and a different ``SHERLOCK_PASS_ONE_REPORT_PATH``. The
+Then evaluate a candidate with ``SIFT_PASS_ONE_BASELINE_REPORT`` pointing
+to that frozen report and a different ``SIFT_PASS_ONE_REPORT_PATH``. The
 suite makes no hidden generations: each run makes exactly 48 production
 generations (three runs of fourteen independent fixtures plus three two-site
 key-reuse sequences). Candidate runs enforce accuracy, warm latency, input-token
@@ -17,7 +17,7 @@ reduction, and output-token regression gates against the baseline report.
 Legacy numeric latency baselines remain supported when no report is supplied.
 An existing prompt that fails correctness gates may be used strictly as a
 performance reference only with
-``SHERLOCK_PASS_ONE_ALLOW_INELIGIBLE_BASELINE=1``; the report must still contain
+``SIFT_PASS_ONE_ALLOW_INELIGIBLE_BASELINE=1``; the report must still contain
 all 48 timing/token samples, and the candidate must pass every absolute
 correctness gate.
 The live test is skipped during normal runs so collection never starts or loads
@@ -40,8 +40,8 @@ from typing import Any
 
 import pytest
 
-from sherlock_project.ai_config import load_ai_settings
-from sherlock_project.ai_engine import (
+from sift_osint.ai_config import load_ai_settings
+from sift_osint.ai_engine import (
     DEFAULT_STRUCTURED_RESPONSE_MAX_TOKENS,
     PASS_ONE_PROMPT_PATH,
     SAFE_EXTRACTION_KEY,
@@ -50,15 +50,15 @@ from sherlock_project.ai_engine import (
     OSINTResponse,
 )
 
-ENABLE_ENV = "SHERLOCK_RUN_LOCAL_AI_ACCEPTANCE"
-CAPTURE_BASELINE_ENV = "SHERLOCK_PASS_ONE_CAPTURE_BASELINE"
-BASELINE_REPORT_ENV = "SHERLOCK_PASS_ONE_BASELINE_REPORT"
+ENABLE_ENV = "SIFT_RUN_LOCAL_AI_ACCEPTANCE"
+CAPTURE_BASELINE_ENV = "SIFT_PASS_ONE_CAPTURE_BASELINE"
+BASELINE_REPORT_ENV = "SIFT_PASS_ONE_BASELINE_REPORT"
 ALLOW_INELIGIBLE_BASELINE_ENV = (
-    "SHERLOCK_PASS_ONE_ALLOW_INELIGIBLE_BASELINE"
+    "SIFT_PASS_ONE_ALLOW_INELIGIBLE_BASELINE"
 )
-REPORT_PATH_ENV = "SHERLOCK_PASS_ONE_REPORT_PATH"
-BASELINE_P50_ENV = "SHERLOCK_PASS_ONE_BASELINE_P50_SECONDS"
-BASELINE_P95_ENV = "SHERLOCK_PASS_ONE_BASELINE_P95_SECONDS"
+REPORT_PATH_ENV = "SIFT_PASS_ONE_REPORT_PATH"
+BASELINE_P50_ENV = "SIFT_PASS_ONE_BASELINE_P50_SECONDS"
+BASELINE_P95_ENV = "SIFT_PASS_ONE_BASELINE_P95_SECONDS"
 REPETITIONS = 3
 SEARCHED_USERNAME = "7ghost"
 BASE_KNOWN_KEYS = ("full_name", "roles", "organizations")

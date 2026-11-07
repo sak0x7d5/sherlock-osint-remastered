@@ -54,6 +54,7 @@ tests/.excluded_sites
 # Database
 *.db
 sherlock.db-*-response_text.bin
+sift-osint.db-*-response_text.bin
 
 # Local Codex experiment artifacts
 .codex-backups/

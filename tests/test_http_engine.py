@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from sherlock_project.http_engine import (
+from sift_osint.http_engine import (
     DEFAULT_USER_AGENT,
     HttpEngine,
     HttpFetchResponse,

@@ -5,11 +5,11 @@ from typing import Self
 
 import pytest
 
-from sherlock_project import sherlock as sherlock_module
-from sherlock_project.ai_config import AIConfigError, AISettings
-from sherlock_project.investigation_context import parse_inline_anchor
-from sherlock_project.notify import QueryNotify
-from sherlock_project.profile_synthesis import ProfileSynthesis
+from sift_osint import sherlock as sherlock_module
+from sift_osint.ai_config import AIConfigError, AISettings
+from sift_osint.investigation_context import parse_inline_anchor
+from sift_osint.notify import QueryNotify
+from sift_osint.profile_synthesis import ProfileSynthesis
 
 pytestmark = pytest.mark.asyncio
 
@@ -226,7 +226,7 @@ async def test_fresh_disables_the_saved_site_resume_filter(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
 
     await sherlock_module.main()
@@ -310,7 +310,7 @@ async def test_concurrency_option_reaches_the_fetch_engine(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
 
     await sherlock_module.main()
@@ -407,7 +407,7 @@ async def test_browser_run_rescans_sites_the_fast_transport_did_not_confirm(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
 
     await sherlock_module.main()
@@ -496,7 +496,7 @@ async def test_transport_choice_decides_which_engine_is_built(
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", _engine("browser"))
     monkeypatch.setattr(sherlock_module, "HttpEngine", _engine("http"))
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
 
     await sherlock_module.main()
@@ -599,7 +599,7 @@ async def test_fully_cached_username_reports_without_scanning(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
 
     await sherlock_module.main()
@@ -619,7 +619,7 @@ async def test_ai_mode_without_configuration_fails_before_scanning(
         sherlock_module,
         "load_ai_settings",
         lambda: (_ for _ in ()).throw(
-            AIConfigError("AI is not configured. Run `sherlock-rm setup ai` first.")
+            AIConfigError("AI is not configured. Run `sift-osint setup ai` first.")
         ),
     )
     monkeypatch.setattr(sys, "argv", ["sherlock", "--ai", "blue"])
@@ -634,7 +634,7 @@ async def test_ai_mode_without_configuration_fails_before_scanning(
     with pytest.raises(SystemExit):
         await sherlock_module.main()
 
-    assert "sherlock-rm setup ai" in capsys.readouterr().err
+    assert "sift-osint setup ai" in capsys.readouterr().err
 
 
 async def test_targeted_ai_mode_processes_only_fresh_selected_results(
@@ -743,7 +743,7 @@ async def test_targeted_ai_mode_processes_only_fresh_selected_results(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", fake_worker)
     # Starting llama-server is not what this test is about, and letting it run
@@ -895,7 +895,7 @@ async def test_normal_ai_scan_overlaps_model_loading_and_waits_before_synthesis(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", fake_worker)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
@@ -995,7 +995,7 @@ async def test_model_load_failure_finishes_scan_and_skips_synthesis(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", failing_ai_create)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
     monkeypatch.setattr(
@@ -1167,7 +1167,7 @@ async def test_anchorless_synthesis_only_does_not_load_model(
     async def fake_synthesize_profiles(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", unexpected_model_create)
     monkeypatch.setattr(
         sherlock_module,
@@ -1346,7 +1346,7 @@ async def test_main_scan_cancellation_returns_130_and_skips_exports(
         "PlaywrightEngine",
         lambda **_kwargs: engine,
     )
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "sherlock", blocked_scan)
 
     main_task = asyncio.create_task(sherlock_module.main())
@@ -1485,7 +1485,7 @@ async def test_main_ai_generation_cancellation_closes_once_and_skips_synthesis(
         "PlaywrightEngine",
         lambda **_kwargs: engine,
     )
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", blocked_worker)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
@@ -1806,7 +1806,7 @@ async def test_main_scan_cancellation_stops_ai_before_site_cleanup_finishes(
         "PlaywrightEngine",
         lambda **_kwargs: engine,
     )
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", blocked_worker)
 
@@ -1923,7 +1923,7 @@ async def test_main_interruption_survives_ai_and_database_close_failures(
         "PlaywrightEngine",
         lambda **_kwargs: FakeEngine(),
     )
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "run_ai_pipeline", fake_pipeline)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
     monkeypatch.setattr(
@@ -1986,7 +1986,7 @@ async def test_synthesis_only_interruption_survives_cleanup_failures(
         "argv",
         ["sherlock", "--ai-synthesize-only", "blue"],
     )
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "AIService", FakeAIService)
     monkeypatch.setattr(
         sherlock_module,
@@ -2096,7 +2096,7 @@ async def test_main_saved_sites_cancellation_stops_ai_before_engine_cleanup(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module, "run_ai_pipeline", blocked_pipeline)
     monkeypatch.setattr(
         sherlock_module,
@@ -2234,7 +2234,7 @@ async def test_fresh_redoes_extraction_and_silences_the_model_warning(
     )
     monkeypatch.setattr(sherlock_module, "SitesInformation", FakeSites)
     monkeypatch.setattr(sherlock_module, "PlaywrightEngine", FakeEngine)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_ai_create)
     monkeypatch.setattr(sherlock_module, "ai_worker", fake_worker)
     monkeypatch.setattr(sherlock_module, "sherlock", fake_scan)
@@ -2258,7 +2258,7 @@ async def test_an_anchored_rebuild_starts_a_server_like_a_scan_does(
     the UI leaves one running: the scan stops its server on the way out and the
     model picker stops its own.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sift_osint.profile_synthesis import IdentityAnchor
 
     started: list[str] = []
     server_settings: list[AISettings] = []
@@ -2297,7 +2297,7 @@ async def test_an_anchored_rebuild_starts_a_server_like_a_scan_does(
         return {}
 
     monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", FakeServer)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_model_create)
     monkeypatch.setattr(
         sherlock_module, "synthesize_profiles", fake_synthesize_profiles
@@ -2343,7 +2343,7 @@ async def test_an_unanchored_rebuild_starts_no_server_at_all(
         return {}
 
     monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", ForbiddenServer)
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(
         sherlock_module, "synthesize_profiles", fake_synthesize_profiles
     )
@@ -2426,7 +2426,7 @@ async def test_analyse_pending_reads_unread_pages_before_merging(
         order.append("pass2")
         return {}
 
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", fake_model_create)
     monkeypatch.setattr(sherlock_module, "_ensure_server_for_synthesis", fake_server)
     monkeypatch.setattr(sherlock_module, "_extract_stored_pages", fake_extract)
@@ -2467,7 +2467,7 @@ async def test_an_unanchored_build_still_merges_if_the_model_cannot_start(
         assert kwargs["ai_service"]._provider is None
         return {}
 
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
     monkeypatch.setattr(sherlock_module.AIService, "create", broken_model_create)
     monkeypatch.setattr(sherlock_module, "_ensure_server_for_synthesis", fake_server)
     monkeypatch.setattr(sherlock_module, "_extract_stored_pages", unexpected_extract)
@@ -2486,7 +2486,7 @@ async def test_stopping_a_build_while_the_model_loads_stops_the_server(
 ):
     """Stop in the UI cancels the build mid-load. The server it started must
     not be left running behind it."""
-    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sift_osint.profile_synthesis import IdentityAnchor
 
     events: list[str] = []
     db = _pending_db([])
@@ -2510,7 +2510,7 @@ async def test_stopping_a_build_while_the_model_loads_stops_the_server(
 
     monkeypatch.setattr(sherlock_module, "ManagedLlamaServer", HangingServer)
     monkeypatch.setattr(sherlock_module, "load_ai_settings", lambda: Settings())
-    monkeypatch.setattr(sherlock_module.SherlockDB, "create", fake_db_create)
+    monkeypatch.setattr(sherlock_module.SiftDB, "create", fake_db_create)
 
     task = asyncio.create_task(
         sherlock_module.run_synthesis_only(

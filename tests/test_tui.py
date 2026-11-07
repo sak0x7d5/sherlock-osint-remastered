@@ -19,19 +19,19 @@ from rich.console import Console
 from textual.screen import ModalScreen
 from textual.worker import WorkerCancelled
 
-from sherlock_project.database import SherlockDB
-from sherlock_project.result import QueryResult, QueryStatus
-from sherlock_project.tui.app import SherlockUI, run_ui
-from sherlock_project.tui.reporter import (
+from sift_osint.database import SiftDB
+from sift_osint.result import QueryResult, QueryStatus
+from sift_osint.tui.app import SiftUI, run_ui
+from sift_osint.tui.reporter import (
     TuiReporter,
     describe_options,
     describe_settings,
 )
-from sherlock_project.tui.results_pane import ResultsPane
-from sherlock_project.tui.runner import ai_is_configured, resolved
-from sherlock_project.tui.scan_pane import CounterRow, ScanPane
-from sherlock_project.tui.settings_pane import SettingsPane
-from sherlock_project.tui.theme import (
+from sift_osint.tui.results_pane import ResultsPane
+from sift_osint.tui.runner import ai_is_configured, resolved
+from sift_osint.tui.scan_pane import CounterRow, ScanPane
+from sift_osint.tui.settings_pane import SettingsPane
+from sift_osint.tui.theme import (
     SPINNER_FRAMES,
     STATUS_ORDER,
     STATUS_STYLES,
@@ -78,7 +78,7 @@ def test_every_result_is_retained_so_the_filter_can_reveal_it():
 def test_only_hits_are_visible_before_the_filter_is_touched():
     """Absent is the overwhelming majority of any scan, so a feed that draws it
     scrolls the actual findings off screen within seconds of starting."""
-    from sherlock_project.tui.theme import default_visible_statuses
+    from sift_osint.tui.theme import default_visible_statuses
 
     assert default_visible_statuses() == {QueryStatus.CLAIMED}
 
@@ -210,7 +210,7 @@ def test_the_unresolved_caveat_survives_and_points_in_app():
 
     "3 blocked" is a number; "a site that never answered is not a site where
     nobody was home" is the distinction this tool refuses to blur. It also used
-    to recommend `sherlock-rm show --unresolved`, a command nobody in the app
+    to recommend `sift-osint show --unresolved`, a command nobody in the app
     can run -- the third instance of that bug. The same trap catches any
     rename: this must name a control the app actually HAS, so pointing at the
     retired UNRESOLVED tab is as broken as pointing at the flag was.
@@ -250,7 +250,7 @@ async def test_the_activity_pane_says_why_it_is_empty():
     broken; one that says it only speaks up on a problem reads as quiet."""
     from textual.widgets import RichLog
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         log = app.query_one("#activity", RichLog)
         rendered = " ".join(
@@ -263,7 +263,7 @@ async def test_the_activity_pane_says_why_it_is_empty():
 
 
 def _token_limit_failure():
-    from sherlock_project.ai_engine import StructuredResponseError
+    from sift_osint.ai_engine import StructuredResponseError
 
     return StructuredResponseError(
         "OSINT extraction",
@@ -339,7 +339,7 @@ def test_the_log_keeps_drawing_after_its_buffer_rolls_over():
     went on working perfectly. In verbose that took one tick, because a JSON
     panel per stored site arrives before the scan even starts.
     """
-    from sherlock_project.tui.reporter import LOG_LIMIT
+    from sift_osint.tui.reporter import LOG_LIMIT
 
     reporter = TuiReporter()
     for index in range(LOG_LIMIT + 50):
@@ -361,9 +361,9 @@ async def test_a_dropped_burst_is_reported_rather_than_silently_lost():
     short one -- so an overflow between two ticks says how much it dropped."""
     from textual.widgets import RichLog
 
-    from sherlock_project.tui.reporter import LOG_LIMIT
+    from sift_osint.tui.reporter import LOG_LIMIT
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         pane = app.query_one(ScanPane)
         reporter = TuiReporter()
@@ -399,7 +399,7 @@ async def test_the_findings_table_carries_the_response_time():
     """
     from textual.widgets import DataTable
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         pane = app.query_one(ScanPane)
         reporter = TuiReporter()
@@ -425,7 +425,7 @@ async def test_the_findings_table_carries_the_response_time():
 def test_a_site_timing_is_not_rounded_to_whole_seconds():
     """`elapsed_label` measures a whole scan; most sites answer in well under a
     second, so through that formatter nearly every row would read `0s`."""
-    from sherlock_project.tui.theme import response_label
+    from sift_osint.tui.theme import response_label
 
     assert response_label(0.412) == "412ms"
     assert response_label(2.5) == "2.5s"
@@ -438,7 +438,7 @@ async def test_the_verbose_toggle_starts_from_the_stored_setting():
     too -- unlike analysis and re-scan, whose flags have none."""
     from textual.widgets import Button
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         assert pane._verbose is False
@@ -452,7 +452,7 @@ async def test_the_verbose_toggle_starts_from_the_stored_setting():
 
 async def test_the_scan_reporter_is_built_with_the_chosen_verbosity():
     """The toggle has to reach the reporter, or it is decoration."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         pane = app.query_one(ScanPane)
         pane._verbose = True
@@ -565,7 +565,7 @@ async def test_the_startup_block_draws_and_then_stops_animating():
     """Live while it loads, still afterwards."""
     from textual.widgets import Static
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         pane = app.query_one(ScanPane)
         reporter = TuiReporter()
@@ -596,7 +596,7 @@ def test_the_model_name_keeps_the_half_that_identifies_it():
     three identical lines, while cutting the size and the quantisation that
     tell them apart.
     """
-    from sherlock_project.tui.theme import model_name
+    from sift_osint.tui.theme import model_name
 
     assert (
         model_name("unsloth/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-Q4_K_M.gguf", 24)
@@ -622,7 +622,7 @@ def test_the_readout_rows_all_keep_one_right_edge():
     a count needs, so `value_row` measures the value first and gives the label
     what is left -- the opposite split from `stat_row`, to the same right edge.
     """
-    from sherlock_project.tui.theme import value_row
+    from sift_osint.tui.theme import value_row
 
     widths = {
         value_row("speed", "38 tok/s").cell_len,
@@ -651,7 +651,7 @@ def test_an_indented_sub_row_is_exactly_as_wide_as_a_top_level_one():
 
 
 def test_speed_reads_as_whole_tokens_per_second():
-    from sherlock_project.tui.theme import throughput_label
+    from sift_osint.tui.theme import throughput_label
 
     assert throughput_label(38.4) == "38 tok/s"
     # Absent, not "0 tok/s" -- see `TuiReporter.throughput`.
@@ -666,8 +666,8 @@ def _trace(
     generation_seconds=None,
     phase="pass_one",
 ):
-    from sherlock_project.ai_engine import AIRequestTrace
-    from sherlock_project.ai_provider import AIGenerationStats
+    from sift_osint.ai_engine import AIRequestTrace
+    from sift_osint.ai_provider import AIGenerationStats
 
     return AIRequestTrace(
         phase=phase,
@@ -838,7 +838,7 @@ def _profile():
     with the status, and `TuiReporter.render_profile` names the username when it
     points at the RESULTS tab.
     """
-    from sherlock_project.profile_synthesis import ProfileSynthesis
+    from sift_osint.profile_synthesis import ProfileSynthesis
 
     return ProfileSynthesis.model_validate(
         {
@@ -873,7 +873,7 @@ async def test_the_model_is_named_before_a_scan_rather_than_after():
     -- a block that only filled in once a scan started would arrive after the
     decision it informs.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -897,7 +897,7 @@ async def test_the_model_is_named_before_a_scan_rather_than_after():
 async def test_analysis_without_a_model_says_where_to_set_one():
     """The empty state teaches, exactly like the empty anchors list. This is
     precisely the moment someone needs telling: analysis is on and cannot run."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values["ai.model"] = None
@@ -920,7 +920,7 @@ async def test_the_live_rows_sit_with_the_analysis_they_describe():
     has nothing left to drain, which is exactly the tick that would otherwise
     leave the last spinner frame on screen forever.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 40)) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -968,7 +968,7 @@ async def test_analysis_says_what_became_of_every_extraction():
     That is the error the SITES block one column up refuses to make, and it is
     the distinction the whole tool is built on.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 40)) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -1015,7 +1015,7 @@ async def test_pass_two_gets_its_own_line_and_stops_the_waiting_row_lying():
     heaviest model call of the run -- every stored extraction merged in one
     request, and a model loaded cold for it on an anchored rebuild.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 40)) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -1059,7 +1059,7 @@ async def test_pass_two_is_reported_even_when_this_run_extracted_nothing():
     the synthesis row would have been invisible on exactly the runs where it is
     the only thing happening.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 40)) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -1085,7 +1085,7 @@ async def test_a_stopped_scan_leaves_no_synthesis_spinner_turning():
     spinner still turning beside a scan that has stopped is the one thing a live
     indicator must never do.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 40)) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.update(_model_settings())
@@ -1150,7 +1150,7 @@ def test_a_landed_synthesis_stops_counting():
 
 
 def _profile_with_warnings():
-    from sherlock_project.profile_synthesis import ProfileSynthesis
+    from sift_osint.profile_synthesis import ProfileSynthesis
 
     return ProfileSynthesis.model_validate(
         {
@@ -1178,7 +1178,7 @@ def test_the_profile_never_tells_the_app_to_use_a_command_line_flag():
     every surface -- so what changes is the route to reading them, which is the
     caller's business rather than the renderer's.
     """
-    from sherlock_project.tui.results_pane import render_profile_text
+    from sift_osint.tui.results_pane import render_profile_text
 
     rendered = render_profile_text(_profile_with_warnings()).plain
     assert "2 notes about how this was built" in rendered
@@ -1194,11 +1194,11 @@ def test_the_anchor_caveat_is_stated_once_not_twice():
     or not anyone asks for diagnostics, and it is the only note that changes how
     the VALUES should be read rather than how they were gathered.
     """
-    from sherlock_project.profile_synthesis import (
+    from sift_osint.profile_synthesis import (
         AGGREGATE_ANCHOR_WARNING,
         ProfileSynthesis,
     )
-    from sherlock_project.tui.results_pane import render_profile_text
+    from sift_osint.tui.results_pane import render_profile_text
 
     profile = ProfileSynthesis.model_validate(
         {
@@ -1237,11 +1237,11 @@ def test_the_caveat_leads_and_the_diagnostics_trail():
     fact. Everything else describes how the profile was BUILT, and stacked on
     top it pushed the values down the panel behind a wall of site ids.
     """
-    from sherlock_project.profile_synthesis import (
+    from sift_osint.profile_synthesis import (
         AGGREGATE_ANCHOR_WARNING,
         ProfileSynthesis,
     )
-    from sherlock_project.tui.results_pane import render_profile_text
+    from sift_osint.tui.results_pane import render_profile_text
 
     profile = ProfileSynthesis.model_validate(
         {
@@ -1274,7 +1274,7 @@ def test_the_caveat_leads_and_the_diagnostics_trail():
 
 def test_pressing_v_shows_the_notes_instead_of_the_count():
     """The hint has to be true: the key it names must actually reveal them."""
-    from sherlock_project.tui.results_pane import render_profile_text
+    from sift_osint.tui.results_pane import render_profile_text
 
     shown = render_profile_text(_profile_with_warnings(), show_notes=True).plain
     assert "StructuredResponseError" in shown
@@ -1290,7 +1290,7 @@ def test_the_cli_keeps_its_own_hint():
 
     from rich.console import Console
 
-    from sherlock_project.notify import TerminalReporter
+    from sift_osint.notify import TerminalReporter
 
     buffer = StringIO()
     console = Console(file=buffer, width=100, no_color=True)
@@ -1331,7 +1331,7 @@ def test_the_cli_still_names_the_flag_for_redoing_extractions():
 
     from rich.console import Console
 
-    from sherlock_project.notify import TerminalReporter
+    from sift_osint.notify import TerminalReporter
 
     buffer = StringIO()
     console = Console(file=buffer, width=120, no_color=True)
@@ -1495,7 +1495,7 @@ def test_analysis_runs_only_when_a_model_is_configured():
 
 def test_the_config_line_agrees_with_what_the_scan_will_do():
     """One predicate for "is a model available", used by both surfaces."""
-    from sherlock_project.tui.reporter import analysis_is_on
+    from sift_osint.tui.reporter import analysis_is_on
 
     for values in ({"ai.model": "vendor/m"}, {"ai.model": None}, {}):
         assert analysis_is_on(values) == ai_is_configured(values)
@@ -1602,8 +1602,8 @@ def test_the_runner_reuses_the_cli_scan_lifecycle():
     """
     import inspect
 
-    from sherlock_project.ai_engine import pass_one_contract_hash
-    from sherlock_project.sherlock import (
+    from sift_osint.ai_engine import pass_one_contract_hash
+    from sift_osint.sherlock import (
         _cancel_ai_pipeline_now,
         _close_ai_service_and_db,
         is_resumable,
@@ -1625,7 +1625,7 @@ def test_the_runner_reuses_the_cli_scan_lifecycle():
         is_resumable: {"row", "using_browser"},
         report_cached_ai_evidence: {"db", "usernames", "contract_hash", "reporter"},
         restore_saved_results: {"username", "saved_rows", "site_data_all"},
-        run_ai_pipeline: {"ai_queue", "sherlock_db", "reporter", "ai_settings"},
+        run_ai_pipeline: {"ai_queue", "sift_db", "reporter", "ai_settings"},
         synthesize_profiles: {"db", "ai_service", "usernames", "force", "reporter"},
         sherlock: {
             "username", "engine", "db", "site_data", "query_notify",
@@ -1658,7 +1658,7 @@ def test_the_tui_reporter_satisfies_everything_the_scan_calls():
 # -- the database listing ---------------------------------------------------
 
 
-async def test_listing_orders_by_when_it_was_actually_scanned(db: SherlockDB):
+async def test_listing_orders_by_when_it_was_actually_scanned(db: SiftDB):
     """`usernames.last_scanned_at` records first-seen and is never updated.
 
     Sorting by it would put a username scanned this morning below one first seen
@@ -1692,7 +1692,7 @@ async def test_listing_orders_by_when_it_was_actually_scanned(db: SherlockDB):
     assert by_name["older"].has_profile is False
 
 
-async def test_a_username_with_no_results_is_not_offered(db: SherlockDB):
+async def test_a_username_with_no_results_is_not_offered(db: SiftDB):
     """An interrupted scan can leave one, and its detail view would be empty."""
     await db.get_or_create_username_id("ghost")
     assert await db.list_usernames() == []
@@ -1742,8 +1742,8 @@ async def _run_with_fakes(
     `sites` is empty by default, which is itself a case worth exercising -- it
     is what a fully resumed username looks like.
     """
-    import sherlock_project.sherlock as sherlock_module
-    from sherlock_project.tui import runner as runner_module
+    import sift_osint.sherlock as sherlock_module
+    from sift_osint.tui import runner as runner_module
 
     _FakeEngine.instances.clear()
     monkeypatch.setattr(runner_module, "HttpEngine", _FakeEngine)
@@ -1869,9 +1869,9 @@ async def test_no_browser_is_started_when_there_is_nothing_to_scan(monkeypatch):
     """A fully resumed username used to start Chromium, report it ready, then
     scan nothing -- seconds of browser startup for a run with no work in it,
     and on screen indistinguishable from a real scan."""
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.save_result(
             username="someone",
@@ -1915,10 +1915,10 @@ async def test_a_fully_stored_username_analyses_without_fetching_anything(
     the guarantee the dialog's wording depends on, and the one that would break
     silently if the backfill ever moved inside the `if site_data:` branch.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.database import SiftDB, default_database_path
+    from sift_osint.tui import runner as runner_module
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for site in ("GitHub", "Reddit"):
             await db.save_result(
@@ -1937,7 +1937,7 @@ async def test_a_fully_stored_username_analyses_without_fetching_anything(
 
     enqueued: list[int] = []
 
-    async def fake_pipeline(*, ai_queue, sherlock_db, reporter, ai_settings):
+    async def fake_pipeline(*, ai_queue, sift_db, reporter, ai_settings):
         while True:
             try:
                 site_id = await ai_queue.get()
@@ -1949,7 +1949,7 @@ async def test_a_fully_stored_username_analyses_without_fetching_anything(
     async def fake_synthesize(**kwargs):
         return None
 
-    import sherlock_project.sherlock as sherlock_module
+    import sift_osint.sherlock as sherlock_module
 
     monkeypatch.setattr(sherlock_module, "run_ai_pipeline", fake_pipeline)
     monkeypatch.setattr(sherlock_module, "synthesize_profiles", fake_synthesize)
@@ -1981,10 +1981,10 @@ async def test_a_fully_stored_username_analyses_without_fetching_anything(
 
 
 async def _pending_ids(username: str) -> list[int]:
-    from sherlock_project.ai_engine import pass_one_contract_hash
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.ai_engine import pass_one_contract_hash
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         return await db.get_pending_ai_extraction_ids(
             username, contract_hash=pass_one_contract_hash()
@@ -2074,18 +2074,18 @@ def test_navigation_keys_avoid_flow_control_and_function_keys():
     - Function keys need Fn held on most laptops, and F1 is commonly grabbed
       for help by the terminal or the desktop before the app sees it.
 
-    `sherlock-rm settings` keeps ctrl+s to save because it shipped that way and
+    `sift-osint settings` keeps ctrl+s to save because it shipped that way and
     changing a key underneath people is worse than the caveat; this asserts
     nothing NEW picks one of these.
     """
     hostile = {"ctrl+s", "ctrl+q", "f1", "f2", "f3", "f4"}
-    for owner in (SherlockUI, ScanPane, ResultsPane):
+    for owner in (SiftUI, ScanPane, ResultsPane):
         for binding in owner.BINDINGS:
             for key in str(binding.key).split(","):
                 assert key.strip() not in hostile, (
                     f"{owner.__name__} binds {key!r}, which is either terminal "
                     f"flow control or a function key -- see the note on "
-                    f"SherlockUI.BINDINGS."
+                    f"SiftUI.BINDINGS."
                 )
 
 
@@ -2096,10 +2096,10 @@ def test_app_level_keys_are_not_already_taken_by_a_widget():
     is exactly how STOP on ctrl+x came to do nothing at all.
     """
     claimed = _keys_claimed_by_widgets()
-    for binding in SherlockUI.BINDINGS:
+    for binding in SiftUI.BINDINGS:
         for key in str(binding.key).split(","):
             assert key.strip() not in claimed, (
-                f"SherlockUI binds {key!r}, which a widget on screen already "
+                f"SiftUI binds {key!r}, which a widget on screen already "
                 f"claims; the widget would win."
             )
 
@@ -2128,7 +2128,7 @@ def test_scan_bindings_are_keys_the_username_field_does_not_claim():
 
 async def _start_scan_and_capture(monkeypatch, press):
     """Drive a real control and report whether a scan was actually launched."""
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     launched: list[str] = []
 
@@ -2138,7 +2138,7 @@ async def _start_scan_and_capture(monkeypatch, press):
 
     monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await press(pilot, app)
@@ -2180,7 +2180,7 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
     which meant the same investigation cost a GPU pass in the app and not on the
     CLI. A screen must not quietly do more than the command it stands for.
     """
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     captured: dict[str, bool] = {}
 
@@ -2190,7 +2190,7 @@ async def test_analysis_is_off_unless_asked_for(monkeypatch):
 
     monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"alice")
         await pilot.press("enter")
@@ -2212,7 +2212,7 @@ async def test_the_toggles_show_their_own_state():
     invisible is one you have to press to find out about."""
     from textual.widgets import Button
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         ai = app.query_one("#toggle-ai", Button)
         assert str(ai.label) == "☐ analysis"
@@ -2228,7 +2228,7 @@ async def test_the_toggles_carry_hover_text_that_follows_their_state():
     """
     from textual.widgets import Button
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         ai = app.query_one("#toggle-ai", Button)
         verbose = app.query_one("#toggle-verbose", Button)
@@ -2253,7 +2253,7 @@ async def test_nothing_is_drawn_under_the_options_row():
     """
     from textual.widgets import Static
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.pause()
         assert not app.query("#options-help")
@@ -2268,7 +2268,7 @@ async def test_hovering_a_toggle_actually_shows_the_tooltip():
     proves the wiring rather than the text: hover the control, let
     TOOLTIP_DELAY elapse, and find the box on screen carrying its words.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(tooltips=True) as pilot:
         from textual.widgets import Tooltip
 
@@ -2291,7 +2291,7 @@ async def test_the_profile_button_carries_the_hover_text_too():
     """
     from textual.widgets import Button
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
         anchors = app.query_one("#profile-anchors", Button)
@@ -2306,9 +2306,9 @@ async def test_re_scan_defeats_the_resume_filter(monkeypatch, tmp_path):
     nothing to do -- which is the dead end `--fresh` exists to open, and the
     most ordinary thing anyone wants is to check again later.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.save_result(
             username="someone",
@@ -2357,9 +2357,9 @@ async def test_a_configured_model_going_unused_is_reported(monkeypatch):
     warning, because that is only reported when analysis is ON. Silence, and the
     old model still shown on the profile.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.save_result(
             username="someone",
@@ -2430,7 +2430,7 @@ async def test_an_empty_username_is_refused_rather_than_scanned(monkeypatch):
     async def press(pilot, app):
         await pilot.press("enter")
 
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     launched: list[str] = []
 
@@ -2438,7 +2438,7 @@ async def test_an_empty_username_is_refused_rather_than_scanned(monkeypatch):
         launched.append(username)
 
     monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press("enter")
         await _settle(app, pilot)
@@ -2455,14 +2455,14 @@ async def test_stopping_a_scan_leaves_other_work_alone(monkeypatch):
 
     from textual.worker import WorkerState
 
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     async def slow_session(*, username, reporter, settings_values, **options):
         await asyncio.sleep(60)
 
     monkeypatch.setattr(runner_module, "run_scan_session", slow_session)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         bystander = app.run_worker(asyncio.sleep(60), group="bystander")
         await pilot.press(*"alice")
@@ -2502,7 +2502,7 @@ async def test_stopping_a_scan_leaves_other_work_alone(monkeypatch):
 
 async def _pane_with_results():
     """An app whose scan pane holds one result of every kind."""
-    app = SherlockUI()
+    app = SiftUI()
     pane = None
     async with app.run_test(size=(110, 34)) as pilot:
         pane = app.query_one(ScanPane)
@@ -2531,7 +2531,7 @@ async def test_the_filter_works_before_any_scan_has_run():
     looked broken in the other. Every other filter test seeded a reporter first,
     which is exactly why none of them caught it.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         pane = app.query_one(ScanPane)
         assert pane._reporter is None, "this test is about the pre-scan state"
@@ -2655,7 +2655,7 @@ async def test_a_filtered_feed_says_it_is_filtered():
 
 async def _run_with_prompt(monkeypatch, username: str):
     """Press SCAN and hand back the app plus what the scan was told."""
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     captured: dict = {}
 
@@ -2672,7 +2672,7 @@ async def test_an_unknown_username_scans_without_asking(monkeypatch):
     there is nothing to warn about on a first scan."""
     captured = await _run_with_prompt(monkeypatch, "nobody")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"nobody")
         await pilot.press("enter")
@@ -2689,12 +2689,12 @@ async def test_a_known_username_asks_before_scanning_again(monkeypatch):
     A scan of a fully-stored username skipped every site, said so only in the
     activity log, and otherwise looked exactly like a scan that found nothing.
     """
-    from sherlock_project.tui.resume_screen import ResumeScreen
+    from sift_osint.tui.resume_screen import ResumeScreen
 
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
     captured = await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
@@ -2718,7 +2718,7 @@ async def test_choosing_re_scan_passes_fresh(monkeypatch):
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
     captured = await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
@@ -2737,14 +2737,14 @@ async def _fully_stored_with_unread_pages(username: str, *, pages: int) -> None:
     site left to fetch, and a whole AI pass still waiting on evidence already
     on disk.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
-    from sherlock_project.sites import SitesInformation
+    from sift_osint.database import SiftDB, default_database_path
+    from sift_osint.sites import SitesInformation
 
     sites = SitesInformation(honor_exclusions=False)
     sites.remove_nsfw_sites(do_not_remove=[])
     names = [site.name for site in sites]
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for index, name in enumerate(names):
             claimed = index < pages
@@ -2778,12 +2778,12 @@ async def test_stored_pages_offer_an_analysis_pass_that_fetches_nothing(
     """
     from textual.widgets import Button
 
-    from sherlock_project.tui.scan_pane import ScanPane
+    from sift_osint.tui.scan_pane import ScanPane
 
     await _fully_stored_with_unread_pages("marcus", pages=2)
     captured = await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values["ai.model"] = "vendor/m"
@@ -2825,12 +2825,12 @@ async def test_the_analysis_button_draws_its_whole_label(monkeypatch, size):
     from textual.geometry import Region
     from textual.widgets import Button
 
-    from sherlock_project.tui.scan_pane import ScanPane
+    from sift_osint.tui.scan_pane import ScanPane
 
     await _fully_stored_with_unread_pages("marcus", pages=3)
     await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=size) as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values["ai.model"] = "vendor/m"
@@ -2870,7 +2870,7 @@ async def test_stored_pages_are_not_offered_when_analysis_is_off(monkeypatch):
     await _fully_stored_with_unread_pages("marcus", pages=2)
     await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
@@ -2886,12 +2886,12 @@ async def test_stored_pages_are_not_offered_without_a_configured_model(
 ):
     """`run_scan_session` turns analysis off with a warning when no model is
     set, so a dialog offering the pass would be contradicted by the run."""
-    from sherlock_project.tui.scan_pane import ScanPane
+    from sift_osint.tui.scan_pane import ScanPane
 
     await _fully_stored_with_unread_pages("marcus", pages=2)
     await _run_with_prompt(monkeypatch, "marcus")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._settings_values.pop("ai.model", None)
@@ -2909,8 +2909,8 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
     that does not do what its label says."""
     from textual.widgets import Button
 
-    from sherlock_project.sites import SitesInformation
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.sites import SitesInformation
+    from sift_osint.tui import runner as runner_module
 
     # Every site in the manifest already answered for this username.
     sites = SitesInformation(honor_exclusions=False)
@@ -2925,7 +2925,7 @@ async def test_nothing_left_to_check_offers_the_results_instead(monkeypatch):
 
     monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press(*"marcus")
         await pilot.press("enter")
@@ -2961,7 +2961,7 @@ def test_the_dialog_and_the_scan_share_one_resume_calculation():
     """
     import inspect
 
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     session = inspect.getsource(runner_module.run_scan_session)
     assert "build_scan_plan(" in session
@@ -2984,8 +2984,8 @@ def test_anchor_lines_stack_into_one_column():
     at three different columns, which is the ragged edge this design keeps
     fixed widths to avoid.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
-    from sherlock_project.tui.theme import ANCHOR_FIELD_WIDTH, anchor_line
+    from sift_osint.profile_synthesis import IdentityAnchor
+    from sift_osint.tui.theme import ANCHOR_FIELD_WIDTH, anchor_line
 
     lines = [
         anchor_line(
@@ -3011,7 +3011,7 @@ async def test_the_anchor_section_appears_only_with_analysis_on():
     is a control that cannot do anything."""
     from textual.containers import Vertical
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         block = app.query_one("#anchors-block", Vertical)
@@ -3038,8 +3038,8 @@ async def test_hidden_anchors_cannot_reach_a_scan(monkeypatch):
     comes back on -- but while it is off they are not passed at all, rather than
     passed and merely ignored downstream.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.profile_synthesis import IdentityAnchor
+    from sift_osint.tui import runner as runner_module
 
     captured: dict = {}
 
@@ -3048,7 +3048,7 @@ async def test_hidden_anchors_cannot_reach_a_scan(monkeypatch):
 
     monkeypatch.setattr(runner_module, "run_scan_session", fake_session)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._anchors = [IdentityAnchor(field="full_name", value="Avery Stone")]
@@ -3076,9 +3076,9 @@ async def test_anchors_can_be_added_and_removed():
     """The feature that turns "accounts sharing a username" into "a person"."""
     from textual.widgets import Input
 
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         collected: list = []
         app.push_screen(AnchorScreen([]), collected.append)
@@ -3107,9 +3107,9 @@ async def test_an_incomplete_anchor_says_which_box_is_empty():
     """Repeating pydantic at someone is not an error message."""
     from textual.widgets import Input, Static
 
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         app.push_screen(AnchorScreen([]))
         await pilot.pause()
@@ -3135,15 +3135,15 @@ def test_the_editor_does_not_ask_for_a_trust_level():
     """
     import inspect
 
-    from sherlock_project.tui import anchor_screen
+    from sift_osint.tui import anchor_screen
 
     source = inspect.getsource(anchor_screen.AnchorScreen)
     assert "anchor-trust" not in source
     assert not hasattr(anchor_screen, "TRUST_LEVELS")
 
     # Anchors it makes carry the model's own default, unchosen and unprinted.
-    from sherlock_project.notify import DEFAULT_ANCHOR_TRUST
-    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sift_osint.notify import DEFAULT_ANCHOR_TRUST
+    from sift_osint.profile_synthesis import IdentityAnchor
 
     assert str(IdentityAnchor(field="f", value="v").trust) == DEFAULT_ANCHOR_TRUST
 
@@ -3154,11 +3154,11 @@ async def test_leaving_the_editor_untouched_keeps_the_existing_anchors():
     One clears the anchors, the other leaves them alone -- and Escape has to
     mean the second, or opening the editor to look would wipe the run's setup.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.profile_synthesis import IdentityAnchor
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
     existing = [IdentityAnchor(field="full_name", value="Avery Stone")]
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         result: list = []
         app.push_screen(AnchorScreen(existing), result.append)
@@ -3177,7 +3177,7 @@ async def test_anchors_set_without_analysis_are_reported(monkeypatch):
     The profile would come back carrying the very caveat the anchors were meant
     to remove, with nothing on screen explaining why.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sift_osint.profile_synthesis import IdentityAnchor
 
     async def scan_spy(**kwargs):
         return {}
@@ -3199,7 +3199,7 @@ async def test_anchors_set_without_analysis_are_reported(monkeypatch):
 
 async def test_the_app_opens_on_scan_with_three_tabs():
     """Tab order is the order of a session: scan, then read, then adjust."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         from textual.widgets import TabbedContent, TabPane
 
@@ -3245,7 +3245,7 @@ async def test_function_keys_switch_tabs_because_digits_would_not():
     makes the first keystroke a guess -- and a pane grabbing focus for itself on
     mount used to swallow it outright.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         from textual.widgets import Input, TabbedContent
 
@@ -3262,7 +3262,7 @@ async def test_function_keys_switch_tabs_because_digits_would_not():
 async def test_the_feed_draws_what_the_reporter_buffered():
     """The other half of the buffering argument: a tick draws everything that
     arrived since the last one, in one pass."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         from textual.widgets import DataTable
 
@@ -3291,7 +3291,7 @@ async def test_the_title_stops_saying_scanning_when_the_scan_stops():
     """
     from textual.widgets import Static
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         pane = app.query_one(ScanPane)
         pane._reset_for("7ghost")
@@ -3311,7 +3311,7 @@ async def test_the_title_stops_saying_scanning_when_the_scan_stops():
 async def test_findings_and_activity_are_separated_by_a_rule():
     """They share a column with nothing between them, which is the one boundary
     on this screen a heading alone did not make obvious."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)):
         title = app.query_one("#activity-title")
         assert title.styles.border_top[0], "no rule above ACTIVITY"
@@ -3319,7 +3319,7 @@ async def test_findings_and_activity_are_separated_by_a_rule():
 
 async def test_an_empty_scan_pane_says_idle_rather_than_pretending_to_work():
     """Nothing started must not look like something in progress."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         from textual.widgets import Static
 
@@ -3357,7 +3357,7 @@ async def test_saving_settings_updates_what_the_scan_pane_claims_it_will_do():
     test below -- this one passed throughout the whole time the wiring was
     broken, which is exactly the shape of test that lets a bug ship.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         from textual.widgets import Static
 
@@ -3375,8 +3375,8 @@ async def test_saving_settings_updates_what_the_scan_pane_claims_it_will_do():
 
 def _save_settings_to_disk(**overrides):
     """Write settings exactly the way ^S on the settings pane writes them."""
-    from sherlock_project.ai_config import save_settings, try_load_settings
-    from sherlock_project.settings import apply_values, field_values
+    from sift_osint.ai_config import save_settings, try_load_settings
+    from sift_osint.settings import apply_values, field_values
 
     stored = try_load_settings()
     values = field_values(stored)
@@ -3399,7 +3399,7 @@ async def test_settings_reach_the_scan_tab_by_every_route_not_just_escape():
     with analysis off while the model sat on disk. Hence the second assertion:
     the line describing how the scan will RUN has to move too.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         from textual.widgets import Static
 
@@ -3436,7 +3436,7 @@ async def test_unsaved_settings_edits_do_not_reach_the_scan_pane():
     typed-but-unsaved model would promise analysis that `run_scan_session` --
     which re-reads the stored config itself -- would not deliver.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         pane = app.query_one(ScanPane)
         pane._use_ai = True
@@ -3459,16 +3459,16 @@ async def test_the_results_tab_reloads_when_you_switch_to_it():
     """
     from textual.widgets import DataTable
 
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         table = app.query_one("#username-list", DataTable)
         assert table.row_count == 0
 
         # Something lands in the database while the app is already open, which
         # is exactly what finishing a scan on the first tab does.
-        db = await SherlockDB.create(str(default_database_path()))
+        db = await SiftDB.create(str(default_database_path()))
         try:
             await db.save_result(
                 username="freshly-scanned",
@@ -3487,7 +3487,7 @@ async def test_the_results_tab_reloads_when_you_switch_to_it():
         # The reload this tab triggers is a worker doing a SQLite read, so a
         # loop of pause() can return with the read still outstanding. This is
         # the right barrier for that, but it was NOT what made this test flaky:
-        # the 4-in-12 failure rate measured here was `SherlockDB.connect`
+        # the 4-in-12 failure rate measured here was `SiftDB.connect`
         # racing itself on a database that did not exist yet, and it is fixed
         # in database.py. Kept because waiting on the worker is still the
         # correct thing to do, not because it is load-bearing.
@@ -3497,9 +3497,9 @@ async def test_the_results_tab_reloads_when_you_switch_to_it():
 
 
 async def _seed(**rows) -> None:
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for username, entries in rows.items():
             for site, status in entries:
@@ -3520,9 +3520,9 @@ async def _seed(**rows) -> None:
 
 async def _seed_extraction(username, site, **kwargs) -> None:
     """Attach a stored Pass 1 extraction to an already-seeded site."""
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         rows = await db.get_site_extractions(username)
         site_id = next(row.site_id for row in rows if row.site_name == site)
@@ -3540,7 +3540,7 @@ def _accounts_rows(app) -> dict[str, list[str]]:
     """
     from textual.widgets import DataTable
 
-    from sherlock_project.tui.results_pane import SEC_SITES
+    from sift_osint.tui.results_pane import SEC_SITES
 
     table = app.query_one(f"#{SEC_SITES}", DataTable)
     rows: dict[str, list[str]] = {}
@@ -3581,7 +3581,7 @@ async def test_the_accounts_list_says_what_pass_one_made_of_each_site():
         model_key="qwen/qwen3-4b",
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_results(app, pilot)
         rows = _accounts_rows(app)
@@ -3617,7 +3617,7 @@ async def _open_extractions(pilot):
     """Reach the EXTRACTIONS section by the real binding."""
     from textual.widgets import ContentSwitcher
 
-    from sherlock_project.tui.results_pane import SEC_EXTRACTIONS, SECTION_FOR_TAB
+    from sift_osint.tui.results_pane import SEC_EXTRACTIONS, SECTION_FOR_TAB
 
     await _open_results(pilot.app, pilot)
     for _ in range(len(SECTION_FOR_TAB)):
@@ -3663,7 +3663,7 @@ async def test_the_extraction_panel_ranks_by_yield_not_alphabetically():
     )
     # Delta is never analysed at all.
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_extractions(pilot)
 
@@ -3709,7 +3709,7 @@ async def test_the_panel_detail_follows_the_cursor():
         reasoning="include Lisbon as location",
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_extractions(pilot)
 
@@ -3739,7 +3739,7 @@ async def test_a_username_scanned_without_analysis_says_so_once():
         marcus=[("GitHub", QueryStatus.CLAIMED), ("Mastodon", QueryStatus.CLAIMED)]
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_extractions(pilot)
         detail, _ = _extraction_panel(app)
@@ -3767,7 +3767,7 @@ async def test_the_extractions_tab_counts_yield_not_rows():
         contract_hash="hash", model_key="qwen/qwen3-4b",
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_results(app, pilot)
         label = str(app.query_one("#tab-extractions", Tab).label)
@@ -3781,8 +3781,8 @@ async def test_the_viewer_separates_never_analysed_from_found_nothing():
     model read and found nothing on is a result -- and most pages are that, so
     saying so plainly is what stops it reading as a failure.
     """
-    from sherlock_project.database import SiteExtractionRecord
-    from sherlock_project.tui.extraction_view import (
+    from sift_osint.database import SiteExtractionRecord
+    from sift_osint.tui.extraction_view import (
         extraction_facts,
         extraction_reasoning,
     )
@@ -3824,8 +3824,8 @@ async def test_the_viewer_separates_never_analysed_from_found_nothing():
 
 async def test_the_viewer_compares_the_contract_rather_than_printing_it():
     """64 hex characters answer nothing. "Will a re-scan redo this" does."""
-    from sherlock_project.database import SiteExtractionRecord
-    from sherlock_project.tui.extraction_view import extraction_provenance
+    from sift_osint.database import SiteExtractionRecord
+    from sift_osint.tui.extraction_view import extraction_provenance
 
     def record(stored_hash):
         return SiteExtractionRecord(
@@ -3873,7 +3873,7 @@ async def test_switching_username_does_not_carry_extractions_across():
         reasoning="include Marcus Vale as full_name",
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(140, 40)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -3902,9 +3902,9 @@ async def test_a_section_tab_and_its_pane_have_different_ids():
     """
     from textual.widgets import Tab
 
-    from sherlock_project.tui.results_pane import SECTION_FOR_TAB
+    from sift_osint.tui.results_pane import SECTION_FOR_TAB
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test():
         for tab_id, section_id in SECTION_FOR_TAB.items():
             assert tab_id != section_id
@@ -3953,7 +3953,7 @@ async def test_focus_does_not_restyle_the_section_tabs():
             break
         return rendered
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(100, 26)) as pilot:
         await _open_results(app, pilot)
         blurred = strip_styles(app)
@@ -3990,11 +3990,11 @@ async def test_no_scroll_region_is_nested_inside_another():
     """
     from textual.widgets import ContentSwitcher, Tabs
 
-    from sherlock_project.tui.results_pane import SECTION_FOR_TAB
+    from sift_osint.tui.results_pane import SECTION_FOR_TAB
 
     await _seed(marcus=[(f"Site{i:02d}", QueryStatus.CLAIMED) for i in range(40)])
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(100, 26)) as pilot:
         await _open_results(app, pilot)
 
@@ -4045,7 +4045,7 @@ async def test_the_counts_survive_the_merge_into_one_table():
             ("Slow", QueryStatus.UNKNOWN),
         ]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
 
@@ -4067,7 +4067,7 @@ async def test_filtering_to_hits_says_what_it_is_hiding():
     await _seed(
         marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
 
@@ -4094,7 +4094,7 @@ async def test_the_filter_is_the_same_control_as_the_scan_toggles():
     from textual.widgets import Button
 
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
 
@@ -4117,7 +4117,7 @@ async def test_unresolved_sites_are_listed_not_only_counted():
     await _seed(
         marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("f")
@@ -4162,7 +4162,7 @@ async def test_the_symbol_column_comes_with_a_key():
             ("Cloudflared", QueryStatus.WAF),
         ]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 30)) as pilot:
         await _open_results(app, pilot)
 
@@ -4186,7 +4186,7 @@ async def test_the_key_is_a_glossary_not_a_summary_of_one_record():
     a symbol that cannot appear in this table.
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)], quiet=[])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 30)) as pilot:
         await _open_results(app, pilot)
 
@@ -4204,7 +4204,7 @@ async def test_the_key_is_on_the_section_that_draws_the_symbols():
     glossary for nothing on screen that also cost the header four rows.
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED), ("Slow", QueryStatus.UNKNOWN)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 30)) as pilot:
         await _open_results(app, pilot)
         assert "found" in _key_text(app)
@@ -4227,7 +4227,7 @@ async def test_the_key_moves_before_the_counts_clip():
     """
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(150, 30)) as pilot:
         await _open_results(app, pilot)
         controls = app.query_one("#sites-controls")
@@ -4257,7 +4257,7 @@ async def test_a_rejected_username_is_not_drawn_as_inconclusive():
     from textual.widgets import DataTable
 
     await _seed(marcus=[("StrictSite", QueryStatus.ILLEGAL)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("f")
@@ -4281,7 +4281,7 @@ async def test_hits_come_before_the_rows_that_answered_nothing():
             ("Basecamp", QueryStatus.WAF),
         ]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 30)) as pilot:
         await _open_results(app, pilot)
         await pilot.press("f")
@@ -4295,7 +4295,7 @@ async def test_hits_come_before_the_rows_that_answered_nothing():
         assert status_style(QueryStatus.CLAIMED).glyph not in marks[1:]
 
 
-async def test_deleting_a_username_removes_both_tables(db: SherlockDB):
+async def test_deleting_a_username_removes_both_tables(db: SiftDB):
     """Leaving the `usernames` row would keep the name, its first-seen date and
     its stored profile on disk. For a tool whose subject is people, "most of
     the record" is not what removing a record means."""
@@ -4429,7 +4429,7 @@ async def _open_profile_section(app, pilot) -> None:
     executor, so all twelve iterations can pass in microseconds with nothing
     mounted.
     """
-    from sherlock_project.tui.results_pane import SEC_PROFILE, SECTION_FOR_TAB
+    from sift_osint.tui.results_pane import SEC_PROFILE, SECTION_FOR_TAB
 
     await _settle(app, pilot, lambda: bool(app.query(ResultsPane)))
     await pilot.press("alt+2")
@@ -4460,12 +4460,12 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
     """
     from textual.widgets import Button
 
-    from sherlock_project.database import SherlockDB, default_database_path
-    from sherlock_project.tui.confirm_screen import ConfirmScreen
+    from sift_osint.database import SiftDB, default_database_path
+    from sift_osint.tui.confirm_screen import ConfirmScreen
 
     await _seed(marcus=[("GitHub", QueryStatus.CLAIMED)])
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
 
@@ -4498,7 +4498,7 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
         for _ in range(10):
             await pilot.pause()
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         assert [item.username for item in await db.list_usernames()] == ["marcus"]
     finally:
@@ -4508,15 +4508,15 @@ async def test_delete_asks_first_and_cancelling_keeps_everything():
 async def test_confirming_delete_erases_and_refreshes_the_list():
     from textual.widgets import DataTable
 
-    from sherlock_project.database import SherlockDB, default_database_path
-    from sherlock_project.tui.confirm_screen import ConfirmScreen
+    from sift_osint.database import SiftDB, default_database_path
+    from sift_osint.tui.confirm_screen import ConfirmScreen
 
     await _seed(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
         keeper=[("Reddit", QueryStatus.CLAIMED)],
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
 
@@ -4533,7 +4533,7 @@ async def test_confirming_delete_erases_and_refreshes_the_list():
 
         assert table.row_count == 1
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         remaining = [item.username for item in await db.list_usernames()]
     finally:
@@ -4554,7 +4554,7 @@ async def _list_with(**rows):
     from textual.widgets import DataTable
 
     await _seed(**rows)
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         # Through `_open_results`, not a bare first-tick `alt+2`, which was
         # sometimes dropped: the list still loaded behind the SCAN tab, so the
@@ -4567,7 +4567,7 @@ async def _list_with(**rows):
 
 
 async def _open_actions(app, pilot):
-    from sherlock_project.tui.record_actions import RecordActionsScreen
+    from sift_osint.tui.record_actions import RecordActionsScreen
 
     # The chip appears with the RECORD, a second read after the list. Clicking
     # before it arrives clicks nothing.
@@ -4596,7 +4596,7 @@ async def _choose(app, pilot, option_id: str) -> None:
     if option_id == "delete":
         # Dismissing the menu and pushing the confirmation are two steps; wait
         # for the second, not just the first.
-        from sherlock_project.tui.confirm_screen import ConfirmScreen
+        from sift_osint.tui.confirm_screen import ConfirmScreen
 
         await _settle(app, pilot, lambda: isinstance(app.screen, ConfirmScreen))
     else:
@@ -4611,7 +4611,7 @@ async def test_the_actions_menu_appears_with_a_record_and_not_before():
     """
     from textual.widgets import Button
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.press("alt+2")
         await _settle(app, pilot)
@@ -4674,8 +4674,8 @@ async def test_the_delete_action_asks_about_the_record_on_screen():
     The thing it deletes is the thing being read, and the dialog says which --
     "are you sure?" with no name is a question nobody can answer.
     """
-    from sherlock_project.database import default_database_path
-    from sherlock_project.tui.confirm_screen import ConfirmScreen
+    from sift_osint.database import default_database_path
+    from sift_osint.tui.confirm_screen import ConfirmScreen
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED), ("Reddit", QueryStatus.CLAIMED)],
@@ -4712,7 +4712,7 @@ async def test_the_delete_action_asks_about_the_record_on_screen():
         await pilot.press("escape")
         await _settle(app, pilot)
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         assert len(await db.list_usernames()) == 2, "cancelling deleted something"
     finally:
@@ -4723,7 +4723,7 @@ async def test_confirming_from_the_menu_erases_the_open_username():
     """The menu item and the key are one action, so confirming does one thing."""
     from textual.widgets import Button
 
-    from sherlock_project.database import default_database_path
+    from sift_osint.database import default_database_path
 
     async with _list_with(
         marcus=[("GitHub", QueryStatus.CLAIMED)],
@@ -4741,7 +4741,7 @@ async def test_confirming_from_the_menu_erases_the_open_username():
         # A record still stands, so the menu is still on offer for it.
         assert app.query_one("#record-actions", Button).display is True
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         remaining = [item.username for item in await db.list_usernames()]
     finally:
@@ -4754,7 +4754,7 @@ async def test_the_progress_strip_sits_with_the_findings():
     was missed entirely by the person watching the scan it reported on."""
     from textual.widgets import DataTable, Static
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)):
         pane = app.query_one(ScanPane)
         strip = app.query_one("#progress-strip", Static)
@@ -4792,12 +4792,12 @@ async def _results_with(
     is now read back through it: a row stored under a fake hash looks stale,
     and would count as pending work that is not pending.
     """
-    from sherlock_project.ai_engine import pass_one_contract_hash
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.ai_engine import pass_one_contract_hash
+    from sift_osint.database import SiftDB, default_database_path
 
     contract_hash = pass_one_contract_hash()
     seeded = extractions + unanalysed
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for index in range(max(1, seeded)):
             site = f"Site{index:02d}"
@@ -4841,7 +4841,7 @@ async def test_no_evidence_offers_a_scan_rather_than_an_empty_build():
 
     await _results_with("noevidence")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -4880,7 +4880,7 @@ async def test_stored_pages_are_read_by_the_build_itself():
 
     await _results_with("unread", unanalysed=3)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -4899,7 +4899,7 @@ async def test_one_stored_page_is_not_described_in_the_plural():
 
     await _results_with("single", unanalysed=1)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -4918,12 +4918,12 @@ async def test_the_pointer_state_does_not_stick_to_the_next_username():
     """
     from textual.widgets import Button
 
-    from sherlock_project.tui.results_pane import NO_EVIDENCE
+    from sift_osint.tui.results_pane import NO_EVIDENCE
 
     await _results_with("bare")
     await _results_with("stocked", extractions=2)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         await _open_profile_section(app, pilot)
 
@@ -4960,7 +4960,7 @@ async def test_the_pointer_button_draws_its_whole_label(size):
 
     await _results_with("noevidence")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=size) as pilot:
         await _open_profile_section(app, pilot)
         # The pointer state is drawn when the RECORD arrives, after the list.
@@ -5001,7 +5001,7 @@ async def test_the_pointer_button_stays_operable_by_mouse_and_keyboard():
 
     await _results_with("noevidence")
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(110, 34)) as pilot:
         await _open_profile_section(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5043,7 +5043,7 @@ async def test_stored_evidence_offers_a_build_and_says_it_is_instant():
 
     await _results_with("hasevidence", extractions=3)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -5064,10 +5064,10 @@ async def test_an_existing_profile_offers_a_rebuild():
     """
     from textual.widgets import Button
 
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
     await _results_with("built", extractions=1)
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.update_username_profile_summary(
             username="built",
@@ -5081,7 +5081,7 @@ async def test_an_existing_profile_offers_a_rebuild():
     finally:
         await db.close()
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
         assert "Rebuild" in str(app.query_one("#profile-build", Button).label)
@@ -5097,10 +5097,10 @@ async def test_a_rebuild_keeps_the_profiles_own_anchors():
     recomputed. Measured on real data as 4 fields / 7 values / 2 anchors
     becoming 11 fields / 73 values / 0 -- bigger, and worse.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
     await _results_with("anchored", extractions=2)
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.update_username_profile_summary(
             username="anchored",
@@ -5115,7 +5115,7 @@ async def test_a_rebuild_keeps_the_profiles_own_anchors():
     finally:
         await db.close()
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
 
@@ -5130,10 +5130,10 @@ async def test_rebuilding_an_anchored_profile_with_no_anchors_is_warned_about():
     worse, so the warning has to arrive before the button, not after."""
     from textual.widgets import Static
 
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
     await _results_with("anchored2", extractions=2)
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.update_username_profile_summary(
             username="anchored2",
@@ -5148,7 +5148,7 @@ async def test_rebuilding_an_anchored_profile_with_no_anchors_is_warned_about():
     finally:
         await db.close()
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_results(app, pilot)
 
@@ -5173,7 +5173,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
 
     from textual.widgets import Static
 
-    from sherlock_project import sherlock as sherlock_module
+    from sift_osint import sherlock as sherlock_module
 
     await _results_with("slowbuild", extractions=2)
 
@@ -5189,7 +5189,7 @@ async def test_building_reports_progress_where_you_are_standing(monkeypatch):
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", slow_synthesis)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -5220,7 +5220,7 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
     """A failure that disappears after five seconds is one nobody can act on."""
     from textual.widgets import Static
 
-    from sherlock_project import sherlock as sherlock_module
+    from sift_osint import sherlock as sherlock_module
 
     await _results_with("badbuild", extractions=1)
 
@@ -5229,7 +5229,7 @@ async def test_a_failed_build_leaves_the_reason_on_screen(monkeypatch):
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", failing)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -5255,8 +5255,8 @@ async def test_a_synthesis_that_failed_is_not_announced_as_a_built_profile(
     """
     from textual.widgets import Static
 
-    from sherlock_project import sherlock as sherlock_module
-    from sherlock_project.tui.results_pane import ResultsPane
+    from sift_osint import sherlock as sherlock_module
+    from sift_osint.tui.results_pane import ResultsPane
 
     await _results_with("quietfail", extractions=1)
 
@@ -5271,7 +5271,7 @@ async def test_a_synthesis_that_failed_is_not_announced_as_a_built_profile(
         lambda self, message, *args, **kwargs: notified.append(str(message)),
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _open_profile_section(app, pilot)
 
@@ -5292,7 +5292,7 @@ def test_force_follows_the_button_not_a_constant():
     would hit the cache and the button would appear to do nothing at all."""
     import inspect
 
-    from sherlock_project.tui.results_pane import ResultsPane
+    from sift_osint.tui.results_pane import ResultsPane
 
     source = inspect.getsource(ResultsPane._synthesize)
     assert "force=rebuild" in source
@@ -5310,11 +5310,11 @@ async def test_the_ui_refuses_to_draw_without_a_terminal(capsys):
     """A full-screen app that takes over a CI log is worse than no app."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui([], interactive=False, console=console) == 0
-    assert "sherlock-rm <username>" in capsys.readouterr().out
+    assert "sift-osint <username>" in capsys.readouterr().out
 
 
 async def test_unknown_arguments_are_reported_rather_than_ignored(capsys):
-    """Someone typing `sherlock-rm ui --fresh` has an expectation about that run
+    """Someone typing `sift-osint ui --fresh` has an expectation about that run
     which this cannot meet, so silently dropping the flag would be worse."""
     console = Console(force_terminal=False, no_color=True)
     assert await run_ui(["--fresh"], console=console) == 2
@@ -5332,15 +5332,15 @@ def _enable_update_check(enabled: bool = True) -> None:
     """
     from pathlib import Path
 
-    from sherlock_project.ai_config import (
-        SherlockSettings,
+    from sift_osint.ai_config import (
+        SiftSettings,
         UpdateSettings,
         ai_config_path,
         save_settings,
     )
 
     save_settings(
-        SherlockSettings(update=UpdateSettings(check_on_startup=enabled)),
+        SiftSettings(update=UpdateSettings(check_on_startup=enabled)),
         path=Path(str(ai_config_path())),
         environ={},
     )
@@ -5356,8 +5356,8 @@ def _a_newer_version() -> str:
     upgrade. Bumping the major keeps the comparison true for every version
     this package will ever carry.
     """
-    from sherlock_project import __version__
-    from sherlock_project.updater import parse_version
+    from sift_osint import __version__
+    from sift_osint.updater import parse_version
 
     numbers = parse_version(__version__) or (0,)
     return ".".join(str(part) for part in (numbers[0] + 1, 0, 0))
@@ -5365,8 +5365,8 @@ def _a_newer_version() -> str:
 
 def _stub_release(monkeypatch, version: str | None = None):
     """Answer the forge without going near it, and record that it was asked."""
-    import sherlock_project.updater as updater_module
-    from sherlock_project.updater import Release
+    import sift_osint.updater as updater_module
+    from sift_osint.updater import Release
 
     version = _a_newer_version() if version is None else version
     asked: list[str] = []
@@ -5394,7 +5394,7 @@ async def test_the_check_does_not_run_when_the_setting_is_off(monkeypatch):
     asked = _stub_release(monkeypatch)
     _enable_update_check(False)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot)
 
@@ -5408,12 +5408,12 @@ async def test_an_available_release_is_offered_and_nothing_is_installed(
     on its own; replacing the program takes a press."""
     from textual.widgets import Button
 
-    from sherlock_project.tui.update_screen import UpdateScreen
+    from sift_osint.tui.update_screen import UpdateScreen
 
     asked = _stub_release(monkeypatch)
     _enable_update_check(True)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
 
@@ -5428,13 +5428,13 @@ async def test_an_available_release_is_offered_and_nothing_is_installed(
 async def test_a_release_that_is_not_newer_is_not_offered(monkeypatch):
     """Equal versions are the common case on every launch after the first, and
     the check that this replaced would have offered a dialog for them."""
-    from sherlock_project import __version__
-    from sherlock_project.tui.update_screen import UpdateScreen
+    from sift_osint import __version__
+    from sift_osint.tui.update_screen import UpdateScreen
 
     asked = _stub_release(monkeypatch, version=__version__)
     _enable_update_check(True)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot)
 
@@ -5447,8 +5447,8 @@ async def test_an_unreachable_forge_is_silent(monkeypatch):
     answer on a repository that has never been tagged. It is not news, and an
     update check that raises a dialog saying it failed has cost more than it
     is worth."""
-    import sherlock_project.updater as updater_module
-    from sherlock_project.tui.update_screen import UpdateScreen
+    import sift_osint.updater as updater_module
+    from sift_osint.tui.update_screen import UpdateScreen
 
     async def no_answer(*, timeout: float = 10.0):
         return None
@@ -5456,7 +5456,7 @@ async def test_an_unreachable_forge_is_silent(monkeypatch):
     monkeypatch.setattr(updater_module, "fetch_latest", no_answer)
     _enable_update_check(True)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot)
 
@@ -5473,9 +5473,9 @@ async def test_a_finished_install_leaves_the_restart_note_in_the_appbar(
     """
     from textual.widgets import Static
 
-    import sherlock_project.tui.update_screen as screen_module
-    import sherlock_project.updater as updater_module
-    from sherlock_project.tui.update_screen import UpdateScreen
+    import sift_osint.tui.update_screen as screen_module
+    import sift_osint.updater as updater_module
+    from sift_osint.tui.update_screen import UpdateScreen
 
     _stub_release(monkeypatch)
     _enable_update_check(True)
@@ -5484,12 +5484,12 @@ async def test_a_finished_install_leaves_the_restart_note_in_the_appbar(
 
     async def clean_install(command, *, on_line=None):
         if on_line is not None:
-            on_line("Installing collected packages: sherlock-rm")
-        return 0, "Installing collected packages: sherlock-rm"
+            on_line("Installing collected packages: sift-osint")
+        return 0, "Installing collected packages: sift-osint"
 
     monkeypatch.setattr(screen_module, "run_install", clean_install)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
         await pilot.click("#update-yes")
@@ -5509,9 +5509,9 @@ async def test_a_failed_install_says_so_and_does_not_claim_success(monkeypatch):
     replaced belong to the process replacing them."""
     from textual.widgets import Static
 
-    import sherlock_project.tui.update_screen as screen_module
-    import sherlock_project.updater as updater_module
-    from sherlock_project.tui.update_screen import UpdateScreen
+    import sift_osint.tui.update_screen as screen_module
+    import sift_osint.updater as updater_module
+    from sift_osint.tui.update_screen import UpdateScreen
 
     _stub_release(monkeypatch)
     _enable_update_check(True)
@@ -5523,7 +5523,7 @@ async def test_a_failed_install_says_so_and_does_not_claim_success(monkeypatch):
 
     monkeypatch.setattr(screen_module, "run_install", broken_install)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await _settle(app, pilot, lambda: isinstance(app.screen, UpdateScreen))
         screen = app.screen
@@ -5552,9 +5552,9 @@ async def test_rescan_drops_rows_the_site_list_no_longer_covers(monkeypatch):
     exists. A re-scan rewrites every site the list still has, so the leftovers
     are exactly the rows it would otherwise leave behind.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for site_name in ("GitHub", "threads", "Ask.fm"):
             await db.save_result(
@@ -5577,7 +5577,7 @@ async def test_rescan_drops_rows_the_site_list_no_longer_covers(monkeypatch):
         fresh=True,
     )
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         assert sorted(await db.get_saved_results("someone")) == ["GitHub"]
     finally:
@@ -5591,9 +5591,9 @@ async def test_a_resumed_scan_removes_nothing(monkeypatch):
     report -- dropping them mid-run would delete evidence the same run is about
     to present as restored results.
     """
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         for site_name in ("GitHub", "threads"):
             await db.save_result(
@@ -5617,7 +5617,7 @@ async def test_a_resumed_scan_removes_nothing(monkeypatch):
         fresh=False,
     )
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         assert sorted(await db.get_saved_results("someone")) == ["GitHub", "threads"]
     finally:
@@ -5632,7 +5632,7 @@ async def test_the_prune_set_is_the_manifest_before_the_nsfw_filter():
     the first would make an ordinary safe-for-work re-scan silently delete
     results the user deliberately went and collected.
     """
-    from sherlock_project.tui.runner import build_scan_plan
+    from sift_osint.tui.runner import build_scan_plan
 
     plan = await build_scan_plan(
         username="nobody", settings_values={"scan.nsfw": False}
@@ -5650,10 +5650,10 @@ async def test_the_prune_set_is_the_manifest_before_the_nsfw_filter():
 
 
 async def _seed_built_profile(username: str) -> None:
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
     await _results_with(username, extractions=2)
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.update_username_profile_summary(
             username=username,
@@ -5680,7 +5680,7 @@ async def test_the_profile_section_holds_focus_so_its_keys_are_heard():
     from textual.widgets import Static
 
     await _seed_built_profile("trapped")
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_profile_section(app, pilot)
         assert app.focused is app.query_one("#sec-profile")
@@ -5701,7 +5701,7 @@ async def test_the_footer_offers_a_sections_keys_only_on_that_section():
     """A footer offering `found only` on PROFILE and `notes` on SITES taught
     people that keys on this screen do nothing."""
     await _seed_built_profile("scoped")
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5727,7 +5727,7 @@ async def test_coming_back_to_results_keeps_your_place():
         second=[("GitHub", QueryStatus.CLAIMED)],
         third=[("GitHub", QueryStatus.CLAIMED)],
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_results(app, pilot)
         table = app.query_one("#username-list", DataTable)
@@ -5759,7 +5759,7 @@ async def test_a_new_scan_at_the_top_is_opened_on_arrival():
     from textual.widgets import DataTable
 
     await _seed(older=[("GitHub", QueryStatus.CLAIMED)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5791,7 +5791,7 @@ async def test_the_unresolved_count_survives_eighty_columns():
         narrow=[("GitHub", QueryStatus.CLAIMED)]
         + [(f"Slow{i}", QueryStatus.UNKNOWN) for i in range(12)]
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(80, 24)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5813,7 +5813,7 @@ async def test_eighty_columns_turns_the_list_into_a_picker():
         one=[("GitHub", QueryStatus.CLAIMED)],
         two=[("Reddit", QueryStatus.CLAIMED)],
     )
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(80, 24)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5840,7 +5840,7 @@ async def test_the_section_underline_follows_a_relabelled_tab():
     from textual.widgets._tabs import Underline
 
     await _seed_built_profile("underlined")
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_profile_section(app, pilot)
         await _settle(app, pilot)
@@ -5858,10 +5858,10 @@ async def test_delete_in_the_anchor_editor_removes_an_anchor():
     own delete-forward -- so the one key it advertised for removing an anchor
     edited the box. With anchors listed, it now opens on the list.
     """
-    from sherlock_project.profile_synthesis import IdentityAnchor
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.profile_synthesis import IdentityAnchor
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         app.push_screen(
             AnchorScreen([IdentityAnchor(field="full_name", value="Avery Stone")])
@@ -5879,7 +5879,7 @@ async def test_exporting_twice_keeps_both_files(tmp_path, monkeypatch):
     """The second export silently replaced the first."""
     monkeypatch.chdir(tmp_path)
     await _seed(exported=[("GitHub", QueryStatus.CLAIMED)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -5895,7 +5895,7 @@ async def test_scan_again_from_the_menu_sets_up_the_scan_without_starting_it(
 ):
     from textual.widgets import Input
 
-    from sherlock_project.tui import runner as runner_module
+    from sift_osint.tui import runner as runner_module
 
     launched: list[str] = []
 
@@ -5917,7 +5917,7 @@ async def test_scan_again_from_the_menu_sets_up_the_scan_without_starting_it(
 
 def test_a_long_database_path_is_cut_from_the_middle():
     """It wrapped onto a hidden second line, so the bar said "db" and nothing."""
-    from sherlock_project.tui.app import _middle_truncate
+    from sift_osint.tui.app import _middle_truncate
 
     path = "/home/someone/.local/share/a/very/deep/tree/sherlock/sherlock.db"
     short = _middle_truncate(path, 30)
@@ -5965,7 +5965,7 @@ def _decoded(sequence: str) -> str:
 async def test_tab_keys_work_as_terminals_send_them(terminal, sequence, tab):
     from textual.widgets import Input, TabbedContent
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.pause()
         await _settle(app, pilot, lambda: app.tabs_ready)
@@ -5987,7 +5987,7 @@ async def test_tab_keys_work_as_terminals_send_them(terminal, sequence, tab):
 )
 async def test_section_keys_work_as_terminals_send_them(terminal, sequence):
     await _seed(sections=[("GitHub", QueryStatus.CLAIMED)])
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await _open_results(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -6000,7 +6000,7 @@ async def test_section_keys_work_as_terminals_send_them(terminal, sequence):
 async def test_show_all_works_as_terminals_send_it():
     """ESC f decodes as ctrl+right, which the username field owns -- so the
     shown key is alt+s, which arrives intact as ESC s."""
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.pause()
         pane = app.query_one(ScanPane)
@@ -6018,7 +6018,7 @@ async def test_late_callbacks_after_the_app_closes_do_nothing():
     opened RESULTS). Each raised NoMatches inside the app on its way out. Called
     here deliberately after teardown, every one of those paths must be a no-op.
     """
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         await pilot.pause()
         pane = app.query_one(ResultsPane)
@@ -6048,7 +6048,7 @@ async def test_no_button_loses_its_label_when_focused():
 
     await _seed_built_profile("focused")
     await _results_with("pointer")
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 34)) as pilot:
         await pilot.pause()
         await pilot.click("#toggle-ai")  # reveals the anchors "+" button
@@ -6090,10 +6090,10 @@ async def test_a_long_username_wraps_the_title_not_the_buttons():
     """
     from textual.widgets import Button
 
-    from sherlock_project.tui.confirm_screen import ConfirmScreen
+    from sift_osint.tui.confirm_screen import ConfirmScreen
 
     name = "an_unreasonably_long_username_" * 4
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(80, 24)) as pilot:
         app.push_screen(
             ConfirmScreen(
@@ -6116,9 +6116,9 @@ async def test_a_long_username_wraps_the_title_not_the_buttons():
 async def _store_profile(username: str, payload: dict) -> None:
     import json
 
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         await db.update_username_profile_summary(
             username=username,
@@ -6140,10 +6140,10 @@ async def test_extractions_from_an_older_contract_are_not_offered_as_evidence():
     """
     from textual.widgets import Button, Static
 
-    from sherlock_project.database import SherlockDB, default_database_path
+    from sift_osint.database import SiftDB, default_database_path
 
     await _results_with("olderrun", unanalysed=4)
-    db = await SherlockDB.create(str(default_database_path()))
+    db = await SiftDB.create(str(default_database_path()))
     try:
         rows = await db.get_site_extractions("olderrun")
         for row in rows[:2]:
@@ -6166,7 +6166,7 @@ async def test_extractions_from_an_older_contract_are_not_offered_as_evidence():
         },
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 36)) as pilot:
         await _open_profile_section(app, pilot)
 
@@ -6198,7 +6198,7 @@ async def test_a_built_profile_is_described_in_words_not_field_values():
         },
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 36)) as pilot:
         await _open_profile_section(app, pilot)
 
@@ -6215,7 +6215,7 @@ async def test_anchors_edited_after_a_build_say_they_are_not_applied_yet():
     what the profile cannot: that the edits are not in it yet."""
     from textual.widgets import Static
 
-    from sherlock_project.profile_synthesis import IdentityAnchor
+    from sift_osint.profile_synthesis import IdentityAnchor
 
     await _results_with("edited", extractions=2)
     await _store_profile(
@@ -6228,7 +6228,7 @@ async def test_anchors_edited_after_a_build_say_they_are_not_applied_yet():
         },
     )
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 36)) as pilot:
         await _open_profile_section(app, pilot)
         pane = app.query_one(ResultsPane)
@@ -6248,9 +6248,9 @@ async def test_the_anchor_field_is_free_text_and_obvious_values_fill_it():
     """
     from textual.widgets import Input, Static
 
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         app.push_screen(AnchorScreen([]))
         await pilot.pause()
@@ -6286,9 +6286,9 @@ async def test_adding_an_anchor_selects_it_instead_of_announcing_it():
     """"Added role=hacker" was a sentence about something the list shows."""
     from textual.widgets import DataTable, Input, Static
 
-    from sherlock_project.tui.anchor_screen import AnchorScreen
+    from sift_osint.tui.anchor_screen import AnchorScreen
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test() as pilot:
         app.push_screen(AnchorScreen([]))
         await pilot.pause()
@@ -6311,7 +6311,7 @@ async def test_a_running_build_can_be_stopped(monkeypatch):
 
     from textual.widgets import Button, Static
 
-    from sherlock_project import sherlock as sherlock_module
+    from sift_osint import sherlock as sherlock_module
 
     await _results_with("stoppable", extractions=2)
     started = asyncio.Event()
@@ -6328,7 +6328,7 @@ async def test_a_running_build_can_be_stopped(monkeypatch):
 
     monkeypatch.setattr(sherlock_module, "run_synthesis_only", endless)
 
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 36)) as pilot:
         await _open_profile_section(app, pilot)
         await pilot.click("#profile-build")
@@ -6362,10 +6362,10 @@ async def test_the_build_status_leaves_no_blank_band():
     rule. The lines are joined; the Stop row brings its own gap."""
     from textual.widgets import Static
 
-    from sherlock_project.tui.reporter import TuiReporter
+    from sift_osint.tui.reporter import TuiReporter
 
     await _results_with("tidy", extractions=2)
-    app = SherlockUI()
+    app = SiftUI()
     async with app.run_test(size=(120, 36)) as pilot:
         await _open_profile_section(app, pilot)
         pane = app.query_one(ResultsPane)

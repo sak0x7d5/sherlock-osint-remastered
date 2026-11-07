@@ -13,20 +13,20 @@ import pytest
 from rich.console import Console
 from textual.widgets import DataTable, Static
 
-from sherlock_project.ai_config import (
+from sift_osint.ai_config import (
     DEFAULT_AI_CONTEXT_LENGTH,
     DEFAULT_AI_TEMPERATURE,
     DEFAULT_LLAMACPP_BASE_URL,
     AISettings,
     ScanSettings,
-    SherlockSettings,
+    SiftSettings,
     load_settings,
     save_settings,
 )
-from sherlock_project.ai_provider import AIModelInfo
-from sherlock_project.llama_server import ServerStatus
-from sherlock_project.settings import SETTING_FIELDS, SettingField
-from sherlock_project.settings_tui import (
+from sift_osint.ai_provider import AIModelInfo
+from sift_osint.llama_server import ServerStatus
+from sift_osint.settings import SETTING_FIELDS, SettingField
+from sift_osint.settings_tui import (
     SettingsApp,
     format_context,
     plain_value,
@@ -42,7 +42,7 @@ def _index_of(key: str) -> int:
 
 def _seed(path: Path, **scan) -> None:
     save_settings(
-        SherlockSettings(
+        SiftSettings(
             ai=AISettings(base_url="http://127.0.0.1:8080", model="vendor/m"),
             scan=ScanSettings(**scan),
         ),
@@ -229,7 +229,7 @@ async def test_reset_restores_the_conventional_endpoint(tmp_path: Path):
     LM Studio address" is still a real thing to want."""
     path = tmp_path / "config.toml"
     save_settings(
-        SherlockSettings(
+        SiftSettings(
             ai=AISettings(base_url="http://10.0.0.5:9999", model="vendor/m"),
         ),
         path=path,
@@ -285,10 +285,10 @@ def test_the_update_check_ships_off():
     """The default is the reason the TUI suite never reaches the network, and
     the reason a tool that leads with what does not leave your machine can
     carry a forge call at all."""
-    from sherlock_project.ai_config import SherlockSettings, UpdateSettings
+    from sift_osint.ai_config import SiftSettings, UpdateSettings
 
     assert UpdateSettings().check_on_startup is False
-    assert SherlockSettings().update.check_on_startup is False
+    assert SiftSettings().update.check_on_startup is False
 
 
 async def test_ai_spinners_step_from_their_default_with_no_ai_stored(
@@ -304,7 +304,7 @@ async def test_ai_spinners_step_from_their_default_with_no_ai_stored(
     AI field with no shipped answer and the only one the user must supply.
     """
     path = tmp_path / "config.toml"
-    save_settings(SherlockSettings(), path=path, environ={})
+    save_settings(SiftSettings(), path=path, environ={})
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
@@ -405,7 +405,7 @@ async def test_the_editor_is_launched_from_inside_the_running_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """`sherlock-rm settings` is reached from inside main()'s event loop.
+    """`sift-osint settings` is reached from inside main()'s event loop.
 
     App.run() calls asyncio.run() internally, so the synchronous form dies with
     "asyncio.run() cannot be called from a running event loop" and leaves an
@@ -447,7 +447,7 @@ async def test_ai_settings_can_be_created_when_no_section_exists_yet(
     knows to change it.
     """
     path = tmp_path / "config.toml"
-    save_settings(SherlockSettings(scan=ScanSettings(concurrency=20)),
+    save_settings(SiftSettings(scan=ScanSettings(concurrency=20)),
                   path=path, environ={})
     app = SettingsApp(config_path=path)
 
@@ -475,7 +475,7 @@ async def test_saving_without_a_model_says_only_the_model_is_missing(
     configure AI, and saving it must succeed (see the test below).
     """
     path = tmp_path / "config.toml"
-    save_settings(SherlockSettings(), path=path, environ={})
+    save_settings(SiftSettings(), path=path, environ={})
     app = SettingsApp(config_path=path)
 
     async with app.run_test() as pilot:
@@ -503,7 +503,7 @@ async def test_a_scan_setting_saves_without_ever_setting_up_ai(
     anything at all -- concurrency, NSFW, theme -- until `setup ai` had run.
     """
     path = tmp_path / "config.toml"
-    save_settings(SherlockSettings(scan=ScanSettings(concurrency=20)),
+    save_settings(SiftSettings(scan=ScanSettings(concurrency=20)),
                   path=path, environ={})
     app = SettingsApp(config_path=path)
 
@@ -571,7 +571,7 @@ async def test_the_model_picker_starts_a_server_instead_of_asking_you_to(
     already taken over. The picker now starts one itself, and stops it again
     when the screen closes.
     """
-    from sherlock_project.tui import settings_pane as pane_module
+    from sift_osint.tui import settings_pane as pane_module
 
     started: list[str] = []
     stopped: list[str] = []
@@ -648,7 +648,7 @@ async def test_the_model_picker_carries_its_own_folder_control(tmp_path: Path):
     on screen even when the listing errored -- which is exactly when it is
     needed.
     """
-    from sherlock_project.tui.settings_pane import (
+    from sift_osint.tui.settings_pane import (
         FOLDER_ROW_KEY,
         ModelPickerScreen,
         TextEditScreen,
@@ -689,7 +689,7 @@ async def test_the_picker_returns_the_folder_even_when_no_model_was_chosen(
     They told us where their models are. Making them say it twice would be the
     screen forgetting something it was just given.
     """
-    from sherlock_project.tui.settings_pane import ModelChoice, ModelPickerScreen
+    from sift_osint.tui.settings_pane import ModelChoice, ModelPickerScreen
 
     screen = ModelPickerScreen(
         "http://127.0.0.1:8080", current=None, models_dir=str(tmp_path)
@@ -714,7 +714,7 @@ def test_a_folder_with_no_models_is_named_as_such(tmp_path: Path):
     one until something searches inside it -- and the search is the same
     recursive one the server runs, so a folder that passes here will serve.
     """
-    from sherlock_project.tui.settings_pane import folder_warning
+    from sift_osint.tui.settings_pane import folder_warning
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -739,7 +739,7 @@ async def test_the_models_folder_row_opens_a_textbox_and_warns(tmp_path: Path):
     re-rooting and a cancellable disk walk to work at all, and a path pastes
     out of a file manager faster than it arrows.
     """
-    from sherlock_project.tui.settings_pane import TextEditScreen
+    from sift_osint.tui.settings_pane import TextEditScreen
 
     path = tmp_path / "config.toml"
     _seed(path)

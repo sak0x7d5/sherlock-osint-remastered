@@ -1,8 +1,8 @@
 import pytest
 from sherlock_interactives import Interactives, InteractivesSubprocessError
 
-from sherlock_project import sherlock
-from sherlock_project.result import QueryStatus
+from sift_osint import sherlock
+from sift_osint.result import QueryStatus
 
 
 def test_remove_nsfw(sites_obj):

@@ -2,11 +2,11 @@ from argparse import ArgumentTypeError
 
 import pytest
 
-from sherlock_project.investigation_context import (
+from sift_osint.investigation_context import (
     build_investigation_context,
     parse_inline_anchor,
 )
-from sherlock_project.profile_synthesis import (
+from sift_osint.profile_synthesis import (
     IdentityAnchor,
     InvestigationContext,
     SynthesisEvidence,

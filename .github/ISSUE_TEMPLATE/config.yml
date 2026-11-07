@@ -13,5 +13,5 @@ contact_links:
     about: This is an independent derivative and shares none of upstream's maintainers. If you installed with pip, pipx, Homebrew or apt, you are running upstream's release, not this project.
 
   - name: A security vulnerability
-    url: https://github.com/sak0x7d5/sherlock-osint-remastered/security/advisories/new
+    url: https://github.com/sak0x7d5/sift-osint/security/advisories/new
     about: Report privately rather than opening a public issue.

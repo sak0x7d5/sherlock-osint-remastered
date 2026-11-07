@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sherlock_project.updater import (
+from sift_osint.updater import (
     CHECK_INTERVAL_SECONDS,
     UNKNOWN_VERSION,
     cache_path,
@@ -93,10 +93,10 @@ def test_shorter_versions_compare_as_lower():
 
 
 def test_docker_is_detected_from_the_variable_the_image_already_sets():
-    """`SHERLOCK_ENV=docker` is set by the Dockerfile and, until this feature,
+    """`SIFT_ENV=docker` is set by the Dockerfile and, until this feature,
     read by nothing. An image cannot rewrite itself: the install would vanish
     with the container and the next `docker run` would be the old build."""
-    assert detect_install(environ={"SHERLOCK_ENV": "docker"}) == "docker"
+    assert detect_install(environ={"SIFT_ENV": "docker"}) == "docker"
     assert install_command("docker", "v0.2.0") is None
     assert "docker build" in manual_instruction("docker", "v0.2.0")
 
@@ -106,7 +106,7 @@ def test_a_checkout_is_detected_by_its_pyproject_and_refused(tmp_path: Path):
     is the same one `get_version()` uses for its pyproject fallback, and it is
     load-bearing here for a different reason: a forced reinstall over a tree
     someone is editing replaces the thing they are editing."""
-    package = tmp_path / "sherlock_project"
+    package = tmp_path / "sift_osint"
     package.mkdir()
     (tmp_path / "pyproject.toml").write_text("[tool.poetry]\n", encoding="utf-8")
 
@@ -120,7 +120,7 @@ def test_a_checkout_is_detected_by_its_pyproject_and_refused(tmp_path: Path):
 def test_an_installed_copy_is_not_mistaken_for_a_checkout(tmp_path: Path):
     """No pyproject two directories up means this is an installed copy, and
     installed copies are the ones that may be replaced."""
-    package = tmp_path / "site-packages" / "sherlock_project"
+    package = tmp_path / "site-packages" / "sift_osint"
     package.mkdir(parents=True)
 
     mode = detect_install(environ={}, module_file=str(package / "updater.py"))
@@ -134,7 +134,7 @@ def test_an_installed_copy_is_not_mistaken_for_a_checkout(tmp_path: Path):
     [("pipx/venvs", "pipx"), ("uv/tools", "uv"), ("elsewhere", "pip")],
 )
 def test_the_installer_is_read_off_the_path(tmp_path: Path, segment, expected):
-    package = tmp_path / segment / "sherlock-rm" / "sherlock_project"
+    package = tmp_path / segment / "sift-osint" / "sift_osint"
     package.mkdir(parents=True)
 
     mode = detect_install(environ={}, module_file=str(package / "updater.py"))
@@ -178,7 +178,7 @@ def test_modes_that_cannot_install_report_no_tool():
 
 
 def test_the_stamp_suppresses_a_second_check_but_not_a_later_one(tmp_path: Path):
-    environ = {"SHERLOCK_CACHE": str(tmp_path / "update-check.json")}
+    environ = {"SIFT_CACHE": str(tmp_path / "update-check.json")}
 
     assert checked_recently(environ=environ) is False
 
@@ -198,7 +198,7 @@ def test_an_unreadable_stamp_means_check_rather_than_crash(tmp_path: Path):
     broken = tmp_path / "update-check.json"
     broken.write_text("{not json", encoding="utf-8")
 
-    assert checked_recently(environ={"SHERLOCK_CACHE": str(broken)}) is False
+    assert checked_recently(environ={"SIFT_CACHE": str(broken)}) is False
 
 
 def test_a_stamp_from_the_future_does_not_suppress_forever(tmp_path: Path):
@@ -207,11 +207,17 @@ def test_a_stamp_from_the_future_does_not_suppress_forever(tmp_path: Path):
     stamp = tmp_path / "update-check.json"
     stamp.write_text(json.dumps({"checked_at": 9_999_999_999.0}), encoding="utf-8")
 
-    assert checked_recently(now=1000.0, environ={"SHERLOCK_CACHE": str(stamp)}) is False
+    assert checked_recently(now=1000.0, environ={"SIFT_CACHE": str(stamp)}) is False
 
 
 def test_the_cache_path_follows_the_override(tmp_path: Path):
     target = tmp_path / "somewhere.json"
+
+    assert cache_path({"SIFT_CACHE": str(target)}) == target
+
+
+def test_the_cache_path_accepts_the_old_variable_name(tmp_path: Path):
+    target = tmp_path / "old.json"
 
     assert cache_path({"SHERLOCK_CACHE": str(target)}) == target
 

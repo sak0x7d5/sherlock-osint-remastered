@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from sherlock_project.ai_config import AISettings
-from sherlock_project.ai_provider import (
+from sift_osint.ai_config import AISettings
+from sift_osint.ai_provider import (
     AIModelNotFoundError,
     AIProviderAuthenticationError,
     AIProviderProtocolError,

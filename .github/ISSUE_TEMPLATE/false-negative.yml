@@ -19,7 +19,7 @@ body:
 
         **UNKNOWN is not a false negative.** Rules are two-sided, and when neither
         the present nor the absent pattern matches, the result is inconclusive
-        rather than "no account". `sherlock show <username> --unresolved` lists
+        rather than "no account". `sift-osint show <username> --unresolved` lists
         those sites. Bot protection and rejected username formats land there too.
 
         **Where the fix lands.** If the cause is the site's rule, it belongs in
